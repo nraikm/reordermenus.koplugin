@@ -256,8 +256,8 @@ MenuTitles.items = {
     patch_management = _("Patch management"),
     advanced_settings = _("Advanced settings"),
     developer_options = _("Developer options"),
-    reordering_menus = _("Reordering menus"),
-    reorderingmenus = _("Reordering menus"),
+    reordering_menus = _("Reorder menus"),
+    reorderingmenus = _("Reorder menus"),
 
     -- Search tab
     dictionary_lookup = _("Dictionary lookup"),

@@ -201,10 +201,13 @@ local ok, err = pcall(function()
         { "stale_item", "known_item", MenuOrderManager.SEPARATOR_ID },
         {}, live_ids, has_live
     )
-    assert_eq(merged[1], "known_item", "Registered configured item keeps its position")
-    assert_eq(merged[2], MenuOrderManager.SEPARATOR_ID, "Configured separator is retained")
-    assert_eq(merged[3], "new_plugin_item", "New live plugin item is appended for reordering")
-    assert_eq(unavailable[1], "stale_item", "Unavailable legacy item is filtered from the editor")
+    assert_eq(merged[1], "stale_item",
+        "Configured item missing from the live snapshot stays editable")
+    assert_eq(merged[2], "known_item", "Registered configured item keeps its position")
+    assert_eq(merged[3], MenuOrderManager.SEPARATOR_ID, "Configured separator is retained")
+    assert_eq(merged[4], "new_plugin_item", "New live plugin item is appended for reordering")
+    assert_eq(unavailable[1], "stale_item",
+        "Unavailable legacy item is still reported so saves preserve it")
 
     local merged_hidden = UIScreens:_mergeConfiguredAndLiveItems(
         { "known_item", "hidden_item" }, { "hidden_item" }, live_ids, has_live

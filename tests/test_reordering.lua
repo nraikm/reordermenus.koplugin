@@ -263,7 +263,8 @@ assert_eq(MenuOrderManager:getParentMenu("reader", "statistics"), "search",
     "Duplicate repair keeps the selected destination")
 assert_true(MenuOrderManager:moveItemToMenu("reader", "statistics", "search", "tools"),
     "Repaired item can be moved normally afterward")
-assert_eq(MenuOrderManager:getRecentMoves("reader").statistics, "tools",
+local statistics_move = MenuOrderManager:getRecentMoves("reader").statistics
+assert_eq(statistics_move and statistics_move.to, "tools",
     "Recent move state records the interface's authoritative location")
 
 -- Reproduce the real Battery Statistics failure: an older reset/move sequence
