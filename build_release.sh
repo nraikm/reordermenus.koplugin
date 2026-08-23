@@ -87,6 +87,7 @@ for f in $SHIPPING; do
 done
 
 # --- 4. require-literal sanity against the tracked tree ----------------------
+STAGE="$(mktemp -d)"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$STAGE" "$SCRATCH"' EXIT
 mkdir -p "$STAGE/$PLUGIN_NAME" "$SCRATCH/head"
@@ -111,18 +112,28 @@ for f in $OPTIONAL_DISTRIBUTABLE; do
     fi
 done
 
-# --- deterministic-ish archive ------------------------------------------------
+# --- deterministic archive ----------------------------------------------------
+# normalize metadata on files AND directories, then zip an explicitly SORTED
+# file list (readdir order is arbitrary) so identical commits produce
+# byte-identical archives.
+find "$STAGE/$PLUGIN_NAME" -exec touch -t 198504121200.00 {} +
 find "$STAGE/$PLUGIN_NAME" -type d -exec chmod 755 {} +
 find "$STAGE/$PLUGIN_NAME" -type f -exec chmod 644 {} +
-touch -t 19850412120000 $(find "$STAGE/$PLUGIN_NAME" -type f)
 
-OUT="${OUTPUT:-dist/reorderingmenus-${VERSION}.zip}"
-if [ -n "${1:-}" ]; then OUT="$1"; fi
+OUT="${RELEASE_OUT:-}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|--output) OUT="${2:-}"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+[ -n "$OUT" ] || OUT="dist/reorderingmenus-${VERSION}.zip"
 case "$OUT" in /*) ;; *) OUT="$SCRIPT_DIR/$OUT" ;; esac
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 
-(cd "$STAGE" && zip -q -r -X "$OUT" "$PLUGIN_NAME")
+FILELIST="$(cd "$STAGE" && find "$PLUGIN_NAME" ! -type d | LC_ALL=C sort)"
+(cd "$STAGE" && zip -q -X "$OUT" $FILELIST)
 
 echo "-------------------------------------------------------------------"
 echo "Release contents ($OUT):"
