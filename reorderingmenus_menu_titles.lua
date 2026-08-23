@@ -4,6 +4,7 @@ to user-friendly, localized display names and icons.
 --]]
 
 local _ = require("gettext")
+local MenuSchema = require("reorderingmenus_menu_schema")
 
 local MenuTitles = {}
 
@@ -328,7 +329,7 @@ local function humanize(id)
 end
 
 function MenuTitles:getTitle(id, live_menu_items)
-    if id == "----------------------------" or id == "separator" then
+    if id == MenuSchema.SEPARATOR_ID or id == "separator" then
         return _("--- Separator ---")
     end
 

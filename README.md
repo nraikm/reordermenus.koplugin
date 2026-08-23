@@ -32,6 +32,123 @@ Reorder, hide, move, and group KOReader menu items in both Book view and the Fil
 - Save presets for one submenu only, with optional nested submenu ordering.
 - Preserve newly added plugin items when applying submenu presets.
 
+## Architecture
+
+The plugin implements **sparse declarative user intent**: it persists only
+what you actually did — never a snapshot of resolved menus. Every menu is
+derived at runtime from KOReader's *current* defaults combined with that
+intent:
+
+```
+        current KOReader defaults
+        current registered plugin contributions (+ sorting hints)
+                    |
+              BASE REGISTRY                      (registry.lua)
+                    |
+   User Intent  ----------------------->  MATERIALIZER     (materializer.lua)
+                    |                     pure resolve()
+                    v
+          validated resolved menu graph         (validator.lua)
+                    v
+          minimal KOReader native overrides      (native_writer.lua)
+                    v
+                   stock MenuSorter
+```
+
+Production responsibilities are deliberately narrow:
+
+| Module | Responsibility |
+|---|---|
+| `menu_schema.lua` | Plain constants, collection names, and fresh sections |
+| `intent_store.lua` | Canonical sparse intent, migration, validation, transactions |
+| `registry.lua` / `materializer.lua` / `validator.lua` | Pure domain pipeline |
+| `native_writer.lua` | Sparse native emission, startup classification, hand-edit import |
+| `koreader_adapter.lua` | KOReader files, registrations, MenuSorter guards, live rebuild |
+| `presets.lua` | Intent snapshots and preset-file operations |
+| `menuorder_manager.lua` | Stable editor-facing facade and orchestration |
+| `ui_screens.lua` | KOReader dialogs; pure paging/identity helpers live in `ui_editor_model.lua` |
+
+## State & persistence hardening
+
+On top of the pipeline above, persistence follows four rules:
+
+1. **Canonical intent is the source of truth.** Saves commit intent FIRST and
+   emit the derived native file second; a crash between the two leaves a file
+   that lags canonical state, which the next launch detects via the sidecar's
+   bound `intent_gen` and regenerates — never the reverse (a stranded native
+   file describing work canonical never recorded).
+2. **Our own stale output is never mistaken for a hand edit.** Sidecar records
+   carry fingerprints of the current and previous emission plus the generation
+   they were derived from. Known fingerprints identify our output; generation
+   comparison then detects when an otherwise-current derived file lags intent.
+3. **External edits become minimal intent.** A hand-edited native file is
+   diffed (`semantic_diff.lua`) against our last emission — or stock defaults
+   when the key was absent from our sparse emission — so one moved row becomes
+   one position anchor and untouched neighbours keep following upstream.
+4. **Concurrent writers inside one session cannot silently lose updates.**
+   Transactions stage against a base generation; commit refuses stale
+   transactions (`stale_transaction`) and `saveOrder` rebases via record-level
+   three-way merge (`Transaction:mergeSection`), preserving both writers'
+   records with last-explicit-save-wins per record.
+
+The generation check is an in-process transaction safeguard, not a general
+multi-process locking protocol. KOReader normally has one settings writer.
+
+Canonical files are versioned (`version`, currently **2**) with
+lossless v0/v1 migration, idempotent re-stamping, and verbatim quarantine of
+files written by unsupported future versions. Malformed-but-parseable native
+files (cyclic tables, scalar lists, numeric/sparse arrays, duplicate ids) are
+normalized at ingestion and regenerated from intent. An explicit
+**Forget stale customizations** action (`MenuOrderManager:forgetStaleCustomizations`)
+drops records only for ids no live provider serves, so reinstalling later
+starts from CURRENT provider defaults instead of resurrecting old placements.
+
+What this buys you:
+
+- **Untouched menus stay untouched on disk.** A menu list is written to
+  KOReader's `reader_menu_order.lua` / `filemanager_menu_order.lua` only when
+  its derived content differs from stock. A KOReader update can therefore
+  reshape any menu you never customized with zero reconciliation.
+- **Identity is `(id, provider)`.** Records are stamped with the provider
+  that was serving an id when you acted ("stock" or "plugin:<name>"). If a
+  plugin is uninstalled and another one later contributes the same menu id,
+  it does not inherit the old customization; reinstalling the original
+  restores it exactly. Auto-anchored placements follow their provider's
+  current default home, so an untouched item migrates when a plugin update
+  changes its `sorting_hint` — while explicitly moved items always stay put.
+- **Only user actions persist — in two deliberate forms, both
+  provider-aware.** Single drags are stored as manual anchors
+  (`position_override`), so untouched neighbours keep following upstream
+  changes; bulk operations like A–Z sorts store an explicit ordered sequence
+  with per-entry era stamps (`sequence_eras`). A reused menu id starts at its
+  own provider's default slot instead of inheriting another plugin's
+  arrangement; the original provider's slot reactivates on return.
+- **Crash-safe persistence.** Every persisted table file (canonical intent, derived
+  native orders, sidecars) is written through serialize → temp file → parse →
+  validate → atomic rename with a unique staging name, so stock KOReader's unprotected `dofile()` never
+  sees a half-written document. Corrupted files regenerate from canonical
+  intent; a stale generation left by a crash between per-view writes is
+  recognized via previous-generation fingerprints and rematerialized rather
+  than misread as a hand edit. Native output and its sidecar are independently
+  atomic files; startup recovery handles a crash between those writes.
+- **Deterministic collision policy.** When several plugins contribute the same
+  menu id at once, attribution goes to the lexicographically smallest widget
+  name (provider *and* attributes), the collision is logged, and no durable
+  pin is written for an identity that unstable.
+- **Hand edits stay supported.** The exact structure of the last generated
+  file is recorded in a noncanonical sidecar. On startup the native file is
+  compared against it: unchanged means nothing to do; externally edited means
+  the diff is imported back as explicit intent; anything unrepresentable is
+  kept verbatim via a scoped raw override.
+- **Presets are portable across updates** because they capture records, not
+  layouts: whatever a preset snapshot never mentions keeps following the
+  current defaults.
+
+Canonical state lives in `reorderingmenus_intent.lua`; the noncanonical
+last-materialization record lives in `reorderingmenus_materialization.lua`.
+Both (plus the older `reorderingmenus_state.lua`) migrate/import
+automatically on first run.
+
 ## Installation
 
 1. Download the latest `reorderingmenus.koplugin.zip` from the [Releases](https://github.com/nraikm/ReorderingMenus/releases) page.
@@ -69,10 +186,10 @@ Submenu presets affect ordering only. They do not replace visibility settings, a
 
 ## Notes
 
-- Changes are written to KOReader's standard `reader_menu_order.lua` and `filemanager_menu_order.lua` settings files.
+- Changes are written to KOReader's standard `reader_menu_order.lua` and `filemanager_menu_order.lua` settings files — but only for menus whose derived layout deviates from stock, so those files stay minimal.
 - Created submenus and their titles are stored inside the same order file under `KOMenu:custom_submenus`; they render in KOReader's menus without editing any core files.
-- The plugin records the original menu of hidden items in `reorderingmenus_state.lua`; it removes this small sidecar automatically when no such items remain hidden.
-- Presets are stored under `settings/menu_order_presets/` in the KOReader data directory.
+- The plugin's canonical customization state lives in `reorderingmenus_intent.lua`; a small noncanonical record of the last generated files (`reorderingmenus_materialization.lua`) powers hand-edit import. Legacy sidecar state is migrated automatically.
+- Presets are stored under `settings/menu_order_presets/` in the KOReader data directory. New presets capture sparse intent; older dense preset files keep working and are converted against the current defaults when loaded.
 - A live reload is attempted after changes; KOReader may still request a restart when a complete refresh is needed.
 - Third-party plugins can add or remove menu entries. Missing entries in an older submenu preset are ignored, while newly available entries remain accessible.
 - Existing menu-order files containing the same item under multiple parents are repaired automatically, preferring a customized destination over the stock location.
@@ -103,9 +220,62 @@ PLUGIN_DIR=/path/to/ReorderingMenus
 ./luajit "$PLUGIN_DIR/tests/test_hidden_display_mode.lua"
 ./luajit "$PLUGIN_DIR/tests/test_custom_menu_lifecycle.lua"
 ./luajit "$PLUGIN_DIR/tests/test_custom_submenus.lua"
+./luajit "$PLUGIN_DIR/tests/test_hint_migration.lua"
+./luajit "$PLUGIN_DIR/tests/test_provider_identity.lua"
+./luajit "$PLUGIN_DIR/tests/test_submenu_safety.lua"
+./luajit "$PLUGIN_DIR/tests/test_ghost_isolation.lua"
+./luajit "$PLUGIN_DIR/tests/test_storage_resilience.lua"
+./luajit "$PLUGIN_DIR/tests/test_self_absence_contract.lua"
+./luajit "$PLUGIN_DIR/tests/test_insert_menu_singleton.lua"
+./luajit "$PLUGIN_DIR/tests/test_koreader_contract.lua"
+./luajit "$PLUGIN_DIR/tests/test_conditional_items.lua"
+./luajit "$PLUGIN_DIR/tests/test_localization_identity.lua"
+./luajit "$PLUGIN_DIR/tests/test_io_failure_injection.lua"
+./luajit "$PLUGIN_DIR/tests/test_drag_index_mapping.lua"
+SM_SEEDS=12 SM_STEPS=120 ./luajit "$PLUGIN_DIR/tests/test_state_machine.lua"
+./luajit "$PLUGIN_DIR/tests/test_staged_exit_and_commit_crash.lua"
+./luajit "$PLUGIN_DIR/tests/test_native_deletion_while_disabled.lua"
+./luajit "$PLUGIN_DIR/tests/test_reset_all_gc.lua"
+```
+
+Or run the whole deterministic set (plus randomized/multi-process suites
+separately) with the bundled runners:
+
+```sh
+bash "$PLUGIN_DIR/tests/run_all.sh"              # 43 deterministic suites + totals
+bash "$PLUGIN_DIR/tests/run_crash_pipeline.sh"   # cross-process crash/recovery
+SM_SEEDS=6 SM_STEPS=60 SM_RESTART_EVERY=25 \
+  ./luajit "$PLUGIN_DIR/tests/test_state_machine_verbs.lua"
+./luajit "$PLUGIN_DIR/tests/test_menusorter_differential_fuzz.lua"
+./luajit "$PLUGIN_DIR/tests/test_multiprocess_restart.lua"
+./luajit "$PLUGIN_DIR/tests/test_semantic_diff_unit.lua"
+./luajit "$PLUGIN_DIR/tests/test_schema_migration.lua"
+./luajit "$PLUGIN_DIR/tests/test_txn_concurrency.lua"
+./luajit "$PLUGIN_DIR/tests/test_minimal_import.lua"
+./luajit "$PLUGIN_DIR/tests/test_malformed_native.lua"
+./luajit "$PLUGIN_DIR/tests/test_preset_futures.lua"
+./luajit "$PLUGIN_DIR/tests/test_preset_robustness.lua"
+./luajit "$PLUGIN_DIR/tests/test_reset_metamorphic.lua"
+./luajit "$PLUGIN_DIR/tests/test_tombstone_gc.lua"
+./luajit "$PLUGIN_DIR/tests/test_corrupt_canonical_intent.lua"
 ```
 
 Set `KO_HOME` to a separate KOReader data directory when you want an isolated development or test environment.
+
+All suites run against **unmodified stock KOReader**; nothing in this project
+patches or modifies the installation. The one known stock defect that this
+plugin cannot fix while absent is documented as an explicit expected-failure
+probe — it intentionally exits non-zero and must never be part of automated
+pass/fail runs:
+
+```sh
+./luajit "$PLUGIN_DIR/tests/error_g_stock_probe.lua"
+# expected: exit 1, "frontend/ui/menusorter.lua:181: attempt to index a nil value"
+```
+
+The regular suites pin that same crash safely as data via `pcall`
+(`test_koreader_contract.lua` C6) and prove the runtime guard neutralizes it
+while the plugin is loaded (`test_self_absence_contract.lua`).
 
 The UI-flow suites drive the real widgets (SortWidget editors, hold dialogs, destination chooser):
 
@@ -125,3 +295,19 @@ The UI-flow suites drive the real widgets (SortWidget editors, hold dialogs, des
 - `test_custom_menu_lifecycle.lua` — structural custom menus survive the full plugin lifecycle: More tools moved under Settings is captured by a preset; plugins installed afterwards anchor into the relocated list; disabling them ghost-hides their entries without breaking anything; reinstalling restores the exact spot; applying the older preset keeps both the custom placement and the plugin entry; hiding inside the custom menu survives preset application; and `updatePreset` + reset + reapply brings the whole customized world back.
 - `test_mirroring.lua` — the live mirroring toggle: it persists across restarts, an FM move appears in the Reader file (and vice versa), disabling stops every cross-write, hide/unhide mirror symmetrically in both directions with per-view origin records, and items or destination menus unknown to the other view are skipped silently without creating ghost entries.
 - `test_custom_submenus.lua` — creating submenus from the hamburger menu (at the bottom or below the selection, staging pending edits into the same atomic save), their titles surviving sanitize/disk reloads and rendering in KOReader's rebuilt menus, deletion rules for created submenus (empty-only), destination-chooser prioritization of same-menu submenus and parent menus, and reset behavior (parent reset keeps them, full reset clears them).
+
+### Migration & identity suites
+
+- `test_hint_migration.lua` — the governing rules ("untouched things follow the future; customized things follow the user") locked down as a table-driven matrix: plugin hint upgrades (untouched follows the new hint, explicit moves win, hides survive, unhide-after-upgrade lands at the new home, restore-default re-follows) and KOReader-update equivalents (relocated built-ins, upstream in-menu reorder flowing around single manual anchors, new tabs slotting near their surviving default neighbours).
+- `test_provider_identity.lua` — identity is `(id, provider)`: temporal id reuse across different providers inherits nothing (visibility, placement, or disabled state), same-provider reinstall regains everything, simultaneous live collisions are attributed deterministically (smallest widget name wins, collision reported, no pin for unstable identities), provider id renames leave inert tombstones, and mirroring never transfers unknown ids across views.
+- `test_submenu_safety.lua` — submenu moves into self or any descendant rejected (including indirect ring closures A→B→C→A), corrupt cyclic models repaired deterministically at the data layer and proven render-safe under the real MenuSorter, chaotic dense imports collapse to a single authoritative parent, deletion policy never orphans children (visible, hidden, or ghosted occupants all block deletion), and leaf↔submenu shape changes preserve customization.
+- `test_ghost_isolation.lua` — absent-provider ghosts keep exactly one preserved parent, hidden ghosts render nowhere, ghosts don't disturb resets/sorting/slot healing, imposter providers get clean defaults while originals regain customization on return, plus 25 install/configure/uninstall cycles asserting normalized state after every cycle.
+- `test_storage_resilience.lua` — atomic write pipeline (serialize → temp → parse → validate → rename; destination never holds a partial document; invalid shapes refused before commit), truncated/empty/malformed native files regenerate from canonical intent instead of wiping it, genuine deletions still revert, external edits under an open editor merge without silent overwrites, and a stale generation of our own output (crash between per-view writes) is recognized via previous-generation fingerprints and rematerialized.
+- `test_self_absence_contract.lua` — documents the release-blocking stock KOReader crash when an orphaned sorting_hint targets an unreachable menu with this plugin absent (`patches/menusorter-sorting-hint-nil-guard.patch` proposes the upstream fix), and proves the runtime guard neutralizes exactly that input while installed.
+- `test_insert_menu_singleton.lua` — repeated module execution and repeated Reader/FM construction render the plugin's own entry exactly once despite `ui/plugin/insert_menu`'s call-once contract.
+- `test_state_machine.lua` — seeded random operation sequences (plugin install/uninstall/upgrade, user moves/hides/restores, upstream add/remove/reorder) against the pure pipeline with seven global invariants after every step: render-safety under the real MenuSorter, single-parent, hidden-isolation, acyclicity, determinism, user-wins, and default-wins. ~25,000 checks per full run; failures print seed and step for exact reproduction.
+- `test_koreader_contract.lua` — pins every adapter assumption to the installed KOReader: settings parsing, mergeAndSort overlay mutation, reference consumption, disabled handling, reachable-hint attachment; documents the stock unreachable-hint crash (Error G); validates that the shipped upstream patch (`patches/menusorter-sorting-hint-nil-guard.patch`) still matches the installed `menusorter.lua` verbatim and proves in a sandbox that the patched sorter fixes the crash while remaining structurally identical on orphan-free input.
+- `test_conditional_items.lua` — device-conditional entries (frontlight / physical keys / USB tab) across four capability states: untouched entries track capabilities exactly, customized ones keep their records through absence (ghost policy) and reactivate on return, conditional submenus carry adopted children back, render-safety holds throughout.
+- `test_localization_identity.lua` — language switches change display titles but never customization: moves, hides and bulk sequences survive; presets round-trip independent of translated strings; equal localized labels tie-break deterministically by ID across restarts.
+- `test_io_failure_injection.lua` — injected write/rename/persist failures: previous files stay byte-identical, sidecar baselines never advance on failure, no temp litter leaks, failed intent commits roll back the in-memory swap (and staged records are discarded like a process restart), healthy retries succeed afterwards.
+- `test_drag_index_mapping.lua` — Error I at the editor layer: drops adjacent to hidden rows anchor to visible siblings only (in-place and bottom-hidden modes), rows are ID-keyed and unique, boundary drops in bottom mode cannot anchor into the hidden block, saved arrangements reload identically.
