@@ -112,6 +112,21 @@ for f in $REQUIRED_RUNTIME; do
         fail "module '$base' never referenced by any tracked require() — stale require string or wrong manifest entry?"
 done
 
+# --- 5. no unexpected plugin-local dependencies -------------------------------
+# Every require("reorderingmenus_*") literal in the tracked tree must resolve
+# to a manifested runtime file. Catches a committed require of a module that
+# was never git-added — the exact "works in dev tree, missing from ZIP" bug.
+LOCAL_DEPS="$(grep -rhoE 'require\("reorderingmenus_[a-z_0-9]+"\)' "$SCRATCH/head" \
+    | sed -E 's|require\("([a-z_0-9]+)"\)|\1|' | LC_ALL=C sort -u)"
+for dep in $LOCAL_DEPS; do
+    depfile="$dep.lua"
+    known=0
+    for c in $REQUIRED_RUNTIME $OPTIONAL_DISTRIBUTABLE; do
+        [ "$depfile" = "$c" ] && { known=1; break; }
+    done
+    [ "$known" = "1" ] || fail "unexpected runtime dependency: require(\"$dep\") found, but $depfile is not a manifested runtime file (forgot git add?)"
+done
+
 # --- stage ONLY the shipping set from the HEAD extraction ---------------------
 for f in $REQUIRED_RUNTIME; do
     [ -f "$SCRATCH/head/$f" ] || fail "required runtime file missing from HEAD archive: $f"
