@@ -50,16 +50,28 @@ for f in $REQUIRED_RUNTIME; do
 done
 
 # --- 2. every tracked file must be classified --------------------------------
+# NOTE: patterns are fed through a here-doc, NEVER an unquoted for-list:
+# `for pat in $DEV_ONLY_PATTERNS` would pathname-expand globs like tests/*
+# against the current directory, turning patterns into concrete paths.
+match_pattern() {  # match_pattern <string> <pattern> -> exit 0 on match
+    # shellcheck disable=SC2254
+    case "$1" in
+        $2) return 0 ;;
+    esac
+    return 1
+}
+
 classify() {  # prints REQUIRED | OPTIONAL | DEV_ONLY | UNKNOWN for $1
     local f="$1"
+    local c pat
     for c in $REQUIRED_RUNTIME; do [ "$f" = "$c" ] && { echo REQUIRED; return; }; done
     for c in $OPTIONAL_DISTRIBUTABLE; do [ "$f" = "$c" ] && { echo OPTIONAL; return; }; done
-    for pat in $DEV_ONLY_PATTERNS; do
-        # shellcheck disable=SC2254
-        case "$f" in
-            $pat) echo DEV_ONLY; return ;;
-        esac
-    done
+    while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        if match_pattern "$f" "$pat"; then echo DEV_ONLY; return; fi
+    done <<EOF
+$DEV_ONLY_PATTERNS
+EOF
     echo UNKNOWN
 }
 
