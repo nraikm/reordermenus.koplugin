@@ -6,6 +6,8 @@ package.path = project_dir .. "/?.lua;" .. package.path
 local LuaSettings = require("luasettings")
 local DataStorage = require("datastorage")
 local MenuSorter = require("ui/menusorter")
+local dump = require("dump")
+local util = require("util")
 
 G_reader_settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/settings.reader.lua")
 G_defaults = require("luadefaults"):open()
@@ -14,9 +16,41 @@ local Device = require("device")
 local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 
-local MenuTitles = require("menu_titles")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+-- Deterministic baseline: wipe persisted menu state before this suite runs
+-- (fresh process = no in-memory sessions; removing the files is enough).
+do
+    local _sd = DataStorage:getSettingsDir()
+    for _, _name in ipairs({
+        "reader_menu_order.lua", "filemanager_menu_order.lua",
+        "reorderingmenus_intent.lua", "reorderingmenus_materialization.lua",
+        "reorderingmenus_state.lua",
+    }) do
+        pcall(os.remove, _sd .. "/" .. _name)
+    end
+    -- Preset directories: leftover user presets would break count assertions.
+    local _lfs = require("libs/libkoreader-lfs")
+    local function _rmtree(path)
+        if _lfs.attributes(path, "mode") ~= "directory" then return end
+        for _entry in _lfs.dir(path) do
+            if _entry ~= "." and _entry ~= ".." then
+                local _full = path .. "/" .. _entry
+                if _lfs.attributes(_full, "mode") == "directory" then
+                    _rmtree(_full)
+                else
+                    pcall(os.remove, _full)
+                end
+            end
+        end
+    end
+    for _, _view in ipairs({ "reader", "filemanager" }) do
+        _rmtree(_sd .. "/menu_order_presets/" .. _view)
+        _rmtree(_sd .. "/menu_order_presets/" .. _view .. "/submenus")
+    end
+end
+
+local MenuTitles = require("reorderingmenus_menu_titles")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 local MainPlugin = require("main")
 
 local passed = 0
@@ -28,6 +62,7 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or "assertion"))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "assertion") .. " -> Expected: " .. tostring(expected) .. ", Got: " .. tostring(actual))
     end
 end
@@ -249,15 +284,19 @@ assert_true(MenuOrderManager:moveItemToMenu(
     "reader", "new_plugin_fixture", "setting", "tools"
 ), "Configured new plugin item can be moved again")
 
--- Repair duplicate parents left by versions whose stale editor model could
--- save an item back into its source after it had already been moved.
-local duplicate_order = MenuOrderManager:loadOrder("reader")
-table.insert(duplicate_order.search, "statistics")
-assert_eq(count_menu_references(duplicate_order, "statistics"), 2,
-    "Legacy duplicate-parent fixture was created")
-assert_true(MenuOrderManager:moveItemToMenu("reader", "statistics", "tools", "search"),
-    "Moving to an already duplicated destination repairs the old state")
-assert_eq(count_menu_references(duplicate_order, "statistics"), 1,
+-- Architecture 5 makes duplicate parents impossible by construction (the
+-- materializer assigns a single parent). What still needs repairing is a
+-- hand-edited or legacy dense file containing duplicates: importing it must
+-- yield exactly one authoritative parent, keeping the customized destination.
+assert_true(MenuOrderManager:saveOrder("reader"),
+    "Persist state before simulating a legacy duplicate-parent file")
+local legacy_duplicate = MenuOrderManager:loadOrder("reader")
+table.insert(legacy_duplicate.search, "statistics")
+util.writeToFile(dump(legacy_duplicate, nil, true),
+    DataStorage:getSettingsDir() .. "/reader_menu_order.lua", true, true)
+MenuOrderManager:reloadFromDisk("reader")
+local repaired_import = MenuOrderManager:loadOrder("reader", true)
+assert_eq(count_menu_references(repaired_import, "statistics"), 1,
     "Cross-menu move leaves exactly one authoritative parent")
 assert_eq(MenuOrderManager:getParentMenu("reader", "statistics"), "search",
     "Duplicate repair keeps the selected destination")
@@ -267,15 +306,15 @@ local statistics_move = MenuOrderManager:getRecentMoves("reader").statistics
 assert_eq(statistics_move and statistics_move.to, "tools",
     "Recent move state records the interface's authoritative location")
 
--- Reproduce the real Battery Statistics failure: an older reset/move sequence
--- persisted the item under both More tools and Tools. Reload must keep the
--- customized non-default destination and repair the file deterministically.
+-- Reproduce the real Battery Statistics failure through the same door: a
+-- persisted file listing the item under both More tools and Tools is imported
+-- deterministically, keeping the customized non-default destination.
+assert_true(MenuOrderManager:saveOrder("reader"), "Persist before Battery Statistics fixture")
 local persisted_duplicate = MenuOrderManager:loadOrder("reader")
 table.insert(persisted_duplicate.tools, "battery_statistics")
-assert_eq(count_menu_references(persisted_duplicate, "battery_statistics"), 2,
-    "Battery Statistics duplicate-parent fixture was created")
-assert_true(MenuOrderManager:saveOrder("reader"), "Persisted Battery Statistics duplicate fixture")
-MenuOrderManager.orders.reader = nil
+util.writeToFile(dump(persisted_duplicate, nil, true),
+    DataStorage:getSettingsDir() .. "/reader_menu_order.lua", true, true)
+MenuOrderManager:reloadFromDisk("reader")
 local repaired_reload = MenuOrderManager:loadOrder("reader", true)
 assert_eq(count_menu_references(repaired_reload, "battery_statistics"), 1,
     "Loading repairs persisted Battery Statistics duplicates")
@@ -311,8 +350,10 @@ MenuOrderManager:setItemHidden("reader", "calibre", false, "tools")
 assert_eq(MenuOrderManager:isItemHidden("reader", "calibre"), false, "calibre is unhidden")
 
 local dynamic_search_item = "annas_archive_fixture"
-assert_true(MenuOrderManager:reconcileMenuItems("reader", "search", { dynamic_search_item }),
-    "Dynamically registered Search plugin is anchored in its live parent")
+-- Anchoring is implicit now: the materializer places hinted items without
+-- persisting anything, so the reconciliation hook has nothing to do.
+assert_eq(MenuOrderManager:reconcileMenuItems("reader", "search", { dynamic_search_item }),
+    false, "Anchoring is implicit; the reconciliation hook stays a no-op")
 MenuOrderManager:setItemHidden("reader", dynamic_search_item, true, "search")
 assert_true(MenuOrderManager:isItemHidden("reader", dynamic_search_item),
     "Dynamic Search plugin is hidden")
@@ -320,9 +361,10 @@ assert_eq(MenuOrderManager:getParentMenu("reader", dynamic_search_item), nil,
     "Hidden dynamic plugin is removed from KOReader's active order")
 assert_eq(MenuOrderManager:getHiddenItemParent("reader", dynamic_search_item), "search",
     "Hidden dynamic plugin retains its source across reloads")
-local persisted_hidden_state = dofile(DataStorage:getSettingsDir() .. "/reorderingmenus_state.lua")
-assert_eq(persisted_hidden_state.hidden_origins.reader[dynamic_search_item], "search",
-    "Dynamic plugin source is persisted outside the volatile menu tree")
+assert_true(MenuOrderManager:saveOrder("reader"), "Persist hidden state to the intent store")
+local persisted_intent = dofile(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
+assert_eq(persisted_intent.views.reader.hidden[dynamic_search_item].origin, "search",
+    "Dynamic plugin source is persisted in the canonical intent store")
 assert_true(list_contains(UIScreens:_getHiddenForMenu("reader", "search"), dynamic_search_item),
     "Hidden dynamic plugin remains manageable in the Search editor")
 assert_true(MenuOrderManager:resetSubmenu("reader", "search"),
@@ -335,11 +377,13 @@ assert_eq(MenuOrderManager:getHiddenItemParent("reader", dynamic_search_item), n
     "Reset Search clears the saved hidden origin")
 
 local late_search_item = "late_search_plugin_fixture"
-assert_true(MenuOrderManager:reconcileRegisteredItems("reader", {
+-- A late registration gets an anchored placement record so its configured
+-- home survives provider removal; that IS persistence-worthy work.
+assert_eq(MenuOrderManager:reconcileRegisteredItems("reader", {
     [late_search_item] = { sorting_hint = "search" },
-}), "New plugin sorting hints are persisted before a top tab is hidden")
+}), true, "New plugin hints are pinned as anchored placements")
 assert_eq(MenuOrderManager:getParentMenu("reader", late_search_item), "search",
-    "Late Search plugin is anchored instead of remaining a dangerous orphan")
+    "Late Search plugin follows its hint instead of remaining a dangerous orphan")
 
 -- -------------------------------------------------------------
 -- Suite 7: Separator Operations

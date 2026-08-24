@@ -47,14 +47,15 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or ""))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "") ..
             string.format(" -> expected %s, got %s", tostring(expected), tostring(actual)))
     end
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 
 local mock_ui_fm = {
     file_chooser = {
@@ -201,19 +202,25 @@ do
     close_all_windows()
 end
 
-print("\n--- R3: plugin item without a stock home is refused ---")
+print("\n--- R3: plugin item restores to its provider default; unknown entries refused ---")
 do
     local stub = make_stub("no_home_item", "search")
     launch({ stub })
     close_all_windows()
 
-    local before = MenuOrderManager:getParentMenu(view, "no_home_item")
-    local ok, err = MenuOrderManager:restoreItemDefault(view, "no_home_item")
-    assert_eq(ok, false, "provider-less entry refused")
-    assert_true(tostring(err):find("No default placement") ~= nil,
+    -- A hinted plugin entry has a live provider default: restoring clears the
+    -- customization and re-attaches it to whatever its provider currently
+    -- requests (and it follows future provider changes).
+    local ok = MenuOrderManager:restoreItemDefault(view, "no_home_item")
+    assert_eq(ok, true, "hinted plugin entry restores to its provider default")
+    assert_eq(MenuOrderManager:getParentMenu(view, "no_home_item"), "search",
+        "plugin entry lands at its hint home after restore")
+
+    -- A truly unknown id has no default anywhere and is still refused.
+    local ok_unknown, err_unknown = MenuOrderManager:restoreItemDefault(view, "totally_unknown_id")
+    assert_eq(ok_unknown, false, "provider-less entry refused")
+    assert_true(tostring(err_unknown):find("No default placement") ~= nil,
         "refusal explains why")
-    assert_eq(MenuOrderManager:getParentMenu(view, "no_home_item"), before,
-        "configuration unchanged after refusal")
     close_all_windows()
 end
 

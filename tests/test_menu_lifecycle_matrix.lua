@@ -62,14 +62,15 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or ""))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "") ..
             string.format(" -> expected %s, got %s", tostring(expected), tostring(actual)))
     end
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 
 local mock_ui_fm = {
     file_chooser = {
@@ -114,9 +115,9 @@ local function wipe_state()
     os.remove(ORDER_FILE)
     os.remove(STATE_FILE)
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
-    MenuOrderManager.orders[view] = nil
-    MenuOrderManager.default_orders[view] = nil
-    MenuOrderManager.recent_moves[view] = {}
+os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
+os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_materialization.lua")
+MenuOrderManager:dropSessionState(view)
 end
 
 local function drop_session_caches()
@@ -446,10 +447,11 @@ do
     wipe_state()
     launch({})
     close_all_windows()
-    local order = MenuOrderManager:loadOrder(view)
-    table.insert(order["more_tools"], "ghost_frontlight_stub")
-    MenuOrderManager.orders[view] = order
+    -- Persist an explicit placement for the absent provider through the
+    -- transaction API (newcomer anchoring into More tools).
+    MenuOrderManager:moveItemToMenu(view, "ghost_frontlight_stub", "tools", "more_tools")
     MenuOrderManager:saveOrder(view)
+    MenuOrderManager.recent_moves[view]["ghost_frontlight_stub"] = nil
     drop_session_caches()
     local menu = new_menu({})
     UIScreens:reconcileRegisteredItems({ ui = mock_ui_fm }, view, true)

@@ -19,8 +19,40 @@ local Device = require("device")
 local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+-- Deterministic baseline: wipe persisted menu state before this suite runs
+-- (fresh process = no in-memory sessions; removing the files is enough).
+do
+    local _sd = DataStorage:getSettingsDir()
+    for _, _name in ipairs({
+        "reader_menu_order.lua", "filemanager_menu_order.lua",
+        "reorderingmenus_intent.lua", "reorderingmenus_materialization.lua",
+        "reorderingmenus_state.lua",
+    }) do
+        pcall(os.remove, _sd .. "/" .. _name)
+    end
+    -- Preset directories: leftover user presets would break count assertions.
+    local _lfs = require("libs/libkoreader-lfs")
+    local function _rmtree(path)
+        if _lfs.attributes(path, "mode") ~= "directory" then return end
+        for _entry in _lfs.dir(path) do
+            if _entry ~= "." and _entry ~= ".." then
+                local _full = path .. "/" .. _entry
+                if _lfs.attributes(_full, "mode") == "directory" then
+                    _rmtree(_full)
+                else
+                    pcall(os.remove, _full)
+                end
+            end
+        end
+    end
+    for _, _view in ipairs({ "reader", "filemanager" }) do
+        _rmtree(_sd .. "/menu_order_presets/" .. _view)
+        _rmtree(_sd .. "/menu_order_presets/" .. _view .. "/submenus")
+    end
+end
+
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 local ReorderingMenus = require("main")
 local UIManager = require("ui/uimanager")
 
@@ -33,6 +65,7 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or "assertion"))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "assertion") .. " -> Expected: " .. tostring(expected) .. ", Got: " .. tostring(actual))
     end
 end
@@ -133,9 +166,11 @@ local desired_navi_settings = util.tableDeepCopy(default_order.navi_settings)
 desired_navi[1], desired_navi[2] = desired_navi[2], desired_navi[1]
 desired_navi_settings[1], desired_navi_settings[2] = desired_navi_settings[2], desired_navi_settings[1]
 
-local working_order = MenuOrderManager:loadOrder("reader")
-working_order.navi = util.tableDeepCopy(desired_navi)
-working_order.navi_settings = util.tableDeepCopy(desired_navi_settings)
+-- Stage the desired arrangement as user intent (architecture 5: editors
+-- translate list edits into sparse records; nothing else is stored).
+MenuOrderManager:stageList("reader", "navi", util.tableDeepCopy(desired_navi))
+MenuOrderManager:stageList("reader", "navi_settings",
+    util.tableDeepCopy(desired_navi_settings))
 
 ok, path = MenuOrderManager:saveSubmenuPreset(
     "reader", "navi", "Navigation", direct_preset_name, false
@@ -157,23 +192,56 @@ assert_true(direct_preset ~= nil and not direct_preset.include_submenus, "Direct
 assert_true(nested_preset ~= nil and nested_preset.include_submenus, "Nested preset records recursive scope")
 assert_true(nested_preset and nested_preset.menu_count >= 2, "Nested preset captures child submenu order")
 
-working_order.navi = util.tableDeepCopy(default_order.navi)
-table.insert(working_order.navi, "new_plugin_navigation_item")
-working_order.navi_settings = util.tableDeepCopy(default_order.navi_settings)
+local function restore_stock_with_newcomer()
+    local restored_navi = util.tableDeepCopy(default_order.navi)
+    table.insert(restored_navi, "new_plugin_navigation_item")
+    MenuOrderManager:stageList("reader", "navi", restored_navi)
+    MenuOrderManager:stageList("reader", "navi_settings",
+        util.tableDeepCopy(default_order.navi_settings))
+end
+
+-- The newcomer simulates a freshly installed plugin. Under the
+-- membership-gated pipeline (commit c926e96) ids nothing serves are
+-- deliberately dropped from staged lists, so the plugin must actually
+-- register its item through the live-registrations channel - exactly what
+-- a real installation does.
+do
+    local newcomer_widget = {
+        name = "newcomer_plugin",
+        addToMainMenu = function(_, m)
+            m.new_plugin_navigation_item = {
+                text = "New Plugin Navigation",
+                sorting_hint = "navi",
+            }
+        end,
+    }
+    local captured = {}
+    newcomer_widget:addToMainMenu(captured)
+    MenuOrderManager:setLiveRegistrations("reader", captured,
+        { new_plugin_navigation_item = "newcomer_plugin" })
+    -- The manager session was already built (steps 1-7); the registry must
+    -- be rebuilt from the new live registrations or the newcomer id stays
+    -- unknown and membership-gated staging/preset merges drop it.
+    MenuOrderManager:refreshRegistry("reader")
+end
+
+restore_stock_with_newcomer()
 load_ok, err = MenuOrderManager:loadSubmenuPreset("reader", "navi", direct_preset)
 assert_true(load_ok, "Direct submenu preset loaded")
-assert_eq(working_order.navi[1], desired_navi[1], "Direct preset restores root submenu order")
-assert_eq(working_order.navi_settings[1], default_order.navi_settings[1], "Direct preset leaves nested submenu unchanged")
-assert_eq(working_order.navi[#working_order.navi], "new_plugin_navigation_item", "Direct preset preserves new plugin items")
+local after_direct_navi = MenuOrderManager:getMenuItems("reader", "navi")
+local after_direct_settings = MenuOrderManager:getMenuItems("reader", "navi_settings")
+assert_eq(after_direct_navi[1], desired_navi[1], "Direct preset restores root submenu order")
+assert_eq(after_direct_settings[1], default_order.navi_settings[1], "Direct preset leaves nested submenu unchanged")
+assert_eq(after_direct_navi[#after_direct_navi], "new_plugin_navigation_item", "Direct preset preserves new plugin items")
 
-working_order.navi = util.tableDeepCopy(default_order.navi)
-table.insert(working_order.navi, "new_plugin_navigation_item")
-working_order.navi_settings = util.tableDeepCopy(default_order.navi_settings)
+restore_stock_with_newcomer()
 load_ok, err = MenuOrderManager:loadSubmenuPreset("reader", "navi", nested_preset)
 assert_true(load_ok, "Nested submenu preset loaded")
-assert_eq(working_order.navi[1], desired_navi[1], "Nested preset restores root submenu order")
-assert_eq(working_order.navi_settings[1], desired_navi_settings[1], "Nested preset restores child submenu order")
-assert_eq(working_order.navi[#working_order.navi], "new_plugin_navigation_item", "Nested preset preserves new plugin items")
+local after_nested_navi = MenuOrderManager:getMenuItems("reader", "navi")
+local after_nested_settings = MenuOrderManager:getMenuItems("reader", "navi_settings")
+assert_eq(after_nested_navi[1], desired_navi[1], "Nested preset restores root submenu order")
+assert_eq(after_nested_settings[1], desired_navi_settings[1], "Nested preset restores child submenu order")
+assert_eq(after_nested_navi[#after_nested_navi], "new_plugin_navigation_item", "Nested preset preserves new plugin items")
 
 assert_true(MenuOrderManager:deleteSubmenuPreset("reader", "navi", direct_preset), "Direct submenu preset deleted")
 assert_true(MenuOrderManager:deleteSubmenuPreset("reader", "navi", nested_preset), "Nested submenu preset deleted")

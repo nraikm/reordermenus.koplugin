@@ -17,10 +17,42 @@ local Device = require("device")
 local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 
+-- Deterministic baseline: wipe persisted menu state before this suite runs
+-- (fresh process = no in-memory sessions; removing the files is enough).
+do
+    local _sd = DataStorage:getSettingsDir()
+    for _, _name in ipairs({
+        "reader_menu_order.lua", "filemanager_menu_order.lua",
+        "reorderingmenus_intent.lua", "reorderingmenus_materialization.lua",
+        "reorderingmenus_state.lua",
+    }) do
+        pcall(os.remove, _sd .. "/" .. _name)
+    end
+    -- Preset directories: leftover user presets would break count assertions.
+    local _lfs = require("libs/libkoreader-lfs")
+    local function _rmtree(path)
+        if _lfs.attributes(path, "mode") ~= "directory" then return end
+        for _entry in _lfs.dir(path) do
+            if _entry ~= "." and _entry ~= ".." then
+                local _full = path .. "/" .. _entry
+                if _lfs.attributes(_full, "mode") == "directory" then
+                    _rmtree(_full)
+                else
+                    pcall(os.remove, _full)
+                end
+            end
+        end
+    end
+    for _, _view in ipairs({ "reader", "filemanager" }) do
+        _rmtree(_sd .. "/menu_order_presets/" .. _view)
+        _rmtree(_sd .. "/menu_order_presets/" .. _view .. "/submenus")
+    end
+end
+
 local ReaderMenu = require("apps/reader/modules/readermenu")
-local MenuTitles = require("menu_titles")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuTitles = require("reorderingmenus_menu_titles")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 local ReorderingMenus = require("main")
 local UIManager = require("ui/uimanager")
 
@@ -33,6 +65,7 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or "assertion"))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "assertion") .. " -> Expected: " .. tostring(expected) .. ", Got: " .. tostring(actual))
     end
 end

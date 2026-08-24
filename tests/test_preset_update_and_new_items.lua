@@ -48,14 +48,15 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or ""))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "") ..
             string.format(" -> expected %s, got %s", tostring(expected), tostring(actual)))
     end
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 
 local mock_ui_fm = {
     file_chooser = {
@@ -93,9 +94,9 @@ local function wipe_state()
     os.remove(PRESETS_DIR .. "/Lifecycle.lua")
     os.remove(PRESETS_DIR .. "/Updatable.lua")
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
-    MenuOrderManager.orders[view] = nil
-    MenuOrderManager.default_orders[view] = nil
-    MenuOrderManager.recent_moves[view] = {}
+os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
+os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_materialization.lua")
+MenuOrderManager:dropSessionState(view)
 end
 
 local function drop_session_caches()
@@ -262,12 +263,15 @@ do
             end
         end,
     }
-    local default_module = require("ui/elements/" .. view .. "_menu_order")
-    table.insert(default_module["setting"], "update_setting_entry")
     drop_session_caches()
-    -- Seed the manager's default snapshot AFTER dropping caches so both the
-    -- manager and the sorter see the same updated defaults. The sorter keeps
-    -- using this same mutated module table until the process ends.
+    -- Re-require AFTER dropping caches: the fresh table is what both the
+    -- manager and MenuSorter will read, mirroring a real KOReader update
+    -- (new files on disk + restart).
+    local default_module = require("ui/elements/" .. view .. "_menu_order")
+    if not default_module._p3_update_applied then
+        table.insert(default_module["setting"], "update_setting_entry")
+        default_module._p3_update_applied = true
+    end
     MenuOrderManager.default_orders[view] =
         require("util").tableDeepCopy(default_module)
     local menu = launch({ update_provider }) -- reconciles: entry anchored
@@ -280,8 +284,13 @@ do
     close_all_windows()
 
     drop_session_caches()
+    local refreshed = require("ui/elements/" .. view .. "_menu_order")
+    if not refreshed._p3_update_applied then
+        table.insert(refreshed["setting"], "update_setting_entry")
+        refreshed._p3_update_applied = true
+    end
     MenuOrderManager.default_orders[view] =
-        require("util").tableDeepCopy(default_module)
+        require("util").tableDeepCopy(refreshed)
     menu = launch({ update_provider })
     assert_true(in_list(live_children(menu.tab_item_table, "setting"), "update_setting_entry"),
         "P3: update entry renders after preset application")
@@ -320,9 +329,12 @@ do
 
     -- Update adds a core entry directly after Frontlight (curated slot).
     local update_provider = make_stub("curated_entry")
-    local default_module = require("ui/elements/" .. view .. "_menu_order")
-    table.insert(default_module["setting"], 2, "curated_entry")
     drop_session_caches()
+    local default_module = require("ui/elements/" .. view .. "_menu_order")
+    if not default_module._p5_update_applied then
+        table.insert(default_module["setting"], 2, "curated_entry")
+        default_module._p5_update_applied = true
+    end
     MenuOrderManager.default_orders[view] =
         require("util").tableDeepCopy(default_module)
 
@@ -337,8 +349,13 @@ do
     close_all_windows()
 
     drop_session_caches()
+    local refreshed = require("ui/elements/" .. view .. "_menu_order")
+    if not refreshed._p5_update_applied then
+        table.insert(refreshed["setting"], 2, "curated_entry")
+        refreshed._p5_update_applied = true
+    end
     MenuOrderManager.default_orders[view] =
-        require("util").tableDeepCopy(default_module)
+        require("util").tableDeepCopy(refreshed)
     menu = launch({ update_provider })
     assert_true(in_list(live_children(menu.tab_item_table, "setting"), "curated_entry"),
         "P5: entry renders in its curated slot afterwards")

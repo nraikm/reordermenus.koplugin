@@ -49,14 +49,15 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or ""))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "") ..
             string.format(" -> expected %s, got %s", tostring(expected), tostring(actual)))
     end
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 
 local mock_ui_fm = {
     file_chooser = {
@@ -94,7 +95,9 @@ end
 local function wipe_state()
     os.remove(ORDER_FILE)
     os.remove(STATE_FILE)
-    MenuOrderManager.orders[view] = nil
+os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
+os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_materialization.lua")
+MenuOrderManager:dropSessionState(view)
 end
 
 -- Drops runtime state while keeping the (possibly mutated) elements module
@@ -251,7 +254,19 @@ do
         if id == "post_terminal_tool" then new_idx = i end
         if id == "plugin_management" then pm_idx = i end
     end
-    assert_true(new_idx ~= nil and pm_idx ~= nil and pm_idx == new_idx + 1,
+    -- Divider-transparent adjacency: the next REAL row after the update
+    -- entry must be its following stock sibling. A group divider between
+    -- them is correct curation (the entry took terminal's old slot at the
+    -- group boundary), so skip separators when checking.
+    local next_real_after_new
+    if new_idx then
+        for i = new_idx + 1, #mt do
+            if mt[i] ~= "----------------------------" then
+                next_real_after_new = mt[i] break
+            end
+        end
+    end
+    assert_true(new_idx ~= nil and pm_idx ~= nil and next_real_after_new == "plugin_management",
         "S2: new tool slots before its following stock sibling")
     assert_eq(count_new_prefix(menu.tab_item_table or {}), 0, "S2: no NEW: rows")
     close_all_windows()

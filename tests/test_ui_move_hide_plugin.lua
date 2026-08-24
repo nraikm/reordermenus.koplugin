@@ -24,8 +24,8 @@ CanvasContext:init(Device)
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 local ReorderingMenus = require("main")
 
 local passed, failed = 0, 0
@@ -35,6 +35,7 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or ""))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "") .. string.format(" -> expected %s, got %s",
             tostring(expected), tostring(actual)))
     end
@@ -63,9 +64,9 @@ local view = "filemanager"
 os.remove(DataStorage:getSettingsDir() .. "/" .. view .. "_menu_order.lua")
 os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_state.lua")
 package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
-MenuOrderManager.orders[view] = nil
-MenuOrderManager.default_orders[view] = nil
-MenuOrderManager.recent_moves[view] = {}
+os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
+os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_materialization.lua")
+MenuOrderManager:dropSessionState(view)
 
 local fm_menu = FileManagerMenu:new{ ui = mock_ui_fm }
 mock_ui_fm.menu = fm_menu

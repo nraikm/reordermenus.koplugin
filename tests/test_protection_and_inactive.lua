@@ -23,6 +23,8 @@ package.path = project_dir .. "/?.lua;" .. package.path
 
 local LuaSettings = require("luasettings")
 local DataStorage = require("datastorage")
+local dump = require("dump")
+local util = require("util")
 
 G_reader_settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/settings.reader.lua")
 G_defaults = require("luadefaults"):open()
@@ -53,14 +55,15 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or ""))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "") ..
             string.format(" -> expected %s, got %s", tostring(expected), tostring(actual)))
     end
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 
 local mock_ui_fm = {
     file_chooser = {
@@ -163,10 +166,14 @@ end
 local function anchor_extra_item(item_id)
     local order = MenuOrderManager:loadOrder(view)
     if not find_parent(order, item_id) then
-        table.insert(order["more_tools"], item_id)
+        -- Persist an explicit placement for the absent provider through the
+        -- transaction API (newcomer anchoring into More tools).
+        MenuOrderManager:moveItemToMenu(view, item_id, "tools", "more_tools")
+        MenuOrderManager:saveOrder(view)
+        -- The synthetic anchoring is not a user-visible move; drop its
+        -- healing record so editors treat the row as provider-less again.
+        MenuOrderManager.recent_moves[view][item_id] = nil
     end
-    MenuOrderManager.orders[view] = order
-    MenuOrderManager:saveOrder(view)
 end
 
 function find_parent(order, item_id)
@@ -222,14 +229,17 @@ assert_eq(MenuOrderManager:setItemHidden(view, ACTIVE_ID, false, "more_tools"), 
 
 print("\n--- Protection: unhiding a legacy-hidden entry stays possible ---")
 do
-    local order = MenuOrderManager:loadOrder(view)
-    for i = #order["more_tools"], 1, -1 do
-        if order["more_tools"][i] == PROTECTED_ID then table.remove(order["more_tools"], i) end
+    -- Simulate an older dense configuration that hid the protected entry:
+    -- write it as a native file and let the import path ingest it.
+    assert_true(MenuOrderManager:saveOrder(view), "baseline persisted")
+    local legacy = MenuOrderManager:loadOrder(view)
+    for i = #legacy["more_tools"], 1, -1 do
+        if legacy["more_tools"][i] == PROTECTED_ID then table.remove(legacy["more_tools"], i) end
     end
-    table.insert(order["KOMenu:disabled"], PROTECTED_ID)
-    MenuOrderManager.orders[view] = order
-    MenuOrderManager:saveOrder(view)
-    drop_session_caches()
+    table.insert(legacy["KOMenu:disabled"], PROTECTED_ID)
+    util.writeToFile(dump(legacy, nil, true),
+        DataStorage:getSettingsDir() .. "/" .. view .. "_menu_order.lua", true, true)
+    MenuOrderManager:reloadFromDisk(view)
 end
 assert_true(MenuOrderManager:isItemHidden(view, PROTECTED_ID),
     "Legacy configuration with a hidden Reorder menus loads")

@@ -18,10 +18,42 @@ local Device = require("device")
 local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 
+-- Deterministic baseline: wipe persisted menu state before this suite runs
+-- (fresh process = no in-memory sessions; removing the files is enough).
+do
+    local _sd = DataStorage:getSettingsDir()
+    for _, _name in ipairs({
+        "reader_menu_order.lua", "filemanager_menu_order.lua",
+        "reorderingmenus_intent.lua", "reorderingmenus_materialization.lua",
+        "reorderingmenus_state.lua",
+    }) do
+        pcall(os.remove, _sd .. "/" .. _name)
+    end
+    -- Preset directories: leftover user presets would break count assertions.
+    local _lfs = require("libs/libkoreader-lfs")
+    local function _rmtree(path)
+        if _lfs.attributes(path, "mode") ~= "directory" then return end
+        for _entry in _lfs.dir(path) do
+            if _entry ~= "." and _entry ~= ".." then
+                local _full = path .. "/" .. _entry
+                if _lfs.attributes(_full, "mode") == "directory" then
+                    _rmtree(_full)
+                else
+                    pcall(os.remove, _full)
+                end
+            end
+        end
+    end
+    for _, _view in ipairs({ "reader", "filemanager" }) do
+        _rmtree(_sd .. "/menu_order_presets/" .. _view)
+        _rmtree(_sd .. "/menu_order_presets/" .. _view .. "/submenus")
+    end
+end
+
 local ReaderMenu = require("apps/reader/modules/readermenu")
 local MenuSorter = require("ui/menusorter")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 local ReorderingMenus = require("main")
 local UIManager = require("ui/uimanager")
 
@@ -34,6 +66,7 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or "assertion"))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "assertion") ..
             " -> Expected: " .. tostring(expected) .. ", Got: " .. tostring(actual))
     end
@@ -173,8 +206,10 @@ print("\n--- 1. Manager API: create, register, unique ids ---")
 -- =========================================================================
 local ok, first_id = MenuOrderManager:createSubmenu("reader", "tools", "My Tools", 1)
 assert_true(ok, "createSubmenu succeeds")
-assert_true(type(first_id) == "string" and first_id:match("^custom_submenu_%d+$"),
-    "created id uses the neutral custom_submenu_N scheme: " .. tostring(first_id))
+assert_true(type(first_id) == "string"
+    and (first_id:match("^custom_submenu_%d+$")
+        or first_id:match("^reorderingmenus:user:%x+$")),
+    "created id uses a collision-safe custom scheme: " .. tostring(first_id))
 assert_eq(MenuOrderManager:getMenuItems("reader", "tools")[1], first_id,
     "new submenu is inserted at the requested position")
 assert_true(type(MenuOrderManager:loadOrder("reader")[first_id]) == "table",
@@ -214,12 +249,16 @@ assert_eq(MenuOrderManager:getCustomSubmenuTitle("reader", first_id), "My Tools"
 print("\n--- 3. Deletion rules for created submenus ---")
 -- =========================================================================
 do
-    local order = MenuOrderManager:loadOrder("reader")
-    table.insert(order[first_id], "go_to")
+    -- Stage a row into the created submenu through the transaction API;
+    -- projections are read-only views of derived state.
+    MenuOrderManager:stageList("reader", first_id, { "go_to" })
 end
 local del_busy, busy_err = MenuOrderManager:deleteCustomSubmenu("reader", first_id)
 assert_eq(del_busy, false, "non-empty created submenu cannot be deleted")
 assert_true(type(busy_err) == "string", "non-empty refusal explains why")
+-- Undo the staging surgically: restoring go_to clears every record that
+-- made the submenu non-empty, without discarding unrelated staged work.
+MenuOrderManager:restoreItemDefault("reader", "go_to")
 
 local del_stock, stock_err = MenuOrderManager:deleteCustomSubmenu("reader", "navi_settings")
 assert_eq(del_stock, false, "stock submenus cannot be deleted via the custom path")
@@ -238,8 +277,6 @@ assert_eq(MenuOrderManager:getCustomSubmenuTitle("reader", first_id), nil,
 local __, fresh_id = MenuOrderManager:createSubmenu("reader", "tools", "Reused", 1)
 assert_true(fresh_id ~= first_id and fresh_id ~= second_id,
     "deleted ids are never reused")
-assert_true(tonumber(fresh_id:match("%d+$")) > tonumber(second_id:match("%d+$")),
-    "id numbering continues from the highest ever used")
 assert_true(MenuOrderManager:deleteCustomSubmenu("reader", fresh_id),
     "cleanup deletion succeeds")
 -- Production deletion paths persist immediately (hold-dialog delete runs
@@ -545,9 +582,11 @@ do
             }
         end,
     })
-    local order = MenuOrderManager:loadOrder("reader")
-    table.insert(order["navi"], "plain_stock_submenu")
-    order["plain_stock_submenu"] = {}
+    -- Refresh the registry so the fixture's hinted entry is anchored, and
+    -- give it an explicit (empty) level through raw staging.
+    UIScreens:reconcileRegisteredItems({ ui = mock_ui_reader }, "reader", false)
+    MenuOrderManager:stageRawLevel("reader", "plain_stock_submenu", {})
+    MenuOrderManager:saveOrder("reader")
 
     local nav_group_id
     for _, iid in ipairs(MenuOrderManager:getMenuItems("reader", "navi")) do
@@ -664,6 +703,9 @@ print(string.format("\n=========================================================
 print(string.format("=== CUSTOM SUBMENU TESTS COMPLETED: %d PASSED, %d FAILED  ===", passed, failed))
 print("===============================================================")
 
+-- The suite drives real UIManager widgets; without an explicit quit the
+-- event loop keeps the process alive after a fully passing run.
+pcall(function() require("ui/uimanager"):quit() end)
 if failed > 0 then
     os.exit(1)
 end

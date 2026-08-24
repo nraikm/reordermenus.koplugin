@@ -51,14 +51,15 @@ local function assert_eq(actual, expected, msg)
         print("  [PASS] " .. (msg or ""))
     else
         failed = failed + 1
+        io.stdout:flush()
         print("  [FAIL] " .. (msg or "") ..
             string.format(" -> expected %s, got %s", tostring(expected), tostring(actual)))
     end
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
 
 local mock_ui_fm = {
     file_chooser = {
@@ -99,6 +100,16 @@ end
 local function wipe_state()
     os.remove(ORDER_FILE)
     os.remove(STATE_FILE)
+    -- Round-3 persistence files: without these, leftovers from a previous
+    -- suite in this process (or a prior run's quarantines) leak "NEW:"
+    -- orphans and stale hides into T1/T2/T3.
+    os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
+    os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_materialization.lua")
+    pcall(function()
+        require("reorderingmenus_intent_store").load(true)
+        require("reorderingmenus_native_writer")._resetCaches()
+    end)
+    MenuOrderManager:dropSessionState(view)
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
     MenuOrderManager.orders[view] = nil
     MenuOrderManager.default_orders[view] = nil
@@ -298,6 +309,12 @@ do
 
     drop_session_caches()
     local menu = launch({}) -- removed after moving
+    -- Regression (suite V): a SAVE while the provider is absent used to
+    -- minimize the dormant placement record away (it is graph-invisible),
+    -- so a later reinstall lost the moved spot. Dormant intent must survive
+    -- arbitrary saves during the absence.
+    assert_true(MenuOrderManager:saveOrder(view),
+        "T4: save while provider absent succeeds")
     local parents = configured_parents("removed_after_move")
     assert_eq(#parents, 1, "T4: single parent kept after removal")
     assert_eq(parents[1], "setting", "T4: moved location kept in the saved file")
