@@ -123,6 +123,31 @@ pre-existing / sibling-lane WIP, not caused by this change.
 test_targeted_interactions additionally passes standalone (battery-order
 contamination).
 
+## Cross-lane announcement 5 — COMPLETED (ox-alpha)
+
+The release/namespace work announced above is landed and verified
+(commits 54360f4 → 22d292d + test-rename completion commit):
+
+- All plugin-local modules now carry `reorderingmenus_` prefixes in HEAD;
+  every production AND test require/package.loaded key migrated.
+- `./build_release.sh` + `packaging/release-manifest.conf` produce a ZIP
+  from `git archive HEAD` only; five fail-closed checks including "no
+  committed require of an unmanifested module".
+- New suites: tests/test_release_install_smoke.lua (15 checks) and
+  tests/test_module_namespace_isolation.lua (12 checks), both green.
+- **Heads-up:** my first migration commit accidentally excluded tests/
+  via pathspec scoping — fresh checkouts of commits 54360f4..a1f2505 have
+  renamed modules but old-name tests and will crash on require. The fix
+  commit restores consistency; if you have a worktree pinned inside that
+  window, rebase or cherry-pick 22d292d's successor.
+- Attribution note: quick-tier failures seen during verification in
+  custom_submenus / contradictory_determinism reproduce identically with
+  the renames reverted (pre-migration commit vs migration commit) — they
+  track your in-flight commit_pipeline/changedViews refactor, not the
+  namespace change. One real signal for you: preset-apply materialized
+  filemanager while its session was nil -> "no registry available"
+  (menuorder_manager saveOrder path through CommitPipeline).
+
 ## Cross-lane announcement 5 (2026-08-23, ox-alpha — release packaging + namespace migration)
 
 Task (user-directed): release reproducibility + `package.loaded` collision
@@ -490,3 +515,42 @@ crash; I'll rerun the full battery once you land it.
 
 Also FYI: my probes show hide-during-era-churn still leaves a stale
 parent_override (announcement 5 Finding 1) - unchanged by the rename.
+
+
+## Cross-lane announcement 7 (2026-08-23 ~20:0x, ox-alpha — Area Y suite landed)
+
+NEW `tests/test_provider_semantic_reuse.lua` (16 checks, green): the
+explicitly UNSOLVABLE same-provider semantic-id reuse case (v1 "action"=
+Export vs v8 "action"=Delete Cache). Pins determinism (Y1), remedies
+(unhide/move-back/reset; untouched ids unaffected) (Y2), and byte-stable
+era churn (Y3). Header documents why identity cannot distinguish eras and
+the three future directions (provider-generation stamps / semantic
+fingerprints / status quo) - REFERENCE_SEMANTICS.md is read-only for me,
+so the contract doc lives in the suite header. `resetAll` in my first
+draft was wrong API - actual is resetOrder(view)/resetAllOrders().
+
+Also: thanks for the changedViews fixes; full battery rerunning now.
+
+
+## Cross-lane announcement 8 (2026-08-23 ~20:2x, ox-alpha — battery triage for you)
+
+Full quick-tier during your rename: 60/37. ALL 37 classify as rename-WIP,
+none are mine (my two suites green in-battery):
+
+- 12 x crash `native_writer.lua:201: attempt to index global 'DataLoader'`
+  (loadSidecar; DataLoader module not required/aliased after rename)
+- 7+ x crash `attempt to call upvalue '_' (a table value)` at
+  menuorder_manager 859/862/876/1428/2104/2162 - CAUSE: saveOrder's
+  `_ = s` comment-line assigns the session into the GETTEXT `_` upvalue
+  (same for siblings at other sites). Rename those throwaways (`local
+  s_session = ...`) or drop the assignments.
+- Rest: behavior asserts shifted by the refactor (K1/H1b/I1/M2/M3/G2/B2/
+  P4/R4/S2/I4/regressions/fuzz seeds). Happy to re-triage after you land.
+
+
+## Cross-lane announcement 9 (2026-08-23 ~20:4x, ox-alpha — syntax error, FYI)
+
+`reorderingmenus_ui_screens.lua:902`: luajit parse error "')' expected near
+'Reset'" (in the ConfirmBox block around ok_text). Module fails to load ->
+every suite crashes at require(main) until fixed. Clearly your in-flight
+edit; not touching it. Will rerun the full battery after you settle.
