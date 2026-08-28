@@ -222,8 +222,8 @@ do
     -- Removal: relaunch without re-registering the stub.
     drop_session_caches()
     local menu = launch({})
-    assert_eq(MenuOrderManager:getParentMenu(view, "removable_plain"), "more_tools",
-        "T1: stale entry stays persisted after removal")
+    assert_eq(MenuOrderManager:getParentMenu(view, "removable_plain"), nil,
+        "T1: removed untouched plugin row is dormant/not projected")
     assert_eq(count_new_prefix(menu.tab_item_table), 0,
         "T1: removal produces no NEW: orphans")
     assert_true(type(menu.tab_item_table) == "table" and #menu.tab_item_table > 0,
@@ -346,8 +346,8 @@ do
         "T5: submenu entry absent from the rebuilt menu")
     assert_eq(count_new_prefix(menu.tab_item_table), 0,
         "T5: submenu removal leaves no orphans")
-    assert_eq(MenuOrderManager:getParentMenu(view, "removed_submenu_plugin"), "more_tools",
-        "T5: entry persists for a future reinstall")
+    assert_eq(MenuOrderManager:getParentMenu(view, "removed_submenu_plugin"), nil,
+        "T5: removed untouched plugin row is dormant/not projected")
     close_all_windows()
 end
 

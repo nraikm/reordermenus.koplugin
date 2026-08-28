@@ -399,16 +399,35 @@ do
     -- registered like any third-party plugin would, rendered in the editor
     -- as a normal row, and persisted byte-exact.
     local COLLIDER_ID = "__empty_hint__"
-    reader_menu.registered_widgets.collider_stub = {
+    -- NOTE: register on the CURRENT menu object: applyLiveReload swaps
+    -- ui.menu for a rebuilt instance, so the captured constructor-local may
+    -- be stale by this point in the suite.
+    mock_ui_reader.menu.registered_widgets.collider_stub = {
+        name = "collider_stub",
         addToMainMenu = function(self, menu_items)
             menu_items[COLLIDER_ID] = { text = _("Empty Hint Collider"),
                 sorting_hint = "tools", callback = function() end }
         end,
     }
-    UIScreens:reconcileRegisteredItems({ ui = mock_ui_reader }, "reader", false)
-    MenuOrderManager:setItemHidden("reader", COLLIDER_ID, false)
+    UIScreens:reconcileRegisteredItems(plugin, "reader", true)
+    local function collider_in_tools()
+        for __, id in ipairs(MenuOrderManager:getMenuItems("reader", "tools")) do
+            if id == COLLIDER_ID then return true end
+        end
+        return false
+    end
+    assert_true(collider_in_tools(),
+        "collider id enters the tools projection like any plugin item")
 
+    -- Byte-exact persistence across a restart: the provider stays injected
+    -- (dropSessionState clears live registrations, so re-reconcile first) --
+    -- this mirrors a running KOReader session where the plugin IS installed.
+    restart()
+    UIScreens:reconcileRegisteredItems(plugin, "reader", false)
+    assert_true(collider_in_tools(),
+        "collider id persists byte-exact after save + reload")
     close_all_windows()
+
     local editor = open_editor("tools")
     local collider_rows = {}
     for i, row in ipairs(editor.item_table) do
@@ -417,14 +436,12 @@ do
     assert_eq(#collider_rows, 1,
         "item with id '__empty_hint__' renders as ONE normal row (not swallowed as a hint)")
 
-    -- Saving keeps it byte-exact in canonical state.
+    -- Saving the editor keeps it byte-exact (never swallowed as a hint).
     editor.callback() -- SortWidget save callback stages + commits
     restart()
-    local persisted = {}
-    for _, id in ipairs(MenuOrderManager:getMenuItems("reader", "tools")) do
-        if id == COLLIDER_ID then persisted[#persisted + 1] = true end
-    end
-    assert_eq(#persisted, 1, "'__empty_hint__' persists byte-exact after save+reload")
+    UIScreens:reconcileRegisteredItems(plugin, "reader", false)
+    assert_true(collider_in_tools(),
+        "'__empty_hint__' survives an editor save + reload")
 
     -- And a genuinely empty menu still gets its hint row (structural flag).
     close_all_windows()
@@ -457,8 +474,8 @@ do
     end)
     assert_true(ok_self, "sanitize survives self cycle: " .. tostring(err_self))
     -- humanize() capitalizes the head and Unicode-lowercases the tail:
-    -- "self_ref_row" -> "Self ref row".
-    assert_eq(row_a.text, "Self ref row", "self-cyclic row still got its title")
+    -- "self_ref_row" -> "Self Ref Row".
+    assert_eq(row_a.text, "Self Ref Row", "self-cyclic row still got its title")
 
     -- A -> B -> A two-node cycle.
     local node_x = { id = "cycle_x", callback = function() end }
@@ -466,7 +483,7 @@ do
     node_x.sub_item_table = { node_y }
     node_y.sub_item_table = { node_x }
     pcall(function() UIScreens:sanitizeLiveMenuTree({ node_x }) end)
-    assert_true(node_x.text == "Cycle x" and node_y.text == "Cycle y",
+    assert_true(node_x.text == "Cycle X" and node_y.text == "Cycle Y",
         "A->B->A cycle terminates with titles applied")
 
     -- Shared subtree: same table under two parents — visited-once semantics
@@ -497,7 +514,7 @@ do
         UIScreens:sanitizeLiveMenuTree(tree_shared)
     end)
     assert_true(ok_shared, "sanitize survives shared subtree: " .. tostring(err_shared))
-    assert_eq(shared_sub[1].text, "Shared one",
+    assert_eq(shared_sub[1].text, "Shared One",
         "shared-subtree rows sanitized exactly once, correctly")
     assert_true(ids["cloud_storage"] or ids["tools"],
         "collector still returns real ids (sanity)")

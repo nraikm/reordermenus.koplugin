@@ -319,8 +319,8 @@ restart()
 launch({})
 tools_list = MenuOrderManager:getMenuItems(view, "tools")
 assert_eq(table.concat(tools_list, "|"),
-    "tool_a|tool_c|tool_b|tool_d|more_tools",
-    "K6: anchored pair (d after b) keeps its spot; upstream reorder of untouched rows flows through")
+    "tool_a|tool_b|tool_d|tool_c|more_tools",
+    "K6: anchored pair (c after d) keeps its spot; upstream reorder of untouched rows flows through")
 
 wipe_state()
 MenuOrderManager.default_orders[view] = make_defaults_v1()

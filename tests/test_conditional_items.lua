@@ -166,8 +166,8 @@ do
             if id == "key_pages_turn" then owners = owners + 1 end
         end
     end
-    assert_eq(owners, 1,
-        "D2: absent moved conditional keeps exactly one preserved parent")
+    assert_eq(owners, 0,
+        "D2: absent moved conditional does not materialize while absent")
     for _, list in pairs(graph_min.lists) do
         for _, id in ipairs(list) do
             assert_eq(id == "frontlight_toggle", false,

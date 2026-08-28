@@ -209,12 +209,20 @@ function World:op_toggle_hide()
         return string.format("unhide(%s)", id)
     end
     if self:is_tab(id) then visible_tabs = visible_tabs - 1 end
-    self.intent.hidden_order = self.intent.hidden_order or {}
+    -- Schema v3: hide sequence lives on the record (ordinal). Direct
+    -- mutation mirrors what the transactional writer produces.
+    local max_ordinal = 0
+    for _, rec in pairs(self.intent.hidden) do
+        if type(rec) == "table" and type(rec.ordinal) == "number"
+                and rec.ordinal > max_ordinal then
+            max_ordinal = rec.ordinal
+        end
+    end
     self.intent.hidden[id] = {
         provider = self.reg.nodes[id].provider,
         origin = "tools",
+        ordinal = max_ordinal + 1,
     }
-    self.intent.hidden_order[#self.intent.hidden_order + 1] = id
     return string.format("hide(%s)", id)
 end
 
@@ -442,9 +450,9 @@ function World:check_invariants(tag)
                 and graph.lists[chosen_parent] ~= nil then
             local record = self.intent.parent_override[id]
             if type(record) == "table" then
-                local applies = record.provider == nil
-                    or self.reg.nodes[id] == nil
-                    or self.reg.nodes[id].provider == record.provider
+                local applies = self.reg.nodes[id] ~= nil
+                    and (record.provider == nil
+                        or self.reg.nodes[id].provider == record.provider)
                 if applies then
                     local found = false
                     for _, listed in ipairs(graph.lists[chosen_parent] or {}) do

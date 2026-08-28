@@ -235,11 +235,10 @@ assert_eq(bad_parent, false, "unavailable parent menus are rejected")
 assert_true(type(err_no_menu) == "string", "rejection carries a message")
 
 -- =========================================================================
-print("\n--- 2. Registry survives sanitize and a save/reload cycle ---")
+print("\n--- 2. Registry survives save/reload cycle ---")
 -- =========================================================================
-MenuOrderManager:sanitizeOrder("reader")
 assert_eq(MenuOrderManager:getCustomSubmenuTitle("reader", first_id), "My Tools",
-    "sanitizeOrder keeps the title registry intact")
+    "custom title is available before save")
 assert_true(MenuOrderManager:saveOrder("reader"), "order saves")
 MenuOrderManager.orders["reader"] = nil
 assert_eq(MenuOrderManager:getCustomSubmenuTitle("reader", first_id), "My Tools",

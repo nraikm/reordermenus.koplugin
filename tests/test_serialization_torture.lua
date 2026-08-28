@@ -133,16 +133,26 @@ do
 
     local txn = IntentStore.openTransaction()
     local sec = txn:view(VIEW)
+    local torture_ordinal = 0
     for _, nk in ipairs(nasty_keys) do
-        sec.hidden[nk.key] = { provider = "p\"q", reason = "torture" }
+        -- Schema v3 hidden records carry {provider, origin, ordinal}: extra
+        -- ad-hoc fields are dropped by the writer. Ordinals are assigned here
+        -- because this path bypasses Transaction:setHidden.
+        torture_ordinal = torture_ordinal + 1
+        sec.hidden[nk.key] = { provider = "p\"q", origin = "to\rture",
+            ordinal = torture_ordinal }
         sec.parent_override[nk.key] =
             { provider = "p'q\\r", parent = "tools" }
         sec.position_override[nk.key] =
             { provider = "stock", after = "k\ney]]" }
     end
-    sec.sequence_eras["me\nnu"] = { ["i\"d"] = "plug\\in" }
+    -- Schema v3: sequence_eras no longer exists; era stamps live on
+    -- order_override entries. Exercise the same hostile-key surface through
+    -- the current representation.
+    sec.order_override["me\nnu"] =
+        { entries = { { id = "i\"d", provider = "plug\\in" } } }
     sec.custom_menus["reorderingmenus:user:torture\"]"] =
-        { title = "]] quote \" menu", parent = "main" }
+        { title = "]] quote \" menu" }
     txn:commit(true)
     local save_ok = Manager:saveOrder(VIEW)
     ok(save_ok, "I2 save with hostile keys succeeded")
@@ -280,7 +290,10 @@ do
     _ = Manager:loadOrder(VIEW)
 
     local ok_save = Manager:savePreset(VIEW, 'na"me\nwith]]stuff/../../etc')
-    ok(ok_save == true, "I4 hostile-but-sanitizable preset name accepted")
+    -- P0-8 contract change: preset names are VALIDATED, not sanitized.
+    -- A name carrying separators/traversal is rejected outright (structural
+    -- escape prevention) instead of being silently transformed.
+    ok(ok_save == false, "I4 hostile preset name with separators rejected (P0-8)")
     if ok_save then
         local list = Manager.listPresets and Manager:listPresets(VIEW) or nil
         _ = list

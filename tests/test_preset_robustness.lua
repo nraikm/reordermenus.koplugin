@@ -85,8 +85,10 @@ do
           body = 'return { format = "something_else", version = 2,'
               .. ' name = "F3b", intent = {} }' },
     }
+    Presets.ensurePresetsDir(view)
     for _, case in ipairs(cases) do
         local fh = io.open(string.format("%s/%s.lua", PRESET_DIR, case.name), "w")
+        assert(fh, "presets dir writable")
         fh:write(case.body); fh:close()
         local raw = Presets.readUserPreset(
             string.format("%s/%s.lua", PRESET_DIR, case.name))

@@ -23,7 +23,8 @@ KOReader; suites wipe what they touch.
 local RW = {}
 
 function RW.bootstrap()
-    dofile("/Applications/KOReader.app/Contents/koreader/setupkoenv.lua")
+    local koreader_dir = os.getenv("KOREADER_DIR") or "/Applications/KOReader.app/Contents/koreader"
+    dofile(koreader_dir .. "/setupkoenv.lua")
     local project_dir
     for level = 2, 12 do
         local info = debug.getinfo(level, "S")

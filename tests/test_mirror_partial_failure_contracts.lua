@@ -41,6 +41,7 @@ require("main")
 
 local Manager = require("reorderingmenus_menuorder_manager")
 local IntentStore = require("reorderingmenus_intent_store")
+local MenuSchema = require("reorderingmenus_menu_schema")
 local NativeWriter = require("reorderingmenus_native_writer")
 local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
 local util = require("util")
@@ -138,11 +139,20 @@ do
     -- Dirty-state contract: canonical rolls back to last-good; the OPEN
     -- transaction keeps the work STAGED (pending/retriable); the projection
     -- serves staged state so an editor keeps showing unsaved work.
-    note(IntentStore.view("filemanager").parent_override.mir_h1 ~= nil
-        and IntentStore.view("filemanager").parent_override.mir_h1.anchor == true,
-        "H1c: FM canonical rolled back to baseline (anchor record)")
-    note(IntentStore.view("reader").parent_override.mir_h1 ~= nil
-        and IntentStore.view("reader").parent_override.mir_h1.anchor == true,
+    -- Schema v3: registration bookkeeping is a TYPED lifecycle pin
+    -- (anchor="anchor"), never a boolean marker.
+    do
+        local r1 = IntentStore.view("filemanager").parent_override.mir_h1
+        print("DBG-H1c FM rec:", r1 and ("provider=" .. tostring(r1.provider)
+            .. " parent=" .. tostring(r1.parent) .. " anchor="
+            .. tostring(r1.anchor)) or "<nil>")
+    end
+    -- P1B: first-contact hinted items are never pinned, so the last-good
+    -- baseline carries NO mir_h1 record at all; the failed save must roll
+    -- back to exactly that (no explicit move residue).
+    note(IntentStore.view("filemanager").parent_override.mir_h1 == nil,
+        "H1c: FM canonical rolled back to its record-free baseline")
+    note(IntentStore.view("reader").parent_override.mir_h1 == nil,
         "H1d: READER canonical rolled back too (atomic cross-view commit)")
     note(Manager:stagedView("filemanager").parent_override.mir_h1 ~= nil
         and Manager:stagedView("filemanager").parent_override.mir_h1.parent == "setting"
@@ -189,9 +199,13 @@ do
     end
     note(Manager:moveItemToMenu("filemanager", "mir_h2", "more_tools", "setting"),
         "H2-pre: FM move staged with mirroring on")
-    local fm_save_ok = Manager:saveOrder("filemanager")
+    -- P0-5 contract: `false, "saved_needs_regeneration:<views>"` IS the
+    -- committed outcome when only the mirror-side derived write failed.
+    local h2_ok, h2_err = Manager:saveOrder("filemanager")
     KoreaderAdapter.writeNativeOrder = real_write
-    note(fm_save_ok, "H2a: SOURCE view save committed despite mirror-file failure")
+    note(h2_ok or (type(h2_err) == "string"
+            and h2_err:find("saved_needs_regeneration") ~= nil),
+        "H2a: SOURCE view save committed despite mirror-file failure")
     note(IntentStore.view("reader").parent_override.mir_h2 ~= nil
         and IntentStore.view("reader").parent_override.mir_h2.parent == "setting",
         "H2b: mirror intent durably committed in canonical (pending state)")
@@ -302,7 +316,6 @@ do
     note(Manager:resetOrder("filemanager"), "H5a: FM reset succeeds")
     note(not Manager:isItemHidden("filemanager", "mir_h5"),
         "H5b: FM reset cleared its mirrored hide")
-    note(IntentStore.isCustomizedViewAvailable or true, "") -- placeholder guard
     note(IntentStore.view("reader").hidden.mir_h5 ~= nil
         or Manager:isItemHidden("reader", "mir_h5"),
         "H5c: READER section untouched by the FM reset")
@@ -328,7 +341,7 @@ do
     Manager:saveOrder("filemanager"); Manager:saveOrder("reader")
 
     local r_rec = IntentStore.view("reader").parent_override.mir_h6
-    note(r_rec == nil or r_rec.anchor == true,
+    note(r_rec == nil or MenuSchema.isLifecyclePin(r_rec),
         "H6b: reader canonical has NO ghost parent_override (rec="
         .. rec(r_rec) .. ")")
     note(parent_in("reader", "mir_h6") ~= "filemanager_settings",
@@ -574,7 +587,7 @@ do
     -- express: a redundant anchor may be dropped entirely (sparse purity).
     -- The contract is only that no EXPLICIT replayed move exists.
     local fm_rec = IntentStore.view("filemanager").parent_override.mir_j1
-    note(fm_rec == nil or fm_rec.anchor == true,
+    note(fm_rec == nil or MenuSchema.isLifecyclePin(fm_rec),
         "J1c: arrival record is absent or pure anchor, never an explicit replayed move")
 
     -- FUTURE edits mirror normally again.
@@ -670,9 +683,9 @@ do
 
     note(parent_in("filemanager", "mir_j4") == "tools",
         "J4b: FM keeps its own divergent home after reader round-trip")
-    note(IntentStore.view("filemanager").parent_override.mir_j4 ~= nil
-        and IntentStore.view("filemanager").parent_override.mir_j4.anchor == true,
-        "J4c: FM record remains pure anchor bookkeeping")
+    local j4 = IntentStore.view("filemanager").parent_override.mir_j4
+    note(j4 == nil or MenuSchema.isLifecyclePin(j4),
+        "J4c: FM record absent or pure anchor bookkeeping")
     wipe_all()
 end
 

@@ -54,6 +54,7 @@ local FileManagerMenu = require("apps/filemanager/filemanagermenu")
 local MenuOrderManager = require("reorderingmenus_menuorder_manager")
 local MenuSorter = require("ui/menusorter")
 local UIScreens = require("reorderingmenus_ui_screens")
+local IntentStore = require("reorderingmenus_intent_store")
 local ReorderingMenus = require("main")
 
 local passed = 0
@@ -283,10 +284,15 @@ local anna_fixture = {
     end,
 }
 mock_ui_fm.menu:registerToMainMenu(anna_fixture)
--- Anchoring is implicit now: reconciliation only refreshes the ephemeral
--- registry and persists nothing; the item follows its sorting hint live.
-assert_eq(UIScreens:reconcileRegisteredItems(plugin_fm, "filemanager", true),
-    false, "Hinted plugin needs no persisted anchor (materializer places it)")
+-- Anchoring is implicit now: first-contact hinted items are NEVER pinned
+-- (P1B); the item follows its sorting hint live. The reconcile return value
+-- may legitimately be true (unrelated removal tombstones from earlier
+-- registration revisions in this process), so assert on THIS id's records.
+assert_eq(IntentStore.view("filemanager").parent_override.annas_archive_fixture,
+    nil, "Hinted plugin needs no persisted anchor (materializer places it)")
+UIScreens:reconcileRegisteredItems(plugin_fm, "filemanager", true)
+assert_eq(IntentStore.view("filemanager").parent_override.annas_archive_fixture,
+    nil, "Reconciliation persisted no anchor for the hinted plugin")
 assert_eq(MenuOrderManager:getParentMenu("filemanager", "annas_archive_fixture"),
     "search", "Hinted plugin materializes under its hint target")
 MenuOrderManager:setItemHidden("filemanager", "annas_archive_fixture", true, "search")
@@ -314,7 +320,10 @@ local late_search_fixture = {
     end,
 }
 mock_ui_fm.menu:registerToMainMenu(late_search_fixture)
-plugin_fm:onShowFileManager()
+-- P1B: onShowFileManager never existed as a KOReader event (no emitter in
+-- the bundled tree); a registration revision is reconciled exactly like the
+-- plugin's init/nextTick path does.
+UIScreens:reconcileRegisteredItems(plugin_fm, "filemanager", true)
 assert_eq(MenuOrderManager:getParentMenu("filemanager", "late_search_fixture"), "search",
     "New plugin installed after Search was hidden is anchored safely")
 

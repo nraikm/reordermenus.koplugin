@@ -82,6 +82,7 @@ do
         "L: chain visible initially")
 
     MenuOrderManager:setItemHidden(view, b_id, true)
+    MenuOrderManager:saveOrder(view) -- hide is staged intent; save persists it
     fresh()
     local dis = disabled_ids()
     T.assert_true(dis[b_id], "L: B hidden after hide B")
@@ -89,6 +90,7 @@ do
         "L: C effectively hidden through ancestor")
 
     MenuOrderManager:setItemHidden(view, c_id, true)
+    MenuOrderManager:saveOrder(view)
     fresh()
     dis = disabled_ids()
     T.assert_true(dis[b_id] and dis[c_id],
@@ -96,6 +98,7 @@ do
 
     -- unhide C while B stays hidden: C must remain effectively hidden
     MenuOrderManager:setItemHidden(view, c_id, false)
+    MenuOrderManager:saveOrder(view)
     fresh()
     dis = disabled_ids()
     T.assert_true(not rendered(ui.menu, c_id),
@@ -104,6 +107,7 @@ do
 
     -- unhide B: everything returns
     MenuOrderManager:setItemHidden(view, b_id, false)
+    MenuOrderManager:saveOrder(view)
     fresh()
     T.assert_true(rendered(ui.menu, b_id) and rendered(ui.menu, c_id),
         "L: unhiding the ancestor revives the whole chain")
@@ -121,6 +125,7 @@ do
     local _, hid = MenuOrderManager:createSubmenu(view, "main", "M-hidden")
     MenuOrderManager:saveOrder(view)
     MenuOrderManager:setItemHidden(view, hid, true)
+    MenuOrderManager:saveOrder(view) -- staged hide persists on save
     fresh()
     T.assert_true(not rendered(ui.menu, hid), "M: destination hidden")
 
@@ -150,6 +155,7 @@ do
             "M(current policy): configured parent is the hidden menu")
         -- recovery: unhide brings it back - no intent loss
         MenuOrderManager:setItemHidden(view, hid, false)
+        MenuOrderManager:saveOrder(view) -- staged hide persists on save
         fresh()
         T.assert_true(rendered(ui.menu, "m_victim"),
             "M: unhiding the destination revives the item")
@@ -197,7 +203,7 @@ do
     -- only-ghosts: hide the provider so its row becomes a ghost inside
     RW.persistent_widgets["n_g"] = nil
     menu = fresh()
-    T.assert_true(rendered(menu, withkids) or true,
+    T.assert_true(rendered(menu, withkids),
         "N: container with vanished-provider occupants still exists")
     -- children return when the provider returns
     RW.persistent_widgets["n_g"] = ghost
@@ -226,6 +232,7 @@ do
     MenuOrderManager:saveOrder(view)
     T.assert_true(MenuOrderManager:deleteCustomSubmenu(view, p_id),
         "O: emptied custom submenu deletable")
+    MenuOrderManager:saveOrder(view) -- deletion is staged intent; save persists it
     fresh()
     T.assert_true(not rendered(ui.menu, p_id), "O: P gone")
     T.assert_true(rendered(ui.menu, "o_item"),
@@ -250,7 +257,7 @@ do
         for _, id in ipairs(order["calibre"] or {}) do
             if id == "o_item" then listed_under_calibre_level = true end
         end
-        T.assert_true(listed_under_calibre_level or true,
+        T.assert_true(type(order) == "table",
             "O: emission shape documented")
     end
     RW.persistent_widgets["o_x"] = nil
@@ -281,7 +288,7 @@ do
     -- longer collide with its ID: prove by adding stock-level 'reading_tools'
     -- as a plain item via a provider while both customs exist.
     RW.persistent_widgets["p_stock"] = RW.make_stub("reading_tools",
-        { text = _("Stock reading tools") })
+        { text = _("Stock reading tools"), hint = "tools" })
     menu = fresh()
     T.assert_true(rendered(menu, "reading_tools")
         and rendered(menu, id1) and rendered(menu, id2),

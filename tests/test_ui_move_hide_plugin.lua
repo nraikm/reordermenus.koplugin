@@ -556,9 +556,16 @@ do
         "stale Tools editor save does not resurrect terminal")
     assert_eq(count_refs("terminal"), 1, "still exactly one parent after stale save")
 
-    -- Interfaces stay in sync: the parent editor dropped the row at reset time.
-    assert_true(find_row(tools_editor, "terminal") == nil or true,
-        "editor state accessible after saves")
+    -- Interfaces stay in sync: the editor must remain USABLE after the
+    -- reset + stale save (its row model may legitimately still list the
+    -- stale snapshot's rows; what must not happen is a crash or a dead
+    -- widget - that is the sync contract this scenario can pin without
+    -- freezing era-policy behavior).
+    local model_ok = pcall(function()
+        assert(type(tools_editor.item_table) == "table")
+        for _ in ipairs(tools_editor.item_table) do end
+    end)
+    assert_true(model_ok, "stale editor model stays accessible after saves")
 
     -- Live menu reflects the final state.
     MenuOrderManager:applyLiveReload(mock_ui_fm, view)
@@ -585,8 +592,10 @@ do
     table.insert(order.tools, 42)                -- number
     table.insert(order.tools, true)              -- boolean
     table.insert(order.tools, { text = "row" })  -- leaked row table
-    table.insert(order.tools, "__empty_hint__")  -- editor hint
     table.insert(order.tools, "cloud_storage")   -- duplicate
+    -- NOTE: the empty-hint placeholder is now a structural sentinel object in
+    -- editor row models; the string id "__empty_hint__" is NOT reserved and
+    -- would persist as a normal provider id, so it is no longer inserted here.
     assert_true(MenuOrderManager:saveOrder(view), "save with garbage succeeds")
 
     MenuOrderManager.orders[view] = nil
@@ -595,9 +604,8 @@ do
     for _, id in ipairs(reloaded.tools) do
         if type(id) ~= "string" then found_garbage = true end
         if id == "cloud_storage" then seen_cloud = seen_cloud + 1 end
-        if id == "__empty_hint__" then found_garbage = true end
     end
-    assert_true(not found_garbage, "non-string ids and hints stripped on save")
+    assert_true(not found_garbage, "non-string ids stripped on save")
     assert_eq(seen_cloud, 1, "duplicate ids collapsed on save")
 
     -- A submenu row that lost its title (dynamic-only registration relocated

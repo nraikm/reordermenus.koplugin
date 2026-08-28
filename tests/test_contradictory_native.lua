@@ -37,6 +37,7 @@ local _ = require("gettext")
 require("main")
 
 local Manager = require("reorderingmenus_menuorder_manager")
+local MenuSchema = require("reorderingmenus_menu_schema")
 local IntentStore = require("reorderingmenus_intent_store")
 local NativeWriter = require("reorderingmenus_native_writer")
 local UIScreens = require("reorderingmenus_ui_screens")
@@ -288,7 +289,14 @@ do
     Manager:saveOrder(VIEW)   -- commit the imported external state
 
     local sec = IntentStore.view(VIEW)
-    local seq = sec.order_override.search or {}
+    -- Schema v3: sequences are entries records.
+    local seq_rec = sec.order_override.search or { entries = {} }
+    local seq = {}
+    for _, entry in ipairs(seq_rec.entries or {}) do
+        if not MenuSchema.isSeparatorEntry(entry) then
+            seq[#seq + 1] = entry.id
+        end
+    end
     note(#seq == 10,
         "M: final multi-list state imported wholesale (seq n="
         .. tostring(#seq) .. ")")

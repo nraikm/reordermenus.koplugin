@@ -15,8 +15,8 @@ local IntentStore = require("reorderingmenus_intent_store")
 
 local GhostGC = {}
 
--- Which collections hold per-id records subject to GC. sequence_eras and
--- hidden_order are maintained implicitly by the record collections.
+-- Which collections hold per-id records subject to GC. Schema v3: sequence
+-- eras ride order_override entries, so both old parallel maps are gone.
 local GC_COLLECTIONS = {
     "hidden",
     "parent_override",

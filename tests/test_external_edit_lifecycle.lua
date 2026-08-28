@@ -151,18 +151,27 @@ do
     local sec = IntentStore.view(VIEW)
     note(sec.order_override.search ~= nil,
         "L1: manual edit imported as explicit order_override after re-enable")
-    local seq = sec.order_override.search or {}
-    assert_eq(#seq, #manual_search, "L1b: whole sequence imported")
-    assert_eq(seq[1], "opds", "L1c: sequence matches the manual arrangement")
+    local seq_record = sec.order_override.search or {}
+    -- Schema v3: sequences persist as { entries = { {id=...}, ... } }.
+    local seq = type(seq_record) == "table" and seq_record.entries
+        or seq_record
+    assert_eq(#(seq or {}), #manual_search, "L1b: whole sequence imported")
+    local first = type(seq[1]) == "table" and seq[1].id or seq[1]
+    assert_eq(first, "opds", "L1c: sequence matches the manual arrangement")
 
     -- L5 folded in: save and restart again; the import must survive verbatim
     -- (recognized as genuine intent, never overwritten as stale output).
     Manager:saveOrder(VIEW)
-    local seq_after_save = IntentStore.view(VIEW).order_override.search or {}
-    assert_eq(seq_after_save[1], "opds",
+    local function first_entry()
+        local rec = IntentStore.view(VIEW).order_override.search or {}
+        local entries = type(rec) == "table" and rec.entries or rec
+        local e = (entries or {})[1]
+        return type(e) == "table" and e.id or e
+    end
+    assert_eq(first_entry(), "opds",
         "L5: saved import keeps the manual arrangement (not 'corrected')")
     full_restart(VIEW)
-    assert_eq((IntentStore.view(VIEW).order_override.search or {})[1], "opds",
+    assert_eq(first_entry(), "opds",
         "L5b: manual edit durable across another reload")
     wipe_all()
 end
@@ -303,7 +312,8 @@ do
     note(tabs[1] == "plus_menu" and tabs[#tabs] == "main",
         "M1d: tab bar reorder imported")
     note(IntentStore.view(VIEW).order_override.main ~= nil
-        and #(IntentStore.view(VIEW).order_override.main) == 8,
+        and #((IntentStore.view(VIEW).order_override.main).entries
+              or IntentStore.view(VIEW).order_override.main) == 8,
         "M1e: main level imported as explicit sequence")
     wipe_all()
 end
@@ -329,8 +339,11 @@ do
         "M2: final state C won (first row)")
     note(strip_seps(Manager:getMenuItems(VIEW, "help"))[2] == "version",
         "M2b: final state C won (second row)")
-    local oo = IntentStore.view(VIEW).order_override.help
-    note(oo == nil or oo[1] == "about",
+    local oo_rec = IntentStore.view(VIEW).order_override.help
+    local oo = oo_rec and (oo_rec.entries or oo_rec) or nil
+    local oo_first = oo and (type(oo[1]) == "table" and oo[1].id or oo[1])
+        or nil
+    note(oo == nil or oo_first == "about",
         "M2c: persisted intent describes C, never A or B")
     wipe_all()
 end
@@ -424,7 +437,7 @@ do
         data.meta.view_generations = nil
         AtomicWriter.writeTable(path, data)
         full_restart(VIEW)
-        note(IntentStore.SCHEMA_VERSION == 2 and IntentStore.view(VIEW) ~= nil,
+        note(IntentStore.SCHEMA_VERSION == 3 and IntentStore.view(VIEW) ~= nil,
             "V1: v1 file migrated cleanly at load")
         -- now the external edit arrives on top of the migrated store
         write_native({ help = { "about", "version", "system_statistics",
@@ -475,12 +488,36 @@ do
         note(backup_body:find("version", 1, true) ~= nil
             and backup_body:find("99", 1, true) ~= nil,
             "V2-backup2: preserved bytes carry the future schema marker")
-        note(strip_seps(Manager:getMenuItems(VIEW, "help"))[1] == "about",
-            "V2b: external native edit STILL imported beside the quarantine")
-        -- durability: survives yet another restart
+        -- Protected-storage contract (#1): while an unknown newer schema
+        -- owns canonical storage, the automatic import of this external
+        -- edit must NOT become durable - the guarded bytes stay untouched
+        -- until an explicit user reset/import/downgrade. The native file
+        -- itself (the user's real data) must also never be destroyed or
+        -- regenerated over.
+        note(IntentStore.isProtected(),
+            "V2b2: canonical storage reports protected while future schema owns it")
+        local still_future = io.open(path, "r")
+        local body_now = still_future and still_future:read("*a") or ""
+        if still_future then still_future:close() end
+        note(body_now:find('["version"] = 99', 1, true) ~= nil,
+            "V2b3: guarded future-version bytes still on disk after import")
+        local native_now = KoreaderAdapter.readNativeOrder(VIEW) or {}
+        local help_now = native_now.help or {}
+        local about_intact = false
+        for _, id in ipairs(help_now) do
+            if id == "about" then about_intact = true end
+        end
+        note(KoreaderAdapter.nativeFileExists(VIEW) and about_intact,
+            "V2b4: the external native file itself is left untouched")
+        -- durability boundary: another restart re-derives protection from
+        -- the same on-disk guard; nothing of the import becomes durable.
         full_restart(VIEW)
-        note(strip_seps(Manager:getMenuItems(VIEW, "help"))[1] == "about",
-            "V2c: imported edit survives restart")
+        note(IntentStore.isProtected()
+            and IntentStore.view(VIEW).order_override.help == nil,
+            "V2c: protection persists across restart; import stays non-durable")
+        local body_after_restart = io.open(path, "r"):read("*a")
+        note(body_after_restart:find('["version"] = 99', 1, true) ~= nil,
+            "V2c2: guarded bytes byte-stable across restart")
         -- Collision pass (after all restart-dependent assertions): writing the
         -- future schema AGAIN and reloading must quarantine into a suffixed
         -- fallback while the FIRST artifact survives untouched.

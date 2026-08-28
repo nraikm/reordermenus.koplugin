@@ -103,11 +103,21 @@ local function make_mock_ui()
     }
 end
 
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
+
 local mock_ui_fm = make_mock_ui()
 
 local function wipe_persisted_state()
     os.remove(ORDER_FILE)
     os.remove(STATE_FILE)
+    os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
+    os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_materialization.lua")
+    pcall(function()
+        require("reorderingmenus_intent_store").load(true)
+        require("reorderingmenus_native_writer")._resetCaches()
+    end)
+    MenuOrderManager:dropSessionState(view)
 end
 
 local function drop_session_caches(manager)
@@ -124,9 +134,6 @@ local function simulate_restart()
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
     collectgarbage("collect")
 end
-
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
 
 local function new_menu(stubs)
     local menu = FileManagerMenu:new{ ui = mock_ui_fm }

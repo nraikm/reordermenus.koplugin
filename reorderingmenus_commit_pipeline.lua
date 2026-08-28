@@ -40,27 +40,42 @@ local CommitPipeline = {}
 CommitPipeline.STATUS = {
     -- Nothing changed (semantic no-op); no durable write occurred.
     UNCHANGED = "unchanged",
+    -- Commit failed or refused.
+    NOT_SAVED = "not_saved",
     -- Canonical intent is durable but at least one derived view failed to
     -- regenerate. Restart (or next sync) regenerates from intent alone.
     NEEDS_REGENERATION = "saved_needs_regeneration",
-    -- Everything durable succeeded; only the in-session live reload failed.
-    NEEDS_RESTART = "saved_needs_restart",
+    -- Everything durable succeeded; native restart required to see changes.
+    SAVED_RESTART_REQUIRED = "saved_restart_required",
+    NEEDS_RESTART = "saved_restart_required",
     -- Fully applied.
     SAVED = "saved",
 }
 
 --- Materialize ONE view's committed section to its derived native file.
---- Emptied sections remove the file instead (stock rules flow untouched).
+---
+--- The remove-vs-write decision is SEMANTIC, based on what the sparse
+--- emission would contain — not on whether the intent section has records:
+--- provider-inert tombstones (dormant era records) legitimately produce an
+--- EMPTY emission while still occupying canonical state. previewEmission
+--- applies the full cleaner-generation policy (reserved-map stripping
+--- included); a nil preview means "stock rules must flow again NOW": the
+--- file is removed and the removal checkpointed as a legitimate empty
+--- emission ({structure = nil}) so external-edit classification keeps a
+--- real baseline. Otherwise writeView emits atomically as usual.
 --- Returns ok(bool), err.
 local function materializeView(view, reg)
     local section = IntentStore.view(view)
     local graph = Materializer.resolve(reg, section)
     local _, repaired = Validator.validate(graph, reg, section)
 
-    -- An empty section means "back to stock": the sparse writer would emit
-    -- nothing anyway, so remove the derived file explicitly and clear the
-    -- checkpoint. This mirrors the historical resetOrder sequence but lives
-    -- INSIDE the pipeline so reset-shaped transactions need no special path.
+    -- Canonical emptiness is decided on INTENT, not on the projection: a
+    -- deliberate reset / pristine world must end with NO derived file even
+    -- when the cleaner-generation policy would keep the reserved maps alive
+    -- for one more mid-session build (previous emission held a non-empty
+    -- disabled set). Writing that scrubbing emission here leaves a zombie
+    -- reserved-only file: isCustomized stays true and stock rules stay
+    -- shadowed - reset would look like it never happened.
     local has_records = false
     for _, collection_name in ipairs(MenuSchema.VIEW_COLLECTIONS) do
         local c = section[collection_name]
@@ -69,16 +84,27 @@ local function materializeView(view, reg)
             break
         end
     end
-    if not has_records and section.tab_order == nil then
+    local intent_empty = not has_records and section.tab_order == nil
+
+    -- Provider-inert tombstones legitimately occupy canonical state while
+    -- producing an EMPTY emission (Materializer gates every application
+    -- through provider equality): previewEmission applies the full
+    -- cleaner-generation policy, so a nil preview means "stock rules must
+    -- flow again NOW" even though records remain. Both routes converge on
+    -- remove + empty-emission checkpoint ({structure = nil}) so external-
+    -- edit classification keeps a real baseline and reconcile stays clean;
+    -- canonical records are never touched here (tombstones survive).
+    local preview = NativeWriter.previewEmission(view, reg, section, repaired)
+    if intent_empty or preview == nil
+            or NativeWriter.emissionIsReservedOnly(preview) then
         local ok_remove = KoreaderAdapter.removeNativeOrder(view)
         if not ok_remove then
             return false, "remove failed"
         end
-        local ok_clear = NativeWriter.clearRecord(view)
-        if not ok_clear then
-            return false, "checkpoint clear failed"
+        local ok_ckpt = NativeWriter.checkpointEmptyEmission(view)
+        if not ok_ckpt then
+            return false, "checkpoint failed"
         end
-        KoreaderAdapter.invalidateNativeModuleCache()
         return true, nil
     end
     return NativeWriter.writeView(view, reg, section, repaired)
@@ -118,21 +144,42 @@ function CommitPipeline.commitAndApply(txn, options)
         error = nil,
     }
 
-    local changed = txn.changedViews()
+    -- Protected canonical storage (#1): refuse EVERYTHING at the funnel
+    -- entrance - commits, no-op commits, and derived-output maintenance
+    -- alike. A no-op commit would otherwise slip past IntentStore.save()'s
+    -- protection gate (nothing durable to write) and still run the
+    -- maintenance branch below, regenerating this world's derived files
+    -- from the frozen empty state and wiping the user's live menu layout.
+    -- Nothing about the guarded world may reach disk until an explicit
+    -- user reset/import lifts the guard.
+    if IntentStore.isProtected() then
+        logger.err("ReorderingMenus: refusing to commit:",
+            "storage is protected by an unsupported future schema")
+        outcome.status = CommitPipeline.STATUS.UNCHANGED
+        outcome.error = "protected_state"
+        return outcome
+    end
+
+    local changed = txn:changedViews()
         or { reader = false, filemanager = false }
     local any_changed = changed.reader or changed.filemanager
 
-    -- Pre-commit sparse minimization for every changed view (the manager's
-    -- minimizeIntent): the intent that COMMITS is the intent that persists.
-    if options.prepare and any_changed then
+    -- Pre-commit sparse minimization for EVERY view the transaction would
+    -- replace — including ones whose staged section still equals canonical
+    -- (a startup import may have re-staged records identical to canonical
+    -- while a stale bulk sequence from an earlier import lingers; that
+    -- residue is exactly what minimization exists to remove).
+    if options.prepare then
         for _, view in ipairs(MenuSchema.VIEWS) do
-            if changed[view] then
-                local s = options.get_session and options.get_session(view)
-                if s and s.reg then
-                    options.prepare(txn, view, s.reg)
-                end
+            local s = options.get_session and options.get_session(view)
+            if s and s.reg then
+                options.prepare(view, txn, s.reg)
             end
         end
+        -- Re-derive changed views: minimization may have emptied a staged
+        -- section back down to canonical.
+        changed = txn:changedViews()
+        any_changed = changed.reader or changed.filemanager
     end
 
     -- 1+2+3. One canonical commit; the funnel reads back what actually
@@ -143,26 +190,23 @@ function CommitPipeline.commitAndApply(txn, options)
         logger.warn("ReorderingMenus: save raced another writer;",
             "rebasing staged changes once")
         local merged_sections = {}
-        local merged_anchors = {}
         for _, view in ipairs(MenuSchema.VIEWS) do
             merged_sections[view] = txn:mergeSection(view)
-            merged_anchors[view] = txn:mergeHiddenAnchors(view)
         end
         local rebased = IntentStore.openTransaction()
         txn:discard()
         for _, view in ipairs(MenuSchema.VIEWS) do
             rebased:setViewSection(view, merged_sections[view])
-            rebased:setHiddenAnchors(view, merged_anchors[view])
         end
         -- Recompute changed views against the REBASED staging: the merge
         -- may have adopted canonical wholesale for untouched views.
-        changed = rebased.changedViews()
+        changed = rebased:changedViews()
         any_changed = changed.reader or changed.filemanager
         txn = rebased
         ok_commit, commit_err = txn:commit(true)
     end
     if not ok_commit then
-        outcome.status = CommitPipeline.STATUS.UNCHANGED
+        outcome.status = CommitPipeline.STATUS.NOT_SAVED
         outcome.error = tostring(commit_err or "commit failed")
         return outcome
     end
@@ -175,9 +219,40 @@ function CommitPipeline.commitAndApply(txn, options)
     outcome.changed_views = changed
 
     if not any_changed then
-        -- Semantic no-op: generations did not move, nothing to materialize.
-        outcome.status = CommitPipeline.STATUS.UNCHANGED
-        return outcome
+        -- Semantic no-op: generations did not move and there is nothing new
+        -- to materialize - EXCEPT when a view has no valid checkpoint yet
+        -- (first save establishes the reconciliation baseline; a stale
+        -- writer version refreshes its stamp). Both are derived-output
+        -- maintenance, never canonical work: no generation moves.
+        local needs_maintenance = false
+        for _, view in ipairs(MenuSchema.VIEWS) do
+            local maintain = NativeWriter.recordNeedsMaterialization(view)
+            if not maintain then
+                -- Emission drift with unchanged canonical (a provider-era
+                -- flip gated records out, stock layout changed): the derived
+                -- file is stale even though every generation agrees. Same
+                -- maintenance class as a stale checkpoint - regenerate,
+                -- never import.
+                local s = options.get_session and options.get_session(view)
+                if s and s.reg
+                        and not NativeWriter.emissionMatchesRecord(view, s.reg) then
+                    maintain = true
+                end
+            end
+            if maintain then
+                needs_maintenance = true
+                changed[view] = true
+            end
+        end
+        if not needs_maintenance then
+            outcome.status = CommitPipeline.STATUS.UNCHANGED
+            return outcome
+        end
+        for _, view in ipairs(MenuSchema.VIEWS) do
+            if NativeWriter.recordNeedsMaterialization(view) then
+                changed[view] = true
+            end
+        end
     end
 
     -- 4+5. Materialize EVERY changed view. Failures are recorded per view;
@@ -188,16 +263,38 @@ function CommitPipeline.commitAndApply(txn, options)
             if options.get_session then
                 local s = options.get_session(view)
                 reg = s and s.reg or nil
-            else
-                reg = options.sessions and options.sessions[view]
+            elseif options.sessions then
+                reg = options.sessions[view]
                     and options.sessions[view].reg or nil
+            else
+                local Registry = require("reorderingmenus_registry")
+                local defaults = KoreaderAdapter.getDefaultOrder(view)
+                if defaults then
+                    local regs, provs, colls = KoreaderAdapter.collectLiveRegistrations(nil)
+                    reg = Registry.buildFromData(defaults, regs or {}, provs or {}, colls or {})
+                end
             end
             if not reg then
+                -- Invariant: Every canonically changed view must either regenerate
+                -- successfully or explicitly appear in failed_views (saved_needs_regeneration).
                 outcome.failed_views[view] = "no registry available"
             else
-                local ok_write, err = materializeView(view, reg)
-                if not ok_write then
-                    outcome.failed_views[view] = tostring(err or "write failed")
+                -- Fault containment (P0 fault matrix B6/B7/B8/B9): a raised
+                -- error inside materialization must not escape the funnel.
+                -- Canonical intent is ALREADY durable here; letting a raise
+                -- through loses the structured Outcome AND skips every
+                -- remaining changed view's derived write. Contain per view
+                -- into failed_views so callers see saved_needs_regeneration.
+                local ok_call, ok_write, err = pcall(materializeView, view, reg)
+                if not ok_call then
+                    if type(ok_write) ~= "string" then
+                        ok_write = "derived write failed"
+                            .. (ok_write ~= nil and (" (" .. tostring(ok_write) .. ")") or "")
+                    end
+                    outcome.failed_views[view] = ok_write
+                elseif not ok_write then
+                    outcome.failed_views[view] =
+                        tostring(err or "derived write failed")
                 end
             end
         end
@@ -207,8 +304,12 @@ function CommitPipeline.commitAndApply(txn, options)
     if options.reload_fn then
         for _, view in ipairs(options.reload or {}) do
             if not outcome.failed_views[view] then
-                local ok_reload, reload_err = options.reload_fn(view)
-                if not ok_reload then
+                local ok_call, ok_reload, reload_err =
+                    pcall(options.reload_fn, view)
+                if not ok_call then
+                    outcome.reload_failed[view] =
+                        tostring(ok_reload or "reload failed")
+                elseif not ok_reload then
                     outcome.reload_failed[view] =
                         tostring(reload_err or "reload failed")
                 end
@@ -221,8 +322,12 @@ function CommitPipeline.commitAndApply(txn, options)
     local any_reload_failure = next(outcome.reload_failed) ~= nil
     if any_derived_failure then
         outcome.status = CommitPipeline.STATUS.NEEDS_REGENERATION
-    elseif any_reload_failure then
-        outcome.status = CommitPipeline.STATUS.NEEDS_RESTART
+        local failed_list = {}
+        for fv in pairs(outcome.failed_views) do table.insert(failed_list, fv) end
+        table.sort(failed_list)
+        outcome.error = "saved_needs_regeneration:" .. table.concat(failed_list, ",")
+    elseif any_reload_failure or not options.reload_fn then
+        outcome.status = CommitPipeline.STATUS.SAVED_RESTART_REQUIRED
     else
         outcome.status = CommitPipeline.STATUS.SAVED
     end

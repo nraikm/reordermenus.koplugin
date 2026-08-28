@@ -223,6 +223,10 @@ do
         "F6: healthy view not flagged")
     assert_eq(type(outcome.generation), "number",
         "F6: actual committed generation reported")
+
+    local idle_outcome = MenuOrderManager:commitStaged()
+    assert_eq(idle_outcome.status, "unchanged",
+        "F6: status is unchanged on idle commit")
 end
 
 print("\n--- F7: Reset All atomic at the intent layer ---")

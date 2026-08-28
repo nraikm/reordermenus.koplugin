@@ -4,6 +4,8 @@ to user-friendly, localized display names and icons.
 --]]
 
 local _ = require("gettext")
+local util = require("util")
+local Utf8Proc = require("ffi/utf8proc")
 local MenuSchema = require("reorderingmenus_menu_schema")
 
 local MenuTitles = {}
@@ -322,8 +324,12 @@ local function humanize(id)
     if not id or type(id) ~= "string" then return tostring(id) end
     local words = {}
     for word in id:gmatch("[^_]+") do
-        local capitalized = word:sub(1, 1):upper() .. word:sub(2):lower()
-        table.insert(words, capitalized)
+        -- Unicode-aware lowercasing of the tail: ids are ASCII snake_case in
+        -- practice, but a custom submenu id may contain any script. Only the
+        -- DISPLAY form folds; the id itself is never rewritten.
+        local head = word:sub(1, 1):upper()
+        local tail = Utf8Proc.lowercase(util.fixUtf8(word:sub(2), "?"))
+        table.insert(words, head .. tail)
     end
     return table.concat(words, " ")
 end
@@ -333,27 +339,31 @@ function MenuTitles:getTitle(id, live_menu_items)
         return _("--- Separator ---")
     end
 
+    -- Root tabs have dedicated localized labels and icons in KOReader
     if self.tab_info[id] then
         return self.tab_info[id].title
     end
 
+    -- Prefer live KOReader menu item metadata when available
+    if live_menu_items and live_menu_items[id] then
+        local it = live_menu_items[id]
+        if type(it.text) == "string" and it.text ~= "" then
+            return it.text
+        elseif type(it.text_func) == "function" then
+            local ok, str = pcall(it.text_func)
+            if ok and type(str) == "string" and str ~= "" then
+                return str
+            end
+        end
+    end
+
+    -- Static fallback catalog for submenus and items
     if self.submenu_info[id] then
         return self.submenu_info[id].title
     end
 
     if self.items[id] then
         return self.items[id]
-    end
-
-    -- Try to inspect live menu item if available
-    if live_menu_items and live_menu_items[id] then
-        local it = live_menu_items[id]
-        if it.text then
-            return it.text
-        elseif it.text_func then
-            local ok, str = pcall(it.text_func)
-            if ok and str then return str end
-        end
     end
 
     return humanize(id)
@@ -374,14 +384,6 @@ function MenuTitles:getDescription(id)
         return self.submenu_info[id].description
     end
     return nil
-end
-
-function MenuTitles:isSubmenu(id)
-    return self.submenu_info[id] ~= nil
-end
-
-function MenuTitles:isTab(id)
-    return self.tab_info[id] ~= nil
 end
 
 return MenuTitles

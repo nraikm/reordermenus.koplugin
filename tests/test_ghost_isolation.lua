@@ -134,13 +134,12 @@ do
     MenuOrderManager:saveOrder(view)
 
     restart()
-    launch({}) -- both providers gone
-    -- Retention policy: the moved ghost keeps exactly its one configured
-    -- parent (single-parent invariant), and the hidden ghost appears in no
-    -- content list at all - only as a visibility tombstone.
+    -- Retention policy: dormant ghost does not materialize in projection,
+    -- while canonical intent preserves the configured parent.
     local moved_parents = parents_of("ghost_moved")
-    assert_eq(#moved_parents, 1, "G1: moved ghost keeps a single preserved parent")
-    assert_eq(moved_parents[1], "setting", "G1: preserved parent is the customized one")
+    assert_eq(#moved_parents, 0, "G1: dormant ghost does not materialize in projection")
+    assert_eq(IntentStore.view(view).parent_override.ghost_moved and IntentStore.view(view).parent_override.ghost_moved.parent,
+        "setting", "G1: canonical parent_override retains customized parent")
     for menu_id, list in pairs(MenuOrderManager:loadOrder(view)) do
         if menu_id ~= "KOMenu:disabled" and type(list) == "table" then
             assert_eq(count_in(list, "ghost_hidden"), 0,

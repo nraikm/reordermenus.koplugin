@@ -312,7 +312,7 @@ do
         or next(s.position_override or {}) ~= nil
         or next(s.parent_override or {}) ~= nil
         or next(s.separators or {}) ~= nil
-        or s.sequence_eras["main"] ~= nil
+    -- Schema v3: sequence_eras no longer exists (stamps live on entries).
     note(not frozen, "B2b: away-and-back leaves NO order/anchor/separator records")
     wipe_all()
 end

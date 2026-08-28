@@ -228,8 +228,13 @@ function()
     Manager:moveItemToMenu(view, "gh_item", "tools", "setting")
     Manager:saveOrder(view)
     launch({})   -- provider disappears -> ghost
-    ok(Manager:getParentMenu(view, "gh_item") == nil or true,
-        "ghost renders nowhere without crash")
+    -- Pinned behavior (probed 2026-08-24): a dormant ghost KEEPS its
+    -- placement record, so it still renders in its last home instead of
+    -- vanishing. The contract under test here is only that the lookup is
+    -- crash-free and deterministic; the dual-record policy itself is
+    -- tracked as announcement-5 Finding 1 (sibling lane).
+    ok(pcall(Manager.getParentMenu, Manager, view, "gh_item"),
+        "ghost lookup survives provider loss without crashing")
     restart()    -- abrupt editor exit equivalent: no staged commit
     launch({ make_stub("gh_item", "tools", "pG") })
     ok(Manager:getParentMenu(view, "gh_item") == "setting",
@@ -976,9 +981,14 @@ function()
     launch({})
     restart()
     launch({ make_stub("gu2_item", "setting", "pNew2") })
-    local parent = Manager:getParentMenu(view, "gu2_item")
-    ok(parent == nil or parent ~= "setting"
-        or true, "new provider resolves somewhere sane")
+    -- Era-churned id under a NEW provider: the pinned contract is that
+    -- resolution stays crash-free AND the old placement record cannot bind
+    -- the new provider (era stamping). Whether the row renders at its old
+    -- home, somewhere derived, or nowhere is era-policy, not loader safety.
+    local parent_ok, parent = pcall(Manager.getParentMenu, Manager, view,
+        "gu2_item")
+    ok(parent_ok and parent ~= nil,
+        "new-provider resolution stays defined and crash-free")
     local sec = IntentStore.view(view)
     ok(sec.parent_override.gu2_item == nil
         or sec.parent_override.gu2_item.provider ~= "pNew2",
@@ -1108,14 +1118,19 @@ function()
     Manager:stageList(view, "tools", rows_before)
     Manager:saveOrder(view)
     restart()
-    ok(Manager:getParentMenu(view, "ut2_item") ~= "tools" or true,
-        "stale-era snapshot tolerated")
+    -- Loader-safety-adjacent contract only: after a stale-era snapshot is
+    -- staged, saved and restarted, id resolution must stay crash-free and
+    -- AGREE with the rendered lists (wherever era policy finally places the
+    -- row - that policy is sibling-lane work, see Coordination Finding 1).
+    local parent_ok, parent = pcall(Manager.getParentMenu, Manager, view,
+        "ut2_item")
+    ok(parent_ok, "getParentMenu survives the stale-snapshot cycle")
     local found_tools = false
     for _, id in ipairs(Manager:getMenuItems(view, "tools")) do
         if id == "ut2_item" then found_tools = true end
     end
-    ok(not found_tools or true,
-        "row placement resolved without stale-editor interference")
+    ok((parent == "tools") == found_tools,
+        "lookup and rendered tools list agree on ut2_item")
 end)
 
 scenario("update", "external", "update x external edit: regeneration beats garbage",

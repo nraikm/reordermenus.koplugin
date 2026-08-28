@@ -57,6 +57,36 @@ local sd = DataStorage:getSettingsDir()
 local VIEW = "filemanager"
 local OTHER = "reader"
 
+-- TEMP-DEBUG: trace non-anchor parent_override writes for churn_x
+do
+  local store = require("reorderingmenus_intent_store")
+  local env = store
+  for k, v in pairs(env) do
+    if k == "openTransaction" then
+      local real_open = v
+      env[k] = function(...)
+        local txn = real_open(...)
+        local mt = getmetatable(txn)
+        if mt and type(mt.__index) == "table"
+                and not rawget(mt.__index, "__churn_traced") then
+          local orig = mt.__index.setParentOverride
+          mt.__index.setParentOverride = function(self, view, item_id, record)
+            if item_id == "churn_x" and type(record) == "table"
+                    and record.anchor ~= "anchor" then
+              print("TRACE churn_x <-", tostring(record.provider),
+                    tostring(record.parent))
+              print(debug.traceback("", 2))
+            end
+            return orig(self, view, item_id, record)
+          end
+          rawset(mt.__index, "__churn_traced", true)
+        end
+        return txn
+      end
+    end
+  end
+end
+
 local function wipe_all()
     for _, f in ipairs({ "filemanager_menu_order.lua", "reader_menu_order.lua",
         "reorderingmenus_intent.lua", "reorderingmenus_materialization.lua" }) do
@@ -149,8 +179,11 @@ do
         "D1: stale save did not resurrect the uninstalled row"
         .. " (before=" .. tostring(before) .. " after=" .. tostring(after) .. ")")
     -- no NEW explicit move record may appear for churn_x
+    -- Schema v3: registration bookkeeping persists as a TYPED lifecycle
+    -- pin (anchor="anchor"), never as a boolean marker or a bare record.
+    local MenuSchema = require("reorderingmenus_menu_schema")
     local rec = IntentStore.view(VIEW).parent_override.churn_x
-    note(rec == nil or rec.anchor == true,
+    note(rec == nil or MenuSchema.isLifecyclePin(rec),
         "D1b: stale save wrote no explicit move record for the dead row")
 
     local seq = IntentStore.view(VIEW).order_override.tools or {}
@@ -322,11 +355,9 @@ do
     save_editor_rows("main", stale_rows)
 
     local rec = IntentStore.view(VIEW).parent_override.churn_q
-    note(rec == nil or rec.anchor ~= true or true,
-        "D6: (informational) record state after stale save")
-    -- the decisive contract: the stale save must not create a NEW explicit
-    -- non-anchor record for the absent row beyond what the user did
-    note(rec == nil or rec.parent == "main",
+    note(rec ~= nil and rec.parent == "main",
+        "D6: record state after stale save")
+    note(rec ~= nil and rec.parent == "main",
         "D6b: user's move record intact (dormant), not rewritten by stale save")
     wipe_all()
 end

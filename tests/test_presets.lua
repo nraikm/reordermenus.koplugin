@@ -270,13 +270,13 @@ end)
 assert_true(ui_ok, "showPresetsMenu opened and closed cleanly: " .. tostring(ui_err))
 
 ui_ok, ui_err = pcall(function()
-    UIScreens:showLoadPresetMenu(plugin, "reader")
+    UIScreens:showDeletePresetMenu(plugin, "reader")
     local top_entry = UIManager._window_stack[#UIManager._window_stack]
     local menu = (top_entry and top_entry.widget) or top_entry
-    assert_true(menu ~= nil, "Load Preset menu opened")
+    assert_true(menu ~= nil, "Delete Preset menu opened")
     UIManager:close(menu)
 end)
-assert_true(ui_ok, "showLoadPresetMenu opened and closed cleanly: " .. tostring(ui_err))
+assert_true(ui_ok, "showDeletePresetMenu opened and closed cleanly: " .. tostring(ui_err))
 
 ui_ok, ui_err = pcall(function()
     UIScreens:showSubmenuPresetsMenu(plugin, "reader", "tools", "Tools")

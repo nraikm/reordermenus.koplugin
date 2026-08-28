@@ -67,7 +67,9 @@ function UIEditorRegistry:countLive(view)
         local menus = self.editors[view]
         if not menus then return 0 end
         local n = 0
-        for _, entries in pairs(menus) do n = n + next(entries) and 1 or 0 end
+        for _, entries in pairs(menus) do
+            if next(entries) then n = n + 1 end
+        end
         return n
     end
     local n = 0

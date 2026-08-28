@@ -377,13 +377,25 @@ assert_eq(MenuOrderManager:getHiddenItemParent("reader", dynamic_search_item), n
     "Reset Search clears the saved hidden origin")
 
 local late_search_item = "late_search_plugin_fixture"
--- A late registration gets an anchored placement record so its configured
--- home survives provider removal; that IS persistence-worthy work.
-assert_eq(MenuOrderManager:reconcileRegisteredItems("reader", {
+-- Schema v3 / P1B: hinted newcomers are anchored IMPLICITLY - the stock
+-- MenuSorter places sorting_hint orphans live at every build, so
+-- reconciliation persists NOTHING for a first-contact contribution (a save
+-- storm per registration revision is gone). The semantic contract stays
+-- placement: the late plugin's sorting_hint is honored by projection.
+-- NOTE: this call drives the MANAGER-level API with a partial registration
+-- map, so the return value may legitimately be true (a registry diff can
+-- tombstone other known ids); the contract under test is the PLACEMENT and
+-- the absence of a machine-derived record for THIS id.
+MenuOrderManager:reconcileRegisteredItems("reader", {
     [late_search_item] = { sorting_hint = "search" },
-}), true, "New plugin hints are pinned as anchored placements")
+})
 assert_eq(MenuOrderManager:getParentMenu("reader", late_search_item), "search",
     "Late Search plugin follows its hint instead of remaining a dangerous orphan")
+-- No machine-derived record may leak into canonical state for the newcomer.
+local MenuSchema = require("reorderingmenus_menu_schema")
+local late_section = MenuOrderManager:stagedView("reader")
+assert_eq(late_section.parent_override[late_search_item], nil,
+    "no anchor record written for a hinted newcomer")
 
 -- -------------------------------------------------------------
 -- Suite 7: Separator Operations

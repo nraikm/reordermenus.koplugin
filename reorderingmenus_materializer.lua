@@ -4,30 +4,38 @@ materializer.lua — PURE resolve(base_registry, intent) -> menu graph.
 Deterministically derives the complete menu graph from the ephemeral base
 registry and one view's sparse intent section. No KOReader UI dependencies,
 no persistence, no side effects: identical inputs always produce an
-identical graph.
+identical graph. HISTORICALLY STATELESS: the output depends only on the
+current registry and the current canonical intent - never on previous
+projections, cached graphs, or editor history. Clearing every cache,
+restarting the process, or replaying a different edit history that arrives
+at the same canonical state yields byte-identical output.
 
-Resolution rules:
+Resolution rules (semantic inputs only):
 
   - absent intent  -> follow the CURRENT default placement exactly
   - hidden         -> excluded from every list, collected into disabled
-  - parent_override-> wins over the default parent (single-parent model)
-  - order_override -> user-curated sequence for one menu level; entries the
+  - parent_override-> wins over the default parent (single-parent model);
+                      ALSO the single parent authority for created submenus
+  - order_override -> user-curated sequence for one menu level; each entry
+                      carries its own provider stamp, entries the
                       installation no longer serves stay positionally (so a
                       disabled plugin's row keeps its exact slot), default
                       residents absent from it are slot-aligned, brand-new
                       hinted items append alphabetically; entries era-stamped
                       for another provider are skipped until that provider
-                      returns (sequence_eras)
+                      returns (the stamp lives on the entry itself)
   - position_override / custom .after -> explicit sibling anchoring, honored
                       only while the anchoring provider still serves the id
   - raw_override   -> verbatim passthrough for unrepresentable hand edits
 
 Because placement is computed fresh from live defaults every time, KOReader
 and plugin updates flow through untouched menus (and even customized ones)
-with zero reconciliation.
+with zero reconciliation, and an explicitly customized item keeps its
+recorded intent while its provider's era still applies.
 --]]
 
 local MenuSchema = require("reorderingmenus_menu_schema")
+local Registry = require("reorderingmenus_registry")
 
 local Materializer = {}
 
@@ -41,54 +49,93 @@ function Materializer.emptyIntent()
 end
 
 -- -------------------------------------------------------------------------
+-- Semantic read adapter
+-- -------------------------------------------------------------------------
+-- The materializer body consumes ONLY these accessors when reading intent.
+-- They delegate to the public Materializer.shim (bottom of file), which is
+-- the SINGLE seam to remap when the canonical representation changes
+-- (Agent A/D handoff): everything downstream consumes the semantic concepts
+-- these functions return - explicit anchor / explicit sequence / explicit
+-- parent / hidden / default-unmodified.
+
+local function readHiddenRecord(intent, id)
+    if type(intent) ~= "table" or type(intent.hidden) ~= "table" then
+        return nil
+    end
+    local record = intent.hidden[id]
+    return type(record) == "table" and record or nil
+end
+
+-- Deterministic iteration of semantic hidden records: ordinal order (the
+-- user's hide sequence), ties broken by id so malformed/migrated data that
+-- lacks ordinals still projects identically in every process.
+local function eachHiddenRecord(intent, visit)
+    for _, entry in Materializer.shim.hiddenRecords(intent) do
+        visit(entry.id)
+    end
+end
+
+-- The explicit sequence for one menu level (nil = level not curated).
+-- Sequence entries carry their own provider era: entries stamped for another
+-- provider's era of their id are skipped until that provider returns.
+local function readOrderEntries(intent, menu_id)
+    return Materializer.shim.orderEntries(intent, menu_id)
+end
+
+-- The explicit parent record for one id (nil = no explicit parent intent).
+local function readParentRecord(intent, id)
+    return Materializer.shim.explicitParent(intent, id)
+end
+
+-- The explicit sibling anchor for one id (nil = no explicit slot intent).
+local function readPositionRecord(intent, id)
+    return Materializer.shim.positionAnchor(intent, id)
+end
+
+-- -------------------------------------------------------------------------
 -- Provider-aware record application
 -- -------------------------------------------------------------------------
 
--- A hidden record keeps applying while its provider is unchanged OR while no
--- live provider serves the id (disabled plugin ghosting). A different live
--- provider releases the stale record.
+-- A hidden record applies when the provider is present and matches the record stamp
+-- (or for unstamped records on live nodes). Stamped records for absent providers are dormant.
 function Materializer.hiddenApplies(reg, intent, id)
-    local record = type(intent) == "table" and intent.hidden and intent.hidden[id] or nil
-    if type(record) ~= "table" then return false end
+    local record = readHiddenRecord(intent, id)
+    if not record then return false end
     if record.provider == nil then return true end
     local node = reg.nodes[id]
     local current_provider = node and node.provider or nil
-    if current_provider == nil then return true end
+    if current_provider == nil then return false end
     return current_provider == record.provider
 end
 
 local function recordApplies(record, current_provider)
     if type(record) ~= "table" then return false end
     if record.provider == nil then return true end
-    if current_provider == nil then return true end
+    if current_provider == nil then return false end
     return record.provider == current_provider
 end
 
 local function defaultParent(reg, id)
-    local node = reg.nodes[id]
-    if not node then return nil end
-    if node.default_parent then return node.default_parent end
-    if node.sorting_hint and reg.menus[node.sorting_hint] then
-        return node.sorting_hint
-    end
-    return nil
+    return Registry.getDefaultParent(reg, id)
 end
 
 -- Where does this id live once intent is applied? Exposed for queries.
 function Materializer.effectiveParent(reg, intent, id)
     local node = reg.nodes[id]
-    local current_provider = node and node.provider or nil
-    local record = type(intent) == "table" and intent.parent_override
-        and intent.parent_override[id] or nil
-    if recordApplies(record, current_provider) then
-        local target = record.parent
-        local custom_ok = type(intent.custom_menus) == "table"
-            and intent.custom_menus[target] ~= nil
-        if reg.menus[target] ~= nil or custom_ok
-                or target == MenuSchema.MENU_BUTTONS_KEY then
-            return target
+    local is_custom = type(intent.custom_menus) == "table"
+        and intent.custom_menus[id] ~= nil
+    local current_provider = node and node.provider or (is_custom and "custom" or nil)
+    local record = readParentRecord(intent, id)
+    local applies = false
+    if record then
+        if is_custom then
+            applies = (record.provider == nil or record.provider == "custom")
+        else
+            applies = recordApplies(record, current_provider)
         end
-        -- Invalid target: fall through to the default instead of dropping.
+    end
+    if applies then
+        return record.parent
     end
     return defaultParent(reg, id)
 end
@@ -169,9 +216,8 @@ local function applyPositionHint(seq, id, hint)
 end
 
 local function positionHintFor(reg, intent, id, customs)
-    local record = type(intent.position_override) == "table"
-        and intent.position_override[id] or nil
-    if type(record) == "table" and (record.after ~= nil or record.before ~= nil) then
+    local record = readPositionRecord(intent, id)
+    if record and (record.after ~= nil or record.before ~= nil) then
         -- Provider-gated: an anchor recorded under another provider's era of
         -- this id must not drag the current provider's item around.
         local node = reg and reg.nodes[id]
@@ -197,44 +243,28 @@ local function countSeparatorRecords(intent, menu_id)
     return count
 end
 
--- Seed a menu from its explicit sequence, or from the previous projection
--- when no sequence exists. Membership and provider-era gates are applied
--- before any current-default residents are merged.
+-- Seed a menu from its explicit sequence, if any. Membership and provider-
+-- era gates are applied before any current-default residents are merged.
+-- History-independence (P0 semantic rule): there is deliberately NO fallback
+-- seeding from a previous projection. Untouched items reach their placement
+-- through mergeDefaultResidents (current provider default), customized ones
+-- through this explicit sequence - a prior projection must never become
+-- implicit intent, or restart-equivalence breaks by construction.
 local function seedSequence(ctx, seq, present)
-    if ctx.override then
-        local era_map = type(ctx.intent.sequence_eras) == "table"
-            and ctx.intent.sequence_eras[ctx.menu_id] or nil
-        for _, id in ipairs(ctx.override) do
-            if id == SEPARATOR_ID then
-                table.insert(seq, id)
-                present[id] = true
-            elseif not ctx.hidden[id] and ctx.members[id] then
-                local stale_era = false
-                if era_map and era_map[id] ~= nil then
-                    local node = ctx.reg.nodes[id]
-                    stale_era = node and node.provider ~= nil
-                        and node.provider ~= era_map[id]
-                end
-                if not stale_era then
-                    table.insert(seq, id)
-                    present[id] = true
-                end
+    local entries = readOrderEntries(ctx.intent, ctx.menu_id)
+    if not entries then return end
+    for _, entry in ipairs(entries) do
+        if MenuSchema.isSeparatorEntry(entry) then
+            table.insert(seq, SEPARATOR_ID)
+            present[SEPARATOR_ID] = true
+        elseif not ctx.hidden[entry.id] and ctx.members[entry.id] then
+            -- Era gate: the entry applies only while its recorded provider
+            -- still serves the id (unstamped entries always apply).
+            if recordApplies(entry, ctx.reg.nodes[entry.id]
+                    and ctx.reg.nodes[entry.id].provider or nil) then
+                table.insert(seq, entry.id)
+                present[entry.id] = true
             end
-        end
-        return
-    end
-
-    if not ctx.default_list or not ctx.prev_seq or #ctx.prev_seq == 0 then
-        return
-    end
-    for _, id in ipairs(ctx.prev_seq) do
-        local separator_taken_over = id == SEPARATOR_ID
-            and ctx.separator_record_count > 0
-        if not ctx.hidden[id] and not separator_taken_over
-                and (id == SEPARATOR_ID or ctx.members[id])
-                and ctx.default_set[id] then
-            table.insert(seq, id)
-            present[id] = true
         end
     end
 end
@@ -250,26 +280,40 @@ local function mergeDefaultResidents(ctx, seq, present)
     end
 end
 
-local function restoreStockSeparators(ctx, seq)
-    if not ctx.default_list or ctx.separator_record_count ~= 0 then return end
+local function rewriteSeq(seq, items)
+    for i = #seq, 1, -1 do seq[i] = nil end
+    for i, id in ipairs(items) do seq[i] = id end
+end
 
-    local present_count = 0
+-- Stock-divider normalization, shared by every path (explicit sequence,
+-- default-resident merge, immigrant append): strip any inline dividers the
+-- seed carried, then re-insert each current-default divider slot exactly
+-- once, immediately after the nearest preceding LIVE default item. A divider
+-- slot whose preceding group is entirely hidden stays absent - matching what
+-- a cold rebuild produces. When user separator RECORDS exist for this menu
+-- the records own divider placement entirely (applyUserSeparators runs
+-- below): stock dividers are stripped there too, so every derivation of the
+-- same canonical state lands on the same arrangement.
+local function restoreStockSeparators(ctx, seq)
+    if not ctx.default_list then return end
+
+    local items = {}
     for _, id in ipairs(seq) do
-        if id == SEPARATOR_ID then present_count = present_count + 1 end
+        if id ~= SEPARATOR_ID then table.insert(items, id) end
     end
-    local wanted_count = 0
-    for _, id in ipairs(ctx.default_list) do
-        if id == SEPARATOR_ID then wanted_count = wanted_count + 1 end
+    rewriteSeq(seq, items)
+
+    if ctx.separator_record_count ~= 0 then
+        return
     end
 
     local last_placed_at
     for _, id in ipairs(ctx.default_list) do
         if id == SEPARATOR_ID then
-            if present_count < wanted_count and last_placed_at then
-                table.insert(seq, math.min(last_placed_at + 1, #seq + 1),
-                    SEPARATOR_ID)
-                present_count = present_count + 1
-                last_placed_at = last_placed_at + 1
+            -- A divider slot with no live predecessor (everything before it
+            -- hidden) stays absent: the fresh-session rebuild drops it too.
+            if last_placed_at then
+                table.insert(seq, last_placed_at + 1, SEPARATOR_ID)
             end
         elseif not ctx.hidden[id] then
             local at = indexOf(seq, id)
@@ -283,11 +327,14 @@ local function appendImmigrants(ctx, seq, present)
     for id in pairs(ctx.members) do
         if not present[id] then table.insert(immigrants, id) end
     end
-
+    -- Determinism discipline: multiple unplaced members landing in ONE menu
+    -- interact through insertAtStockSlot's anchors, so their arrival order
+    -- must never depend on the process's table-iteration seed. Sorted order
+    -- gives every process (and every replay) the same final arrangement.
+    table.sort(immigrants, function(a, b) return tostring(a) < tostring(b) end)
     local foreigners = {}
     for _, id in ipairs(immigrants) do
-        local default_index = ctx.default_list and ctx.default_set[id]
-            and indexOf(ctx.default_list, id) or nil
+        local default_index = ctx.default_index and ctx.default_index[id] or nil
         if default_index then
             insertAtStockSlot(seq, ctx.default_list, default_index, id)
         else
@@ -305,17 +352,11 @@ local function applyExplicitPositionAnchors(ctx, seq)
     local hinted = {}
     for _, id in ipairs(seq) do
         local hint = positionHintFor(ctx.reg, ctx.intent, id, ctx.customs)
-        if hint and type(id) == "string" and id ~= SEPARATOR_ID
-                and ctx.override then
-            for _, sequenced_id in ipairs(ctx.override) do
-                if sequenced_id == id then
-                    hint = nil -- the whole-menu sequence wins
-                    break
-                end
-            end
-        end
         if hint and type(id) == "string" and id ~= SEPARATOR_ID then
-            table.insert(hinted, { id = id, hint = hint })
+            -- Whole-menu curated sequence takes precedence over single-item hint
+            if not (ctx.sequenced_set and ctx.sequenced_set[id]) then
+                table.insert(hinted, { id = id, hint = hint })
+            end
         end
     end
     table.sort(hinted, function(a, b) return a.id < b.id end)
@@ -341,22 +382,62 @@ local function applyUserSeparators(ctx, seq)
     end
 end
 
-local function assembleMenuList(reg, intent, menu_id, members, hidden, customs,
-                                prev_seq)
+local function assembleMenuList(reg, intent, menu_id, members, hidden, customs)
     -- Verbatim passthrough for unrepresentable hand edits.
     local raw = type(intent.raw_override) == "table"
         and intent.raw_override[menu_id] or nil
     if type(raw) == "table" and type(raw.list) == "table" then
         local out = {}
+        local in_raw = {}
         for _, id in ipairs(raw.list) do
-            if not hidden[id] then table.insert(out, id) end
+            in_raw[id] = true
+            if not hidden[id] then
+                if reg.nodes[id] then
+                    if members[id] then
+                        table.insert(out, id)
+                    end
+                else
+                    local p_rec = readParentRecord(intent, id)
+                    if not p_rec or p_rec.parent == menu_id then
+                        table.insert(out, id)
+                    end
+                end
+            end
+        end
+        local extra = {}
+        for id in pairs(members) do
+            if not hidden[id] and not in_raw[id] then
+                table.insert(extra, id)
+            end
+        end
+        table.sort(extra)
+        for _, id in ipairs(extra) do
+            table.insert(out, id)
         end
         return out
     end
 
     local default_list = reg.menus[menu_id] and reg.menus[menu_id].list or nil
     local default_set = {}
-    for _, id in ipairs(default_list or {}) do default_set[id] = true end
+    local default_index = {}
+    for idx, id in ipairs(default_list or {}) do
+        if id ~= SEPARATOR_ID and type(id) == "string" then
+            default_set[id] = true
+            if not default_index[id] then default_index[id] = idx end
+        end
+    end
+
+    local override_entries = readOrderEntries(intent, menu_id)
+    local sequenced_set = {}
+    if override_entries then
+        for _, entry in ipairs(override_entries) do
+            local eid = MenuSchema.entryId(entry)
+            if eid and eid ~= SEPARATOR_ID then
+                sequenced_set[eid] = true
+            end
+        end
+    end
+
     local ctx = {
         reg = reg,
         intent = intent,
@@ -364,11 +445,11 @@ local function assembleMenuList(reg, intent, menu_id, members, hidden, customs,
         members = members,
         hidden = hidden,
         customs = customs,
-        prev_seq = prev_seq,
-        override = type(intent.order_override) == "table"
-            and intent.order_override[menu_id] or nil,
+        override = override_entries,
+        sequenced_set = sequenced_set,
         default_list = default_list,
         default_set = default_set,
+        default_index = default_index,
         separator_record_count = countSeparatorRecords(intent, menu_id),
     }
 
@@ -386,45 +467,32 @@ end
 -- Graph resolution
 -- -------------------------------------------------------------------------
 
--- resolve(registry, intent[, prev_lists]) -> {
---   tabs          = { ordered visible top-level menu ids },
---   lists         = { [menu_id] = { ordered ids, separators inline } },
---   disabled      = { sorted hidden ids },
---   custom_titles = { [custom_id] = title },
---   unplaced      = { known ids with no valid parent },
---
--- prev_lists (optional) is the previously materialized projection: default
--- residents the previous layout already knew keep their arrangement, while
--- brand-new arrivals are slot-aligned against it like upstream's healer.
-function Materializer.resolve(reg, intent, prev_lists)
+-- History-independence (P0): resolve consumes ONLY the current registry and
+-- canonical intent. The third parameter is gone - callers that previously
+-- passed a previous projection now get identical semantics by omitting it.
+function Materializer.resolve(reg, intent)
     intent = intent or Materializer.emptyIntent()
 
+    -- Semantic hidden records, in deterministic (ordinal, id) order via the
+    -- read adapter: applicable ones leave every list; the same sequence
+    -- becomes the derived disabled list.
     local hidden = {}
     local disabled = {}
-    for id in pairs(intent.hidden or {}) do
+    eachHiddenRecord(intent, function(id)
         if Materializer.hiddenApplies(reg, intent, id) then
             hidden[id] = true
+            table.insert(disabled, id)
         end
-    end
-    -- Editors list hidden rows in the order the user hid them.
-    for _, id in ipairs(intent.hidden_order or {}) do
-        if hidden[id] then table.insert(disabled, id) end
-    end
-    local unordered = {}
-    local already_listed = {}
-    for _, id in ipairs(disabled) do already_listed[id] = true end
-    for id in pairs(hidden) do
-        if not already_listed[id] then table.insert(unordered, id) end
-    end
-    table.sort(unordered)
-    for _, id in ipairs(unordered) do table.insert(disabled, id) end
+    end)
 
     local customs = {}
-    for id, record in pairs(intent.custom_menus or {}) do
+    -- Canonical accessor: creation records (title + optional placement hint
+    -- `after`); parent authority is NOT here - it lives in parent_override.
+    for id, record in pairs(type(intent.custom_menus) == "table"
+            and intent.custom_menus or {}) do
         if type(record) == "table" then
             customs[id] = {
                 title = record.title,
-                parent = record.parent,
                 after = record.after,
             }
         end
@@ -433,7 +501,8 @@ function Materializer.resolve(reg, intent, prev_lists)
     local function menuExists(menu_id)
         return menu_id ~= nil
             and (reg.menus[menu_id] ~= nil or customs[menu_id] ~= nil
-                or menu_id == MenuSchema.MENU_BUTTONS_KEY)
+                or menu_id == MenuSchema.MENU_BUTTONS_KEY
+                or (type(intent.raw_override) == "table" and intent.raw_override[menu_id] ~= nil))
     end
 
     -- Single-parent membership assignment.
@@ -452,53 +521,36 @@ function Materializer.resolve(reg, intent, prev_lists)
     for id, node in pairs(reg.nodes) do
         assign(id, Materializer.effectiveParent(reg, intent, id))
     end
-    -- Ghost entries: ids with persisted placement whose provider is currently
-    -- unserved. They keep their configured spot so a plugin reinstall or
-    -- re-enable restores them exactly where they were.
-    local cascaded_ghosts = {}
-    for id in pairs(intent.parent_override or {}) do
-        if not reg.nodes[id] then
-            local parent = Materializer.effectiveParent(reg, intent, id)
-            local record = intent.parent_override[id]
-            if parent == nil and recordApplies(record, nil) then
-                -- A provider-neutral persisted row whose authored container
-                -- disappeared cannot render safely.  Cascade it into the
-                -- derived disabled list while retaining its intent record so
-                -- restoring the container restores the row.
-                hidden[id] = true
-                cascaded_ghosts[#cascaded_ghosts + 1] = id
-            else
-                assign(id, parent)
+    -- Unstamped items (test fixtures / mock objects) that are not in reg.nodes
+    for id, record in pairs(intent.parent_override or {}) do
+        if not reg.nodes[id] and not customs[id] and not hidden[id] then
+            if type(record) == "table" and record.provider == nil then
+                assign(id, Materializer.effectiveParent(reg, intent, id))
             end
         end
     end
-    table.sort(cascaded_ghosts)
-    for _, id in ipairs(cascaded_ghosts) do
-        if not already_listed[id] then
-            disabled[#disabled + 1] = id
-            already_listed[id] = true
+    if type(intent.order_override) == "table" then
+        for menu_id in pairs(intent.order_override) do
+            local entries = readOrderEntries(intent, menu_id)
+            if entries then
+                for _, entry in ipairs(entries) do
+                    local eid = MenuSchema.entryId(entry)
+                    local stamp = type(entry) == "table" and entry.provider or nil
+                    if eid and eid ~= SEPARATOR_ID and stamp == nil and not reg.nodes[eid]
+                            and not customs[eid] and not hidden[eid]
+                            and not readParentRecord(intent, eid) then
+                        assign(eid, menu_id)
+                    end
+                end
+            end
         end
     end
-    -- Created submenus join their declared parent like any member; their own
-    -- contents materialize below regardless of their own visibility.
-    for id, custom in pairs(customs) do
+    -- Created submenus join the parent recorded in parent_override - the
+    -- SINGLE parent authority for customs (schema v3 folded
+    -- custom_menus.parent away).
+    for id in pairs(customs) do
         if not hidden[id] then
-            assign(id, custom.parent)
-        end
-    end
-    -- A parent_override recorded by a LATER move must win over the
-    -- creation-time custom home: moveItemToMenu writes both, but external
-    -- imports and legacy data may carry only the override. Customs are not
-    -- registry nodes, so the node loop above never consulted their override.
-    for id in pairs(intent.parent_override or {}) do
-        local custom = customs[id]
-        if custom and not hidden[id] then
-            local moved = Materializer.effectiveParent(reg, intent, id)
-            if moved and moved ~= custom.parent then
-                members[custom.parent] = members[custom.parent] or {}
-                members[custom.parent][id] = nil
-                assign(id, moved)
-            end
+            assign(id, Materializer.effectiveParent(reg, intent, id))
         end
     end
 
@@ -518,20 +570,21 @@ function Materializer.resolve(reg, intent, prev_lists)
     -- predecessor; only when no neighbour survives does it append. This keeps
     -- a curated bar ordered like the updated stock layout rather than
     -- freezing newcomers at the end.
-    local function defaultTabIndex(tab_id)
-        for i, t in ipairs(reg.tab_list) do
-            if t == tab_id then return i end
+    local default_tab_index = {}
+    for i, t in ipairs(reg.tab_list or {}) do
+        if not default_tab_index[t] then
+            default_tab_index[t] = i
         end
-        return nil
     end
+
     local arrivals = {}
-    for _, tab_id in ipairs(reg.tab_list) do
+    for _, tab_id in ipairs(reg.tab_list or {}) do
         if not hidden[tab_id] and not tab_seen[tab_id] then
             table.insert(arrivals, tab_id)
         end
     end
     for _, tab_id in ipairs(arrivals) do
-        local dindex = defaultTabIndex(tab_id)
+        local dindex = default_tab_index[tab_id]
         local placed = false
         if dindex then
             for i = dindex + 1, #reg.tab_list do
@@ -581,14 +634,27 @@ function Materializer.resolve(reg, intent, prev_lists)
     for menu_id in pairs(members) do
         if not RESERVED_KEYS[menu_id] then universe[menu_id] = true end
     end
+    -- Explicit sequences and raw passthroughs only claim levels that still
+    -- EXIST in the current registry or among custom containers: a record
+    -- naming a vanished level describes placement inside a world upstream
+    -- removed, so it must not resurrect the level as an empty phantom (the
+    -- oracle reads order[level] ~= nil as "reachable" - and an empty level
+    -- is not a user-visible arrangement anyway). Dormant records stay in
+    -- canonical intent untouched and reapply when the level returns.
     if type(intent.order_override) == "table" then
         for menu_id in pairs(intent.order_override) do
-            if not RESERVED_KEYS[menu_id] then universe[menu_id] = true end
+            if not RESERVED_KEYS[menu_id] and (reg.menus[menu_id]
+                    or customs[menu_id]) then
+                universe[menu_id] = true
+            end
         end
     end
     if type(intent.raw_override) == "table" then
         for menu_id in pairs(intent.raw_override) do
-            if not RESERVED_KEYS[menu_id] then universe[menu_id] = true end
+            if not RESERVED_KEYS[menu_id] and (reg.menus[menu_id]
+                    or customs[menu_id]) then
+                universe[menu_id] = true
+            end
         end
     end
 
@@ -596,8 +662,7 @@ function Materializer.resolve(reg, intent, prev_lists)
     local empty_members = {}
     for _, menu_id in ipairs(sortedKeys(universe)) do
         lists[menu_id] = assembleMenuList(reg, intent, menu_id,
-            members[menu_id] or empty_members, hidden, customs,
-            prev_lists and prev_lists[menu_id] or nil)
+            members[menu_id] or empty_members, hidden, customs)
     end
 
     local custom_titles = {}
@@ -626,5 +691,77 @@ function Materializer.listEquals(a, b)
     end
     return true
 end
+
+-- -------------------------------------------------------------------------
+-- Canonical read seam (P1A integration: delegates to menu_schema v3)
+--
+-- The materializer body consumes ONLY these accessors when reading intent.
+-- They are thin delegations onto MenuSchema's accessor surface - the schema
+-- module owns every physical-storage detail (record shapes, ordinal
+-- ordering, separator tokens); this seam owns only the SEMANTIC concepts
+-- downstream projection consumes:
+--
+--   Materializer.shim.hiddenRecords(intent)
+--       -> iterator over {id=..., ordinal=number|nil} in hide order,
+--          ordinal-less/malformed records sorted by id (deterministic).
+--   Materializer.shim.orderEntries(intent, menu_id)
+--       -> array of entries, each either {separator=true} or
+--          {id=string, provider=string|nil}, in curated order; nil when the
+--          level carries no explicit sequence.
+--   Materializer.shim.explicitParent(intent, id)
+--       -> {provider=..., parent=...}|nil - the single parent-authority
+--          record for an item or created submenu.
+--   Materializer.shim.positionAnchor(intent, id)
+--       -> {provider=..., after=...}|{after=false}|nil sibling anchor.
+--   Materializer.shim.customMenus(intent)
+--       -> map id -> {title=...} for user-created containers.
+-- -------------------------------------------------------------------------
+Materializer.shim = {
+    hiddenRecords = function(intent)
+        local section = type(intent) == "table" and intent or {}
+        -- Canonical accessor: hide-order iteration lives in menu_schema
+        -- (per-record ordinals, id tiebreak for migrated/malformed data).
+        local ordered_ids = MenuSchema.orderedHiddenIds(section)
+        local ordered = {}
+        for index, id in ipairs(ordered_ids) do
+            local record = type(section.hidden) == "table"
+                and type(section.hidden[id]) == "table"
+                and section.hidden[id] or {}
+            ordered[index] = {
+                id = id,
+                ordinal = (type(record.ordinal) == "number")
+                    and record.ordinal or math.huge,
+            }
+        end
+        return ipairs(ordered)
+    end,
+
+    orderEntries = function(intent, menu_id)
+        local section = type(intent) == "table" and intent or {}
+        -- Canonical accessor: combined order record (entries carry their own
+        -- era stamps; separator tokens are typed entries).
+        local record = MenuSchema.getOrderRecord(section, menu_id)
+        return record and record.entries or nil
+    end,
+
+    explicitParent = function(intent, id)
+        local section = type(intent) == "table" and intent or {}
+        return MenuSchema.getParentOverrideRecord(section, id)
+    end,
+
+    positionAnchor = function(intent, id)
+        local section = type(intent) == "table" and intent or {}
+        return MenuSchema.getPositionOverrideRecord(section, id)
+    end,
+
+    customMenus = function(intent)
+        local section = type(intent) == "table" and intent or {}
+        -- Titles only; parent authority lives in explicitParent.
+        local titles = MenuSchema.customMenuTitles(section)
+        local present = type(section.custom_menus) == "table"
+            and next(section.custom_menus) ~= nil or false
+        return titles, present
+    end,
+}
 
 return Materializer

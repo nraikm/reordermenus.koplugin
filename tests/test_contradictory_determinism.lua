@@ -113,15 +113,14 @@ if scen == "K4" then
         { provider = "stock", parent = "setting" })
     assert(txn:commit(true))
 elseif scen == "K5" then
+    -- Schema v3: no hidden-anchor side table exists to seed debris into.
     local txn = IntentStore.openTransaction()
     txn:setHidden(VIEW, "history", { provider = "stock", origin = "main" })
     assert(txn:commit(true))
-    IntentStore.setHiddenAnchor(VIEW, "history", "ghost_row_gone")
 elseif scen == "K6" then
     local txn = IntentStore.openTransaction()
     txn:setHidden(VIEW, "history", { provider = "stock", origin = "main" })
     assert(txn:commit(true))
-    IntentStore.setHiddenAnchor(VIEW, "history", "history")
 end
 
 Manager:dropSessionState(VIEW)
@@ -217,18 +216,14 @@ elseif scen == "K4" then
         "no stale 'setting' residue survives the import")
 elseif scen == "K5" then
     check(Manager:isItemHidden(VIEW, "history"), "hidden record survived")
-    check(IntentStore.getHiddenAnchor(VIEW, "history") == nil,
-        "dangling anchor normalized away")
-    check(IntentStore.getHiddenAnchor(VIEW, "open_last_document") == nil,
-        "no anchor invented for healthy rows")
+    -- Schema v3: the anchor side table is gone; nothing to normalize.
     check(not sec.hidden.open_last_document,
         "healthy row not swept into hiding")
 elseif scen == "K6" then
     check(not Manager:isItemHidden(VIEW, "history"),
         "external unhide imported (record dropped)")
     check(sec.hidden.history == nil, "no hidden residue in canonical intent")
-    check(IntentStore.getHiddenAnchor(VIEW, "history") == nil,
-        "visibility anchor swept with the record")
+    check(true, "visibility anchor concept removed in schema v3")
 elseif scen == "K7" then
     check(sec.hidden["calibre-companion"] ~= nil,
         "native-only disabled imported as hidden intent")
@@ -261,14 +256,14 @@ end
 -- ---- WORLD fingerprint ----------------------------------------------------
 
 local fp = NativeWriter.fingerprint
-local anchors = IntentStore.meta().ui_state.hidden_anchors[VIEW] or {}
 local native_fp = "absent"
 local ok_native, nat = pcall(dofile, KoreaderAdapter.getNativePath(VIEW))
 if ok_native and type(nat) == "table" then native_fp = fp(nat) end
 
+-- Schema v3: no ui_state/hidden_anchors area exists; the intent fingerprint
+-- already covers every persisted byte of user state.
 print("WORLD " .. table.concat({
     "intent=" .. fp(sec),
-    "anchors=" .. fp(anchors),
     "native=" .. native_fp,
     "proj=" .. fp(proj),
 }, "|"))

@@ -80,6 +80,7 @@ local NATIVE = {
 }
 local SIDECAR_FILE = sd .. "/reorderingmenus_materialization.lua"
 
+local live_stubs = { reader = {}, filemanager = {} }
 local function wipe_all()
     for _, f in ipairs({ NATIVE.filemanager, NATIVE.reader,
         INTENT_FILE, SIDECAR_FILE }) do
@@ -92,14 +93,16 @@ local function wipe_all()
     Manager:dropSessionState("filemanager")
     Manager:dropSessionState("reader")
     Manager:setMirroringEnabled(false)
+    live_stubs = { reader = {}, filemanager = {} }
 end
 
 -- Stub registration through the real reconcile/pin path.
 local function anchor(view, id, hint)
-    Manager:setLiveRegistrations(view,
-        { [id] = { sorting_hint = hint } }, { [id] = id .. "_w" })
-    Manager:reconcileRegisteredItems(view,
-        { [id] = { sorting_hint = hint } }, { [id] = id .. "_w" })
+    live_stubs[view][id] = { sorting_hint = hint }
+    local w = {}
+    for k in pairs(live_stubs[view]) do w[k] = k .. "_w" end
+    Manager:setLiveRegistrations(view, live_stubs[view], w)
+    Manager:reconcileRegisteredItems(view, live_stubs[view], w)
 end
 
 local function anchor_both(id, hint)

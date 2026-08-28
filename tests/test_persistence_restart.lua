@@ -199,6 +199,7 @@ print("===============================================================")
 
 -- Drop EVERY in-memory trace of the previous session:
 package.loaded["reorderingmenus_menuorder_manager"] = nil      -- manager module itself
+package.loaded["reorderingmenus_ui_screens"] = nil             -- UI layer binds to fresh manager
 package.loaded["ui/elements/" .. view .. "_menu_order"] = nil -- cached defaults
 MenuOrderManager.orders[view] = nil            -- working copy
 MenuOrderManager.default_orders[view] = nil    -- defaults cache
@@ -226,6 +227,11 @@ fm_menu2.registered_widgets.fresh_plugin_stub = {
 local plugin2 = ReorderingMenus:new{ ui = mock_ui_fm }
 plugin2.ui = mock_ui_fm
 fm_menu2:registerToMainMenu(plugin2)
+-- Startup equivalence (P1B contract): a hinted newcomer is anchored
+-- IMPLICITLY, so the projection only reflects it after the registration
+-- reconcile that KOReader's init path performs. Without this call the row
+-- lives only in the live registry and getParentMenu correctly reports nil.
+UIScreens:reconcileRegisteredItems(plugin2, view, true)
 fm_menu2:setUpdateItemTable()
 
 print("\n--- Post-restart verification ---")

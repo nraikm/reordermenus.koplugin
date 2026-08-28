@@ -53,18 +53,17 @@ case "$TIER" in
     *) echo "Unknown TIER '$TIER' (quick|ci|nightly|soak)" >&2; exit 2 ;;
 esac
 
-# P1/P0-C: on nightly runs, replay every previously-failing promoted fixture's
-# seed in addition to fresh random seeds.
-SEED_BANK_FILE="$PLUGIN_DIR/tests/fixtures/regression/seed_bank.txt"
-if [ "$TIER" != "quick" ] && [ -s "$SEED_BANK_FILE" ]; then
-    BANK=$(sort -u "$SEED_BANK_FILE" | paste -sd, -)
-    if [ -n "$BANK" ]; then
-        export SM_SEED_LIST="${SM_SEED_LIST:+$SM_SEED_LIST,}$BANK"
-    fi
-fi
+# Fresh randomized seeds are run for state machine suites (SM_SEEDS × SM_STEPS).
+# Promoted regression fixtures in test_regressions_promoted.lua replay the seed bank.
 
 cd "$KOREADER_DIR"
 export PLUGIN_DIR="$PLUGIN_DIR"
+export KOREADER_DIR="$KOREADER_DIR"
+
+echo "=== ReorderingMenus Test Runner ==="
+echo "TIER: $TIER | KOREADER_DIR: $KOREADER_DIR | PLUGIN_DIR: $PLUGIN_DIR"
+echo "Knobs: SM_SEEDS=$SM_SEEDS SM_STEPS=$SM_STEPS ITERATIONS=$ITERATIONS DF_SEEDS=$DF_SEEDS DF_STEPS=$DF_STEPS"
+[ -n "${SM_SEED_LIST:-}" ] && echo "SM_SEED_LIST: $SM_SEED_LIST"
 
 suites=()
 if [ $# -gt 0 ]; then
@@ -159,8 +158,8 @@ for f in "${suites[@]}"; do
                 ;;
         esac
 
-        # A requested seed bank must appear in the reported seed_list.
-        if [ -n "${SM_SEED_LIST:-}" ] && grep -q 'seed_list=' "/tmp/rm_test_$name.log"; then
+        # A requested seed bank must appear in the reported seed_list for state machine suites.
+        if [ -n "${SM_SEED_LIST:-}" ] && [[ "$name" == test_state_machine*.lua ]] && grep -q 'seed_list=' "/tmp/rm_test_$name.log"; then
             IFS=',' read -ra want_seeds <<< "$SM_SEED_LIST"
             for ws in "${want_seeds[@]}"; do
                 if ! grep -q "seed_list=.*${ws}\([+,]\|$\)" "/tmp/rm_test_$name.log" 2>/dev/null \

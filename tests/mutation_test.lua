@@ -56,12 +56,36 @@ end
 
 local MUTANTS = {
     {
-        id = "quarantine-all",
-        desc = "every canonical-problem quarantine call neutralized",
-        file = "intent_store.lua",
-        find = "last_backup_path = quarantine(path, raw_text)",
-        replace = "last_backup_path = nil",
+        id = "quarantine-corrupt",
+        desc = "quarantine on corrupt canonical intent neutralized",
+        file = "reorderingmenus_intent_store.lua",
+        find = 'backup_path = writeBackupBytes(path, "corrupt", raw_text)',
+        replace = "backup_path = nil",
         killer = "test_corrupt_canonical_intent.lua",
+    },
+    {
+        id = "dormant-provider",
+        desc = "dormant provider intent falsely materializes",
+        file = "reorderingmenus_materializer.lua",
+        find = "local current_provider = node and node.provider or nil\n    if current_provider == nil then return false end",
+        replace = "local current_provider = node and node.provider or nil\n    if current_provider == nil then return true end",
+        killer = "test_provider_identity.lua",
+    },
+    {
+        id = "noop-status",
+        desc = "noop commit falsely reports saved",
+        file = "reorderingmenus_commit_pipeline.lua",
+        find = "outcome.status = CommitPipeline.STATUS.UNCHANGED",
+        replace = "outcome.status = CommitPipeline.STATUS.SAVED",
+        killer = "test_p0_commit_pipeline.lua",
+    },
+    {
+        id = "preset-name-validation",
+        desc = "preset name traversal validation disabled",
+        file = "reorderingmenus_presets.lua",
+        find = "local clean_name, name_err = cleanPresetName(preset_name)",
+        replace = "local clean_name, name_err = preset_name, nil",
+        killer = "test_p1b_preset_semantics.lua",
     },
 }
 
@@ -69,21 +93,34 @@ print("===============================================================")
 print("=== Mutation test matrix                                     ===")
 print("===============================================================")
 
+local failed_count = 0
+
 for _, m in ipairs(MUTANTS) do
     local path = project_dir .. "/" .. m.file
     local orig = read(path)
     if not orig then
         print(string.format("  %-24s %-10s cannot read %s", m.id, "ERROR", m.file))
+        failed_count = failed_count + 1
     else
         local mutated, n = mutate_all(orig, m.find, m.replace)
         if not mutated then
             print(string.format("  %-24s %-10s snippet drifted", m.id, "STALE"))
+            failed_count = failed_count + 1
         else
             write(path, mutated)
-            local killed = run_suite(m.killer)
+            local ok, killed = pcall(run_suite, m.killer)
             write(path, orig)
-            print(string.format("  %-24s %-10s sites=%d killer=%s | %s",
-                m.id, killed and "KILLED" or "SURVIVED", n, m.killer, m.desc))
+            if not ok or not killed then
+                print(string.format("  %-24s %-10s sites=%d killer=%s | %s",
+                    m.id, "SURVIVED", n, m.killer, m.desc))
+                failed_count = failed_count + 1
+            else
+                print(string.format("  %-24s %-10s sites=%d killer=%s | %s",
+                    m.id, "KILLED", n, m.killer, m.desc))
+            end
         end
     end
 end
+
+print(string.format("\nMutation summary: %d failed/survived of %d", failed_count, #MUTANTS))
+os.exit(failed_count == 0 and 0 or 1)

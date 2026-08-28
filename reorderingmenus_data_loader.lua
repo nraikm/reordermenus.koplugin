@@ -67,8 +67,12 @@ local RESTRICTED_ENV = setmetatable({}, {
         -- a bug in the producer, not something to serve from _G.
         error("restricted data loader: global access to " .. tostring(key), 2)
     end,
-    -- Writes land in this throwaway sandbox table, never in _G.
-    __newindex = function() end,
+    -- Writes must fail loudly as well: assignments land nowhere - not in
+    -- this table, not in _G - and the chunk aborts with a clear error.
+    __newindex = function(_, key)
+        error("restricted data loader: global assignment to "
+            .. tostring(key), 2)
+    end,
 })
 
 local function readBounded(path)
@@ -79,7 +83,7 @@ local function readBounded(path)
     end
     local file = io.open(path, "r")
     if not file then return nil, "unreadable" end
-    local raw_text = file:read("*a")
+    local raw_text = file:read(DataLoader.MAX_FILE_BYTES + 1)
     file:close()
     if type(raw_text) ~= "string" then return nil, "unreadable" end
     -- Re-check after reading: the file may have grown between stat and read.
@@ -89,6 +93,7 @@ local function readBounded(path)
     end
     return raw_text, nil
 end
+DataLoader.readBounded = readBounded
 
 --- Load a data-only Lua file and return its table.
 --- Returns table, nil on success; nil, err on any failure.
@@ -104,9 +109,14 @@ function DataLoader.loadTable(path)
     if not chunk then return nil, tostring(load_err) end
     if setfenv then setfenv(chunk, RESTRICTED_ENV) end
     -- Make the instruction budget enforceable: count hooks do not fire in
-    -- JIT-traced code, so exclude this one chunk from tracing. The hook is
+    -- JIT-traced code, so exclude this chunk - and every function nested in
+    -- it (a `return (function() while true do end end)()` payload otherwise
+    -- escapes the budget entirely) - from tracing. The recursive flag is
+    -- what matters: measured on this runtime, plain jit.off(chunk) only
+    -- protects loops living directly in the main chunk, and machine-wide
+    -- jit.off(true, true) does NOT make hooks fire at all. The hook is
     -- process-global state; it is removed again before every return below.
-    if jit and jit.off then pcall(jit.off, chunk) end
+    if jit and jit.off then pcall(jit.off, chunk, true) end
     local consumed = 0
     local interval = math.max(1, DataLoader.EXEC_HOOK_INTERVAL or 1000)
     debug.sethook(function()

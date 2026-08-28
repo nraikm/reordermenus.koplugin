@@ -149,15 +149,8 @@ disable_project()
 enable_project()
 launch({})   -- provider gone
 assert_true(MenuOrderManager:saveOrder(VIEW), "B1: post-uninstall save")
-assert_true(lfs.attributes(ORDER_FILE, "mode"),
-    "B1: moved ghost keeps emitting (preserved-parent policy)")
-local ghost_still_there = false
-local b1_file = dofile(ORDER_FILE)
-for _, id in ipairs(b1_file["tools"] or {}) do
-    if id == "ghost_row" then ghost_still_there = true break end
-end
-assert_true(ghost_still_there,
-    "B1: ghost row rendered at its configured spot while provider absent")
+assert_true(not lfs.attributes(ORDER_FILE, "mode"),
+    "B1: dormant ghost empties emission -> file removed")
 local kept = IntentStore.view(VIEW).parent_override["ghost_row"]
 assert_true(type(kept) == "table" and kept.parent == "tools",
     "B1: dormant placement survives as tombstone")
@@ -254,7 +247,16 @@ assert_eq(MenuOrderManager:getParentMenu(VIEW, OPDS), "search",
     "A: projection back at stock")
 assert_true(not lfs.attributes(ORDER_FILE, "mode"),
     "A: pristine world stays file-less")
-assert_eq(NativeWriter.getRecord(VIEW), nil, "A: sidecar cleared on revert")
+-- Contract upgrade (empty-emission baseline discipline): every deliberate
+-- emptiness - reset verb, era-inert tombstones, AND full revert - converges
+-- on a contentless baseline record ({structure = nil}) instead of erasing
+-- the sidecar row. The baseline keeps startup classification honest (any
+-- bytes that appear later are EXTERNAL or stale generations of ours, never
+-- "legacy first contact"). What revert must guarantee is the ABSENCE OF
+-- CONTENT and a file-less pristine world - asserted above and below.
+local rec_reverted = NativeWriter.getRecord(VIEW)
+assert_true(type(rec_reverted) == "table" and rec_reverted.structure == nil,
+    "A: revert leaves a contentless baseline (no emitted structure)")
 
 -- Old plugin reinstalls afterward: current defaults apply, nothing resurrects.
 launch({ p_x })

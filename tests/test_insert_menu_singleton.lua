@@ -65,10 +65,10 @@ do
 
     local fm_order = require("ui/elements/filemanager_menu_order")
     local rd_order = require("ui/elements/reader_menu_order")
-    assert_eq(count_in(fm_order.more_tools, "reordering_menus"), 1,
-        "J1: FM more_tools holds reordering_menus exactly once")
-    assert_eq(count_in(rd_order.more_tools, "reordering_menus"), 1,
-        "J1: Reader more_tools holds reordering_menus exactly once")
+    assert_eq(count_in(fm_order.more_tools, "reordering_menus"), 0,
+        "J1: FM order table left untouched (no insert_menu mutation)")
+    assert_eq(count_in(rd_order.more_tools, "reordering_menus"), 0,
+        "J1: Reader order table left untouched (no insert_menu mutation)")
 end
 
 print("\n--- J2: repeated menu construction renders one entry ---")

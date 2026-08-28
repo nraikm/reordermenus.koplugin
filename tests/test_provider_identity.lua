@@ -227,8 +227,8 @@ do
 
     restart()
     launch({ make_stub("new_id", "more_tools", "renaming_plugin") })
-    assert_true(MenuOrderManager:isItemHidden(view, "old_id") == false or true,
-        "T5: tombstone for old id stays inert either way")
+    assert_true(MenuOrderManager:isItemHidden(view, "old_id") == false,
+        "T5: absent item is not hidden in live projection")
     assert_eq(MenuOrderManager:getParentMenu(view, "new_id"), "more_tools",
         "T5: renamed id uses the provider default")
     assert_true(parents_of("old_id")[1] == nil,

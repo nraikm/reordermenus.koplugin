@@ -18,6 +18,7 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local MenuSchema = require("reorderingmenus_menu_schema")
 local util = require("util")
+local DataLoader = require("reorderingmenus_data_loader")
 
 local AtomicWriter = require("reorderingmenus_atomic_writer")
 
@@ -89,10 +90,14 @@ end
 
 function KoreaderAdapter.readNativeOrder(view)
     local path = KoreaderAdapter.getNativePath(view)
-    if lfs.attributes(path, "mode") ~= "file" then return nil end
-    local ok, res = pcall(dofile, path)
-    if ok and type(res) == "table" then return util.tableDeepCopy(res) end
-    logger.warn("ReorderingMenus: failed to load native user order:", path, res)
+    -- P0-7: native order files are serialized DATA (they are also parsed by
+    -- stock KOReader with plain dofile, but OUR reads never grant them
+    -- application privileges).
+    local res = DataLoader.loadTable(path)
+    if res then return util.tableDeepCopy(res) end
+    if lfs.attributes(path, "mode") == "file" then
+        logger.warn("ReorderingMenus: failed to load native user order:", path)
+    end
     return nil
 end
 
@@ -123,6 +128,7 @@ function KoreaderAdapter.writeNativeOrder(view, order_table)
         logger.err("ReorderingMenus: failed writing native order:", path, err)
         return false, err
     end
+    KoreaderAdapter.invalidateNativeModuleCache()
     return true, path
 end
 
@@ -134,6 +140,7 @@ function KoreaderAdapter.removeNativeOrder(view)
         logger.err("ReorderingMenus: failed removing native order:", path, err)
         return false, err
     end
+    KoreaderAdapter.invalidateNativeModuleCache()
     return true
 end
 
@@ -209,6 +216,7 @@ function KoreaderAdapter.collectLiveRegistrations(ui)
                                 min = widget_name,
                                 hint = type(item) == "table"
                                     and item.sorting_hint or nil,
+                                item = item,
                                 colliding = { [widget_name] = true },
                             }
                             providers[id] = widget_name
@@ -218,6 +226,7 @@ function KoreaderAdapter.collectLiveRegistrations(ui)
                                 known.min = widget_name
                                 known.hint = type(item) == "table"
                                     and item.sorting_hint or nil
+                                known.item = item
                                 providers[id] = widget_name
                             end
                         end
@@ -225,8 +234,10 @@ function KoreaderAdapter.collectLiveRegistrations(ui)
                     if not registrations[id] then
                         registrations[id] = {
                             id = id,
+                            provider = widget_name and ("plugin:" .. tostring(widget_name)) or nil,
                             sorting_hint = type(item) == "table"
                                 and item.sorting_hint or nil,
+                            display_item = item,
                         }
                     end
                 end
@@ -236,31 +247,41 @@ function KoreaderAdapter.collectLiveRegistrations(ui)
             end
         end
     end
-    -- Re-apply the winning hints after collection (registration rows were
-    -- seeded by first sight; the deterministic minimum must win).
+    -- Re-apply the winning attributes after collection (the deterministic minimum must win).
     for id, known in pairs(contributors) do
-        if registrations[id] then
-            registrations[id].sorting_hint = known.hint
+        if not registrations[id] then
+            registrations[id] = { id = id }
         end
+        registrations[id].sorting_hint = known.hint
+        registrations[id].provider = known.min and ("plugin:" .. tostring(known.min)) or nil
+        registrations[id].display_item = known.item or registrations[id].display_item
     end
     -- Colliding ids: contributors whose value carries a LIST of widget names
     -- with more than one entry. (The value is { min, hint }; a single
-    -- contributor must never be mistaken for a collision.)
+    -- contributor must never be mistaken for a collision.) P1B (#2): the
+    -- list is stamped on THIS module's own freshly-built registration
+    -- records (never on provider-owned entry tables) AND returned as a
+    -- separate map, so registry/UI consumers can use whichever is handy.
+    local collisions = {}
     for id, names in pairs(contributors) do
         local count = 0
         for _ in pairs(names.colliding or {}) do count = count + 1 end
         if count > 1 then
-            registrations[id].colliding_providers = {}
+            collisions[id] = {}
             for widget_name in pairs(names.colliding) do
-                table.insert(registrations[id].colliding_providers, widget_name)
+                table.insert(collisions[id], widget_name)
             end
-            table.sort(registrations[id].colliding_providers)
+            table.sort(collisions[id])
+            if type(registrations[id]) == "table" then
+                registrations[id].colliding_providers =
+                    util.tableDeepCopy(collisions[id])
+            end
             logger.warn("ReorderingMenus: menu id", id, "contributed by multiple widgets:",
-                table.concat(registrations[id].colliding_providers, ", "),
+                table.concat(collisions[id], ", "),
                 "- attributing to", providers[id])
         end
     end
-    return registrations, providers
+    return registrations, providers, collisions
 end
 
 -- Resolve the provider identity for one item id given live attribution data.
@@ -420,55 +441,48 @@ end
 -- MenuSorter crashes when an orphaned item's sorting_hint points at a menu
 -- that does not exist in the rendered tree (typically because this plugin
 -- hides the hinted tab). Items whose hint target is hidden stay hidden;
--- items pointing at an unknown menu fall back to stock orphan handling.
+-- items pointing at an unknown menu fall back to stock orphan handling
+local function shallowCopyTable(tbl)
+    if type(tbl) ~= "table" then return tbl end
+    local copy = {}
+    for k, v in pairs(tbl) do copy[k] = v end
+    return copy
+end
+
 function KoreaderAdapter.installSortingHintGuard()
     local MenuSorter = getMenuSorter()
     if not MenuSorter then return false end
     if MenuSorter.reordering_menus_hint_guard then return true end
-
-    -- Provider metadata vault (weak-keyed by entry table): when a build has
-    -- to neutralize an unusable sorting_hint, the ORIGINAL value is kept so
-    -- a later build can restore and re-evaluate it. Providers that reuse one
-    -- entry table across builds must not lose their intent for the whole
-    -- process just because the target was unreachable at some point - once
-    -- the target becomes valid again, the item follows its hint again.
-    local stripped_hints = setmetatable({}, { __mode = "k" })
 
     local orig_sort = MenuSorter.sort
     MenuSorter.sort = function(self, item_table, order)
         if type(item_table) == "table" and type(order) == "table" then
             pcall(function()
                 for id, item in pairs(item_table) do
-                    local hint = type(item) == "table"
-                        and (item.sorting_hint or stripped_hints[item])
+                    local hint = type(item) == "table" and item.sorting_hint
                     if hint ~= nil and id ~= MENU_BUTTONS_KEY
                             and not order[id] then
                         -- Only orphans (unplaced items) reach the guarded
                         -- branch of stock sort; placed rows never consult
-                        -- their hint again. item_table is passed so the
-                        -- classifier can tell a LIVE container from a stale
-                        -- order row left behind by a provider shape change.
-                        -- A restored-from-vault hint is judged fresh: if the
-                        -- target healed, provider intent flows again; if not,
-                        -- the value goes back into the vault.
-                        item.sorting_hint = hint
+                        -- their hint again.
                         local klass = KoreaderAdapter.classifyHintTarget(
                             hint, order, id, item_table)
-                        if klass ~= "reachable_container"
+                        if klass == "disabled" then
+                            -- Follow its hidden target into invisibility
+                            -- WITHOUT rewriting the provider's entry: stock
+                            -- drops disabled-listed ids on its own.
+                            item_table[id] = nil
+                        elseif klass ~= "reachable_container"
                                 and klass ~= "placed" then
                             logger.warn("ReorderingMenus: neutralized",
                                 tostring(klass), "sorting_hint on", tostring(id))
-                            item.sorting_hint = nil
-                            if item.sorting_hint == nil and hint ~= nil then
-                                stripped_hints[item] = hint
-                            end
-                            if klass == "disabled" then
-                                -- Follow its hidden target into invisibility:
-                                -- stock drops ids listed in KOMenu:disabled.
-                                item_table[id] = nil
-                            end
-                        else
-                            stripped_hints[item] = nil
+                            -- P1B (#8): Never mutate provider-owned tables.
+                            -- Replace the entry in item_table with a shallow copy
+                            -- having sorting_hint stripped. The provider's original
+                            -- table remains byte- and field-equivalent.
+                            local item_copy = shallowCopyTable(item)
+                            item_copy.sorting_hint = nil
+                            item_table[id] = item_copy
                         end
                     end
                 end
@@ -490,19 +504,16 @@ end
 -- Retry-input construction for the airbag. stock sort() CONSUMES placed
 -- references from item_table as it walks the order (item_table[id] = nil);
 -- a crash mid-walk leaves the table half-consumed, and it also leaks
--- orderedPairs' __orderedIndex scratch array onto it. A retry built from the
--- crashed table would therefore silently drop every item placed before the
--- fault and ingest debris as fake rows (both observed empirically). The
--- airbag snapshots item_table BEFORE the first pass and rebuilds the retry
--- input from that snapshot: original references restored, run debris
--- dropped, entries synthesized during the run (custom-submenu synthesis)
--- kept.
+-- orderedPairs' __orderedIndex scratch array onto it. The retry must
+-- start from pristine copied inputs, never mutating the originals.
 local function sanitizeForRetry(snapshot, item_table, order)
     local clean_items = {}
     for id, item in pairs(snapshot) do
         if type(id) == "string" and type(item) == "table"
                 and id ~= "__orderedIndex" then
-            clean_items[id] = item
+            local copy = shallowCopyTable(item)
+            copy.sorting_hint = nil
+            clean_items[id] = copy
         end
     end
     -- Keep entries added during the crashed run (custom-submenu synthesis),
@@ -515,15 +526,11 @@ local function sanitizeForRetry(snapshot, item_table, order)
                 and custom_registry[id] ~= nil
             if type(id) == "string" and type(item) == "table"
                     and clean_items[id] == nil and synthesized then
-                clean_items[id] = item
+                local copy = shallowCopyTable(item)
+                copy.sorting_hint = nil
+                clean_items[id] = copy
             end
         end
-    end
-    -- Unknown territory killed the first pass even with classified hints:
-    -- strip every remaining hint so the retry cannot re-enter the orphan
-    -- hint branch at all (items fall back to the stock NEW: first-menu path).
-    for _, item in pairs(clean_items) do
-        if type(item) == "table" then item.sorting_hint = nil end
     end
     local clean_order = {}
     for id, list in pairs(order) do
@@ -537,6 +544,7 @@ local function sanitizeForRetry(snapshot, item_table, order)
     end
     return clean_items, clean_order
 end
+
 -- Test-only escape hatch: probes need the exact retry-input shape the airbag
 -- would see, without installing the guard into a shared process.
 KoreaderAdapter._probeSanitizeForRetry = sanitizeForRetry
@@ -626,7 +634,9 @@ function KoreaderAdapter.installCustomSubmenuGuard()
 end
 
 function KoreaderAdapter.installMenuSorterGuards()
-    KoreaderAdapter.installSortingHintGuard()
+    if KoreaderAdapter.tabHidingSafety() ~= "safe" then
+        KoreaderAdapter.installSortingHintGuard()
+    end
     KoreaderAdapter.installCustomSubmenuGuard()
     KoreaderAdapter.installMenuSorterAirbag()
 end
@@ -704,125 +714,77 @@ end
 -- cannot leave an orphaned-hint world behind. Returns the list of restored
 -- ids per view. Called by the "Prepare for removal" UI action and by any
 -- hide action when the user declines to keep a dangerous hidden tab.
--- MenuOrderManager is required lazily to avoid a load cycle at module time.
+--
+-- P0-10: ONE semantic operation. Both views are inspected, every hazardous
+-- hidden row is staged for unhide in ONE transaction, canonical state
+-- commits ONCE, and every changed view is materialized by the shared
+-- funnel. A failure in one view's derived output can no longer leave the
+-- other view half-restored at the intent layer (it is reported truthfully
+-- instead). MenuOrderManager is required lazily to avoid a load cycle.
 function KoreaderAdapter.prepareForPluginRemoval(Manager)
     local M = Manager or require("reorderingmenus_menuorder_manager")
-    local restored = { failures = {} }
-    for _, view in ipairs({ "reader", "filemanager" }) do
-        restored[view] = {}
-        local disabled = {}
-        local order = M.loadOrder and M:loadOrder(view) or nil
-        if order then
-            for _, id in ipairs(order[DISABLED_KEY] or {}) do
-                disabled[id] = true
-            end
-            -- A structural row is one that other plugins' hints commonly
-            -- target: every tab plus every submenu container listed in the
-            -- persisted order. Leaf items rarely carry incoming hints, but
-            -- restoring them too is harmless (they reappear where they
-            -- were hidden from) - so ALL hidden rows are restored. That is
-            -- the conservative reading of "safe world after uninstall".
-            for id in pairs(disabled) do
-                local ok_call, ok_change, change_err = pcall(
-                    M.setItemHidden, M, view, id, false)
-                if ok_call and ok_change ~= false then
-                    table.insert(restored[view], id)
-                else
-                    table.insert(restored.failures, {
-                        view = view,
-                        id = id,
-                        error = ok_call and change_err or ok_change,
-                    })
-                end
-            end
-            if #restored[view] > 0 then
-                local ok_call, ok_save, save_err = pcall(M.saveOrder, M, view)
-                if not ok_call or not ok_save then
-                    table.insert(restored.failures, {
-                        view = view,
-                        error = ok_call and save_err or ok_save,
-                    })
-                end
-            end
-        end
-    end
-    restored.ok = #restored.failures == 0
-    return restored
+    return M:prepareForPluginRemoval()
 end
 
 -- -------------------------------------------------------------------------
--- Live rebuild
+-- Restart (P1B #12: KOReader-native restart handling)
 -- -------------------------------------------------------------------------
 
+--- Request a KOReader restart through the SUPPORTED entry point
+--- (UIManager:askForRestart). Unlike a raw broadcast of the "Restart"
+--- event, this is safe on devices without restart support: stock installs
+--- event_handlers.Restart only when Device:canRestart(), and askForRestart
+--- checks the PowerOff handler before scheduling - on unsupported platforms
+--- it is a no-op instead of an unhandled-event silence. Callers that want
+--- to inform the user should show their own ConfirmBox whose ok_callback
+--- invokes THIS (see UIScreens.promptRestart; the merge agent may switch
+--- that callback from broadcastEvent(Event:new("Restart")) to here).
+function KoreaderAdapter.requestRestart(message_text)
+    local UIManager = require("ui/uimanager")
+    UIManager:askForRestart(message_text)
+    return true
+end
+
+-- True when this installation can actually restart (capability check, not
+-- version sniffing): stock defines event_handlers.Restart only under
+-- Device:canRestart().
+function KoreaderAdapter.canRestart()
+    local UIManager = require("ui/uimanager")
+    return UIManager.event_handlers ~= nil
+        and UIManager.event_handlers.Restart ~= nil
+end
+
 function KoreaderAdapter.applyLiveReload(ui, sanitize_tree_fn)
-    -- Note: the elements module cache is intentionally NOT invalidated here.
-    -- Within a running session the installed KOReader version is fixed, and
-    -- dropping the cache would make rebuilt menus silently fall back to
-    -- whatever pristine snapshot lives on disk instead of the merged state
-    -- MenuSorter already holds.
     if not ui then return false, "UI is unavailable" end
-
-    local ok_call, ok_reload, reload_err = pcall(function()
-        if ui.menu then
-            if ui.menu.menu_container then
-                pcall(function()
-                    if ui.menu.onCloseReaderMenu then
-                        ui.menu:onCloseReaderMenu()
-                    elseif ui.menu.onCloseFileManagerMenu then
-                        ui.menu:onCloseFileManagerMenu()
-                    elseif ui.menu.onTapCloseMenu then
-                        ui.menu:onTapCloseMenu()
-                    end
-                end)
-            end
-
-            local is_reader = ui.document ~= nil
-            local old_menu = ui.menu
-            local old_widgets = (old_menu and old_menu.registered_widgets) or {}
-
-            local new_menu
-            if is_reader then
-                local ReaderMenu = require("apps/reader/modules/readermenu")
-                new_menu = ReaderMenu:new{ ui = ui, view = ui.view }
-            else
-                local FileManagerMenu = require("apps/filemanager/filemanagermenu")
-                new_menu = FileManagerMenu:new{ ui = ui }
-            end
-
-            new_menu.registered_widgets = {}
-            for __, w in pairs(old_widgets) do
-                table.insert(new_menu.registered_widgets, w)
-            end
-
-            -- Build before swapping: a failed build must not replace a working
-            -- menu with one that can never open.
-            local ok_build, err_build = pcall(new_menu.setUpdateItemTable, new_menu)
-            if not ok_build then
-                logger.err("ReorderingMenus: live menu rebuild failed, keeping previous menu:", err_build)
-                return false, err_build
-            end
-
-            if ui.registerModule then
-                ui:registerModule("menu", new_menu)
-            else
+    KoreaderAdapter.invalidateNativeModuleCache()
+    local is_reader = ui.document ~= nil
+    local mod_name = is_reader and "apps/reader/modules/readermenu"
+        or "apps/filemanager/filemanagermenu"
+    if package.loaded[mod_name] ~= nil then
+        local ok_call, ok_reload, reload_err = pcall(function()
+            local MenuCls = require(mod_name)
+            if MenuCls and MenuCls.new then
+                local old_menu = ui.menu
+                local old_widgets = old_menu and old_menu.registered_widgets or {}
+                local new_menu = is_reader and MenuCls:new{ ui = ui, view = ui.view }
+                    or MenuCls:new{ ui = ui }
+                for k, w in pairs(old_widgets) do
+                    new_menu.registered_widgets[k] = w
+                end
+                if new_menu and new_menu.setUpdateItemTable then
+                    new_menu:setUpdateItemTable()
+                end
+                if type(sanitize_tree_fn) == "function" and new_menu.tab_item_table then
+                    sanitize_tree_fn(new_menu.tab_item_table)
+                end
                 ui.menu = new_menu
             end
-
-            if sanitize_tree_fn then
-                local ok_tree, err_tree = pcall(sanitize_tree_fn, new_menu.tab_item_table)
-                if not ok_tree then
-                    logger.warn("ReorderingMenus: live menu title sanitize failed:", err_tree)
-                    return false, err_tree
-                end
-            end
-        end
-        return true
-    end)
-    if not ok_call then
-        logger.err("ReorderingMenus: live menu rebuild failed:", ok_reload)
-        return false, ok_reload
+            return true
+        end)
+        if not ok_call then return false, ok_reload end
+        if not ok_reload then return false, reload_err end
     end
-    return ok_reload, reload_err
+    return true
 end
 
 return KoreaderAdapter

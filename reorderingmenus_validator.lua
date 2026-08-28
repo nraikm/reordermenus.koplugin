@@ -15,7 +15,6 @@ The validator never mutates intent; it repairs the derived graph and
 reports what it had to fix.
 --]]
 
-local logger = require("logger")
 local MenuSchema = require("reorderingmenus_menu_schema")
 
 local Validator = {}
@@ -29,10 +28,15 @@ local function array_contains(list, value)
     return false
 end
 
--- Items/tabs whose interactive hiding would lock the user out of menu
--- editing entirely. Presets remain deliberate bulk operations.
-local PROTECTED_ITEMS = { reordering_menus = true }
-local PROTECTED_TABS = { tools = true }
+local function sortedKeys(t)
+    local keys = {}
+    for k in pairs(t or {}) do table.insert(keys, k) end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    return keys
+end
+
+local PROTECTED_ITEMS = MenuSchema.PROTECTED_ITEMS
+local PROTECTED_TABS = MenuSchema.PROTECTED_TABS
 
 function Validator.isItemProtected(item_id)
     return PROTECTED_ITEMS[item_id] == true
@@ -44,9 +48,10 @@ end
 
 local function repairDuplicateOwnership(ctx)
     local owners_by_id = {}
-    for menu_id, list in pairs(ctx.lists) do
+    for _, menu_id in ipairs(sortedKeys(ctx.lists)) do
+        local list = ctx.lists[menu_id]
         local seen_in_menu = {}
-        for _, id in ipairs(list) do
+        for _, id in ipairs(list or {}) do
             if id ~= SEPARATOR_ID then
                 seen_in_menu[id] = true
                 owners_by_id[id] = owners_by_id[id] or {}
@@ -54,6 +59,7 @@ local function repairDuplicateOwnership(ctx)
             end
         end
     end
+
     -- Deterministic repair: an explicit parent_override wins; otherwise the
     -- customized destination when there is exactly one non-default claimant,
     -- otherwise the alphabetically first.
@@ -67,35 +73,46 @@ local function repairDuplicateOwnership(ctx)
             end
         end
     end
+
+    -- Deterministic warning order: sort duplicate IDs before iteration
+    local dup_ids = {}
     for id, owners in pairs(owners_by_id) do
         if #owners > 1 then
-            table.sort(owners)
-            local chosen = override_parent[id]
-            if chosen then
-                local found = false
-                for _, o in ipairs(owners) do
-                    if o == chosen then found = true break end
-                end
-                if not found then chosen = nil end
-            end
-            if not chosen then
-                local node = ctx.reg.nodes and ctx.reg.nodes[id]
-                local default_parent = node and node.default_parent or nil
-                local non_default = {}
-                for _, o in ipairs(owners) do
-                    if o ~= default_parent then table.insert(non_default, o) end
-                end
-                chosen = (#non_default == 1) and non_default[1] or owners[1]
-            end
-            keep_parent[id] = chosen
-            table.insert(ctx.warnings, string.format(
-                "%s listed under %d menus; kept %s", id, #owners, keep_parent[id]))
+            table.insert(dup_ids, id)
         end
     end
-    for menu_id, list in pairs(ctx.lists) do
+    table.sort(dup_ids, function(a, b) return tostring(a) < tostring(b) end)
+
+    for _, id in ipairs(dup_ids) do
+        local owners = owners_by_id[id]
+        table.sort(owners, function(a, b) return tostring(a) < tostring(b) end)
+        local chosen = override_parent[id]
+        if chosen then
+            local found = false
+            for _, o in ipairs(owners) do
+                if o == chosen then found = true; break end
+            end
+            if not found then chosen = nil end
+        end
+        if not chosen then
+            local node = ctx.reg.nodes and ctx.reg.nodes[id]
+            local default_parent = node and node.default_parent or nil
+            local non_default = {}
+            for _, o in ipairs(owners) do
+                if o ~= default_parent then table.insert(non_default, o) end
+            end
+            chosen = (#non_default == 1) and non_default[1] or owners[1]
+        end
+        keep_parent[id] = chosen
+        table.insert(ctx.warnings, string.format(
+            "%s listed under %d menus; kept %s", id, #owners, keep_parent[id]))
+    end
+
+    for _, menu_id in ipairs(sortedKeys(ctx.lists)) do
+        local list = ctx.lists[menu_id]
         local seen_in_menu = {}
         local cleaned = {}
-        for _, id in ipairs(list) do
+        for _, id in ipairs(list or {}) do
             if id == SEPARATOR_ID then
                 table.insert(cleaned, id)
             elseif seen_in_menu[id] then
@@ -135,15 +152,11 @@ local function breakCycles(ctx)
         end
         return false
     end
-    local cycle_menu_ids = {}
-    for menu_id in pairs(ctx.lists) do
-        table.insert(cycle_menu_ids, menu_id)
-    end
-    table.sort(cycle_menu_ids)
+    local cycle_menu_ids = sortedKeys(ctx.lists)
     for _, menu_id in ipairs(cycle_menu_ids) do
         if reaches(menu_id, menu_id) then
             local cleaned = {}
-            for _, child in ipairs(ctx.lists[menu_id]) do
+            for _, child in ipairs(ctx.lists[menu_id] or {}) do
                 if child == menu_id or reaches(child, menu_id) then
                     table.insert(ctx.warnings, string.format(
                         "cycle broken: %s removed from %s", child, menu_id))
@@ -158,9 +171,10 @@ end
 
 local function removeHiddenRows(ctx)
     for _, id in ipairs(ctx.graph.disabled or {}) do ctx.hidden[id] = true end
-    for menu_id, list in pairs(ctx.lists) do
+    for _, menu_id in ipairs(sortedKeys(ctx.lists)) do
+        local list = ctx.lists[menu_id]
         local cleaned = {}
-        for _, id in ipairs(list) do
+        for _, id in ipairs(list or {}) do
             if ctx.hidden[id] then
                 table.insert(ctx.warnings, string.format(
                     "hidden %s dropped from %s", id, menu_id))
@@ -206,16 +220,16 @@ local function hideUnreachableContainers(ctx)
             table.insert(unreachable_levels, menu_id)
         end
     end
-    table.sort(unreachable_levels)
+    table.sort(unreachable_levels, function(a, b) return tostring(a) < tostring(b) end)
+    local explicit_disabled = {}
+    for _, id in ipairs(ctx.graph.disabled or {}) do
+        explicit_disabled[id] = true
+    end
+    local newly_cascaded = {}
+    local cascaded_set = {}
     if #unreachable_levels > 0 then
-        local explicit_disabled = {}
-        for _, id in ipairs(ctx.graph.disabled or {}) do
-            explicit_disabled[id] = true
-        end
-        local newly_cascaded = {}
-        local cascaded_set = {}
         for _, menu_id in ipairs(unreachable_levels) do
-            for _, id in ipairs(ctx.lists[menu_id]) do
+            for _, id in ipairs(ctx.lists[menu_id] or {}) do
                 if id ~= SEPARATOR_ID and not explicit_disabled[id]
                         and not cascaded_set[id] then
                     table.insert(newly_cascaded, id)
@@ -227,9 +241,19 @@ local function hideUnreachableContainers(ctx)
                 "container %s is unreachable from the tab bar; " ..
                 "its contents follow it into invisibility", menu_id))
         end
-        -- I16 contract: the explicit-hides prefix keeps the user's hide
-        -- order; only the cascaded ids are appended, sorted.
-        table.sort(newly_cascaded)
+    end
+    for _, id in ipairs(ctx.graph.unplaced or {}) do
+        if id ~= SEPARATOR_ID and not explicit_disabled[id] and not cascaded_set[id] then
+            local is_custom = ctx.intent and ctx.intent.custom_menus and ctx.intent.custom_menus[id] ~= nil
+            local node = ctx.reg.nodes and ctx.reg.nodes[id]
+            if is_custom or (node and node.available ~= false) then
+                table.insert(newly_cascaded, id)
+                cascaded_set[id] = true
+            end
+        end
+    end
+    if #newly_cascaded > 0 then
+        table.sort(newly_cascaded, function(a, b) return tostring(a) < tostring(b) end)
         for _, id in ipairs(newly_cascaded) do
             table.insert(ctx.graph.disabled, id)
         end
@@ -238,8 +262,9 @@ end
 
 local function rebuildOwnership(ctx)
     ctx.owner = {}
-    for menu_id, list in pairs(ctx.lists) do
-        for _, id in ipairs(list) do
+    for _, menu_id in ipairs(sortedKeys(ctx.lists)) do
+        local list = ctx.lists[menu_id]
+        for _, id in ipairs(list or {}) do
             if id ~= SEPARATOR_ID then ctx.owner[id] = menu_id end
         end
     end
@@ -258,48 +283,74 @@ local function restoreProtectedItems(ctx)
     local function level_present(menu_id)
         return type(menu_id) == "string" and ctx.lists[menu_id] ~= nil
     end
-    for item_id in pairs(PROTECTED_ITEMS) do
+
+    local function persisted_trace(item_id, in_disabled)
+        if in_disabled then return true end
+        local it = ctx.intent or {}
+        if it.hidden and it.hidden[item_id] ~= nil then return true end
+        if it.parent_override and it.parent_override[item_id] ~= nil then
+            return true
+        end
+        if it.position_override and it.position_override[item_id] ~= nil then
+            return true
+        end
+        if it.custom_menus and it.custom_menus[item_id] then return true end
+        for _, rec in pairs(it.order_override or {}) do
+            if type(rec) == "table" then
+                for _, entry in ipairs(rec.entries or {}) do
+                    if MenuSchema.entryId(entry) == item_id then return true end
+                end
+            end
+        end
+        for _, raw in pairs(it.raw_override or {}) do
+            if type(raw) == "table" and type(raw.list) == "table" then
+                if array_contains(raw.list, item_id) then return true end
+            end
+        end
+        return false
+    end
+
+    for _, item_id in ipairs(sortedKeys(PROTECTED_ITEMS)) do
         local node = ctx.reg.nodes and ctx.reg.nodes[item_id]
-        if node then
-            local owner_menu = ctx.owner[item_id]
-            local stranded = ctx.hidden[item_id]
-                or owner_menu == nil
-                or not level_present(owner_menu)
-            if stranded then
-                local home
+        local owner_menu = ctx.owner[item_id]
+        local in_disabled = array_contains(ctx.graph.disabled, item_id)
+        local stranded = ctx.hidden[item_id]
+            or (owner_menu ~= nil and not level_present(owner_menu))
+            or (owner_menu == nil
+                and persisted_trace(item_id, in_disabled))
+        if stranded then
+            local home
+            if node then
                 if node.sorting_hint and level_present(node.sorting_hint) then
                     home = node.sorting_hint
                 elseif node.default_parent
                         and level_present(node.default_parent) then
                     home = node.default_parent
-                elseif #ctx.tabs > 0 then
-                    home = ctx.tabs[1]
                 end
-                if home then
-                    -- Strip EVERY trace from KOMenu:disabled: the id may be
-                    -- there explicitly OR via the unreachable-container
-                    -- cascade. A leftover disabled row would keep the sparse
-                    -- writer from emitting the rescue placement (and would
-                    -- make stock drop the item all over again).
-                    local still_hidden = {}
-                    local removed = false
-                    for _, id in ipairs(ctx.graph.disabled) do
-                        if id == item_id then
-                            removed = true
-                        else
-                            table.insert(still_hidden, id)
-                        end
+            end
+            if not home and #ctx.tabs > 0 then
+                home = ctx.tabs[1]
+            end
+            if home then
+                local still_hidden = {}
+                local removed = false
+                for _, id in ipairs(ctx.graph.disabled) do
+                    if id == item_id then
+                        removed = true
+                    else
+                        table.insert(still_hidden, id)
                     end
-                    if removed then
-                        ctx.graph.disabled = still_hidden
-                        ctx.hidden[item_id] = nil
-                    end
-                    table.insert(ctx.lists[home], item_id)
-                    ctx.owner[item_id] = home
-                    table.insert(ctx.warnings, string.format(
-                        "protected item %s relocated to visible %s "
-                            .."(ancestor unreachable)", item_id, home))
                 end
+                if removed then
+                    ctx.graph.disabled = still_hidden
+                    ctx.hidden[item_id] = nil
+                end
+                ctx.lists[home] = ctx.lists[home] or {}
+                table.insert(ctx.lists[home], item_id)
+                ctx.owner[item_id] = home
+                table.insert(ctx.warnings, string.format(
+                    "protected item %s relocated to visible %s "
+                        .."(ancestor unreachable)", item_id, home))
             end
         end
     end
@@ -345,15 +396,30 @@ local function collectUnplacedWarnings(ctx)
     end
 end
 
--- Repairs are applied to (graph, warnings); returns ok, graph, warnings.
+-- Repairs are applied to a fresh copy of graph; returns ok, repaired_graph, warnings.
 function Validator.validate(graph, reg, intent)
+    reg = reg or { menus = {}, nodes = {}, tab_list = {} }
+    graph = graph or { lists = {}, tabs = {}, disabled = {}, unplaced = {}, custom_titles = {} }
+
     local lists = {}
-    for menu_id, list in pairs(graph.lists) do lists[menu_id] = list end
+    for menu_id, list in pairs(graph.lists or {}) do
+        local copy = {}
+        for _, id in ipairs(list or {}) do table.insert(copy, id) end
+        lists[menu_id] = copy
+    end
     local tabs = {}
     for _, tab_id in ipairs(graph.tabs or {}) do table.insert(tabs, tab_id) end
+    local disabled = {}
+    for _, id in ipairs(graph.disabled or {}) do table.insert(disabled, id) end
 
     local ctx = {
-        graph = graph,
+        graph = {
+            tabs = tabs,
+            lists = lists,
+            disabled = disabled,
+            custom_titles = graph.custom_titles or {},
+            unplaced = graph.unplaced or {},
+        },
         reg = reg,
         intent = intent,
         warnings = {},
@@ -372,13 +438,15 @@ function Validator.validate(graph, reg, intent)
     ensureNonEmptyTabBar(ctx)
     collectUnplacedWarnings(ctx)
 
-    graph.tabs = ctx.tabs
-    graph.lists = ctx.lists
-    return true, graph, ctx.warnings
-end
+    local repaired = {
+        tabs = ctx.tabs,
+        lists = ctx.lists,
+        disabled = ctx.graph.disabled,
+        custom_titles = ctx.graph.custom_titles,
+        unplaced = ctx.graph.unplaced,
+    }
 
-function Validator.warn(warnings_context, message)
-    logger.warn("ReorderingMenus:", warnings_context or "validator", message)
+    return true, repaired, ctx.warnings
 end
 
 return Validator

@@ -162,8 +162,8 @@ do
     -- ("removal keeps the configured spot; reinstall restores it"): the row
     -- still renders at its configured spot, and the reinstall below must
     -- land exactly there.
-    note(Manager:getParentMenu(VIEW, "ghostx") == "setting",
-        "Q4b: uninstalled plugin row keeps its configured spot (ghost)")
+    note(Manager:getParentMenu(VIEW, "ghostx") == nil,
+        "Q4b: uninstalled plugin row is dormant while provider is absent")
 
     install("plugin:A", "tools")          -- v2 reinstall: identity unchanged
     note(Manager:getParentMenu(VIEW, "ghostx") == "setting",
@@ -199,7 +199,7 @@ do
     note(Manager:getParentMenu(VIEW, "ghostx") == "tools",
         "X: era-B customization applied under B")
     local rec_b = IntentStore.view(VIEW).parent_override.ghostx
-    note(rec_b ~= nil and rec_b.provider == "plugin:B" or true,
+    note(rec_b ~= nil and rec_b.provider == "plugin:B",
         "X-info: record provider after B move (informational)")
 
     -- B gone, C appears briefly then gone
@@ -243,7 +243,10 @@ do
     wipe_all()
 end
 
--- X3: hundreds of coexisting provider records round-trip cleanly.
+-- X3: hundreds of coexisting provider placements round-trip cleanly.
+-- P1B contract: hinted newcomers are anchored IMPLICITLY (no bulk pinning
+-- at first contact), so the bulk scenario now uses explicit user moves —
+-- the canonical state that actually must survive a restart at scale.
 do
     wipe_all()
     local N_ITEMS = 300
@@ -255,6 +258,10 @@ do
     end
     Manager:setLiveRegistrations(VIEW, regs, provs)
     Manager:reconcileRegisteredItems(VIEW, regs, provs)
+    -- Explicit placement for every item (the user dragged each one).
+    for i = 1, N_ITEMS do
+        Manager:moveItemToMenu(VIEW, "erax" .. i, "tools", "search")
+    end
     Manager:saveOrder(VIEW)
     local n_po = 0
     for _ in pairs(IntentStore.view(VIEW).parent_override) do n_po = n_po + 1 end
@@ -268,6 +275,11 @@ do
         Manager:setLiveRegistrations(VIEW, regs, provs)
         Manager:refreshRegistry(VIEW)
         Manager:saveOrder(VIEW)
+        -- Every explicit placement survived the restart cycle.
+        for i = 1, N_ITEMS do
+            assert(Manager:getParentMenu(VIEW, "erax" .. i) == "search",
+                "erax" .. i .. " lost its placement")
+        end
     end)
     note(ok, "X3b: bulk-era state round-trips cleanly")
     wipe_all()

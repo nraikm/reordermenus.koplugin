@@ -98,23 +98,22 @@ local function clear_backups()
 end
 
 local function new_view_section()
+    -- Schema v3 section shape (no hidden_order / sequence_eras / ui_state).
     return {
-        hidden = {}, hidden_order = {}, parent_override = {},
-        position_override = {}, order_override = {}, sequence_eras = {},
+        hidden = {}, parent_override = {},
+        position_override = {}, order_override = {},
         custom_menus = {}, separators = {}, raw_override = {}, tab_order = nil,
     }
 end
 
 local function healthy_state_table()
     local reader = new_view_section()
-    reader.hidden.m2 = { provider = "stock", origin = "main" }
-    reader.hidden_order = { "m2" }
+    reader.hidden.m2 = { provider = "stock", origin = "main", ordinal = 1 }
     reader.parent_override.mt1 = { provider = "stock", parent = "setting" }
     return {
-        version = 1,
+        version = 3,
         views = { reader = reader, filemanager = new_view_section() },
-        meta = { mirror_changes = false, hidden_in_place = true,
-                 ui_state = { hidden_anchors = { reader = {}, filemanager = {} } } },
+        meta = { mirror_changes = false, hidden_in_place = true },
     }
 end
 
@@ -183,14 +182,13 @@ local CASES = {
         expect_gone = { ["reader.hidden"] = { "m9" } },
     },
     {
-        name = "hidden_order lists unknown id",
-        expect_count = 3,
+        name = "hidden record without ordinal is healed, not dropped",
         mutate = function(v)
-            v.views.reader.hidden_order[1] = "no_such_id"
-            v.views.reader.hidden_order[2] = "also_missing"
+            v.views.reader.hidden.h9 = { provider = "stock", origin = "main" }
         end,
-        expect_collection = "hidden_order",
-        expect_gone = { ["reader.hidden_order"] = { "no_such_id", "also_missing" } },
+        expect_collection = nil,       -- benign normalization: no quarantine
+        expect_gone = {},
+        ordinal_heal = true,
     },
     {
         name = "parent_override self-cycle",
@@ -213,12 +211,15 @@ local CASES = {
         expect_gone = { ["reader.order_override"] = { "main" } },
     },
     {
-        name = "sequence_eras entry not a string",
+        name = "order_override duplicate entry keeps first occurrence",
         mutate = function(v)
-            v.views.reader.sequence_eras.main = { m1 = {} }
+            v.views.reader.order_override.main =
+                { entries = { { id = "m1", provider = "stock" }, { id = "m1" } } }
         end,
-        expect_collection = "sequence_eras",
-        expect_gone = { ["reader.sequence_eras"] = { "main" } },
+        expect_count = 1,
+        expect_collection = "order_override",
+        duplicate_entry = true,
+        expect_gone = {},
     },
     {
         name = "custom_menu record missing title",
@@ -229,13 +230,21 @@ local CASES = {
         expect_gone = { ["reader.custom_menus"] = { "custom_submenu_7" } },
     },
     {
-        name = "custom_menu dangling parent",
+        name = "custom_menu record missing title",
         mutate = function(v)
-            v.views.reader.custom_menus.custom_submenu_8 =
-                { title = "X", parent = 12345 }
+            v.views.reader.custom_menus.broken_menu = { after = false }
         end,
         expect_collection = "custom_menus",
-        expect_gone = { ["reader.custom_menus"] = { "custom_submenu_8" } },
+        expect_gone = { ["reader.custom_menus"] = { "broken_menu" } },
+    },
+    {
+        name = "order_override entry garbage is dropped wholesale",
+        mutate = function(v)
+            v.views.reader.order_override.main =
+                { entries = { { id = "m1", provider = "stock" }, 42 } }
+        end,
+        expect_collection = "order_override",
+        expect_gone = { ["reader.order_override"] = { "main" } },
     },
     {
         name = "separator record without parent",
@@ -272,6 +281,47 @@ for _, case in ipairs(CASES) do
         end)
         if not ok then
             assert_true(false, case.name .. ": fixture build failed: " .. tostring(text))
+        elseif case.ordinal_heal then
+            -- Benign normalization path: the record is healed in place and
+            -- NO quarantine is written (nothing destructive happened).
+            write_intent(text)
+            local s1, p1_raw = IntentStore.load(true)
+            local p1 = problems_of(s1, p1_raw)
+            assert_eq(#p1, 1, case.name .. ": missing ordinal reported benignly")
+            assert_eq(p1[1].kind, "missing_ordinal",
+                case.name .. ": missing-ordinal kind identified")
+            assert_eq(#list_backups(), 0, case.name .. ": healthy data NOT quarantined")
+            assert_eq(#list_backups(), 0, case.name .. ": healthy data NOT quarantined")
+            local rec = s1 and s1.views.reader.hidden.h9 or nil
+            assert_true(type(rec) == "table" and type(rec.ordinal) == "number",
+                case.name .. ": ordinal assigned deterministically")
+            -- idempotent: reload does not change anything
+            local before = require("dump")(s1)
+            IntentStore.load(true)
+            assert_eq(#list_backups(), 0, case.name .. ": reload stays clean")
+            assert_true(IntentStore.view("reader").hidden.h9 ~= nil,
+                case.name .. ": healed record survives reload")
+            _ = before
+        elseif case.duplicate_entry then
+            -- Duplicate sequence entries: benign heal (first occurrence wins).
+            write_intent(text)
+            local s1, p1_raw = IntentStore.load(true)
+            local p1 = problems_of(s1, p1_raw)
+            assert_eq(#p1, 1, case.name .. ": duplicate reported as benign problem")
+            assert_eq(p1[1].kind, "duplicate_entry",
+                case.name .. ": duplicate kind identified")
+            assert_eq(#list_backups(), 0, case.name .. ": no backup for benign heal")
+            local rec = s1.views.reader.order_override.main
+            assert_eq(rec and rec.entries and #rec.entries or 0, 1,
+                case.name .. ": first occurrence kept, duplicate dropped")
+            assert_eq(rec.entries[1].provider, "stock",
+                case.name .. ": surviving entry keeps its era stamp")
+            write_intent(text)
+            local s2, p2_raw = IntentStore.load(true)
+            local p2 = problems_of(s2, p2_raw)
+            assert_eq(#p2, 1, case.name .. ": reproducible detection")
+            assert_eq(require("dump")(s1), require("dump")(s2),
+                case.name .. ": repair is deterministic")
         else
             write_intent(text)
             local s1, p1_raw = IntentStore.load(true)

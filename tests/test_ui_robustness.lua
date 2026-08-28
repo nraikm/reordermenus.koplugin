@@ -276,9 +276,9 @@ local ok, err = pcall(function()
         for _, button in ipairs(row) do
             if button.text == "Presets…" then
                 presets_callback = button.callback
-            elseif button.text == "Reset Book menu" then
+            elseif button.text == "Reset Book view" or button.text == "Reset Book menu" then
                 named_reset_found = true
-            elseif button.text == "Reset " .. selected_menu_title .. " menu" then
+            elseif button.text:find("Reset “" .. selected_menu_title, 1, true) or button.text:find("Reset " .. selected_menu_title, 1, true) then
                 selected_reset_found = true
             end
         end
@@ -346,11 +346,11 @@ local ok, err = pcall(function()
     for _, row in ipairs(btn_widget.buttontable.buttons) do
         for _, button in ipairs(row) do
             button_index = button_index + 1
-            if button.text == "Reset Tools menu" then
+            if button.text:find("Reset “Tools”", 1, true) or button.text == "Reset Tools menu" then
                 submenu_reset_found = true
             elseif button.text == "Presets for Tools…" then
                 submenu_presets_callback = button.callback
-            elseif selected_submenu_title and button.text == "Reset " .. selected_submenu_title .. " menu" then
+            elseif selected_submenu_title and (button.text:find("Reset “" .. selected_submenu_title, 1, true) or button.text:find("Reset " .. selected_submenu_title, 1, true)) then
                 selected_submenu_reset_found = true
             elseif button.text == "Sort A to Z" then
                 sort_a_index = button_index

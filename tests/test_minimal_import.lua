@@ -35,6 +35,7 @@ CanvasContext:init(Device)
 require("main")
 
 local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local MenuSchema = require("reorderingmenus_menu_schema")
 local UIScreens = require("reorderingmenus_ui_screens")
 local IntentStore = require("reorderingmenus_intent_store")
 local NativeWriter = require("reorderingmenus_native_writer")
@@ -158,11 +159,19 @@ do
         o.help = out
     end)
     local sec = restart_and_import(true)
-    local seq = sec.order_override.help
-    assert_true(seq ~= nil and #seq >= 5,
+    -- Schema v3: the sequence is an entries record; per-entry era stamps
+    -- live on each entry (no parallel era map).
+    local rec = sec.order_override.help
+    assert_true(rec ~= nil and type(rec.entries) == "table"
+        and #rec.entries >= 5,
         "I4: reversal imports as an explicit curated sequence")
-    assert_true(sec.sequence_eras.help ~= nil,
-        "I4: sequence is era-stamped")
+    local stamped = 0
+    for _, entry in ipairs(rec and rec.entries or {}) do
+        if not MenuSchema.isSeparatorEntry(entry) and entry.provider ~= nil then
+            stamped = stamped + 1
+        end
+    end
+    assert_true(stamped > 0, "I4: sequence carries per-entry era stamps")
 end
 
 print("\n--- I6/I7: hide & unhide via KOMenu:disabled ---")

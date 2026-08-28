@@ -37,6 +37,7 @@ require("main")
 
 local Manager = require("reorderingmenus_menuorder_manager")
 local IntentStore = require("reorderingmenus_intent_store")
+local MenuSchema = require("reorderingmenus_menu_schema")
 local NativeWriter = require("reorderingmenus_native_writer")
 local UIScreens = require("reorderingmenus_ui_screens")
 local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
@@ -104,7 +105,15 @@ do
 
     note(Manager:moveItemToMenu("filemanager", "mir_h1", "more_tools", "setting"),
         "H1: FM move accepted while reader writes fail")
-    note(Manager:saveOrder("filemanager"), "H1b: FM save committed")
+    -- P0-5 contract: the source save now reports `false,
+    -- "saved_needs_regeneration:<failed views>"` when ANY derived view failed
+    -- (the mirror side here), while canonical intent IS committed. The
+    -- historical boolean-true is no longer returned; what matters is that
+    -- the commit happened and a retry converges (checked below).
+    local h1b_ok, h1b_err = Manager:saveOrder("filemanager")
+    local h1b_committed = h1b_ok or (type(h1b_err) == "string"
+        and h1b_err:find("saved_needs_regeneration") ~= nil)
+    note(h1b_committed, "H1b: FM save committed")
     KoreaderAdapter.writeNativeOrder = real_write
 
     note(parent_in("filemanager", "mir_h1") == "setting",
@@ -224,7 +233,7 @@ do
     -- only record is the registration anchor (anchor=true), never an
     -- explicit user-move replayed retroactively.
     local rec = IntentStore.view("reader").parent_override.mir_i5
-    note(rec == nil or rec.anchor == true,
+    note(rec == nil or MenuSchema.isLifecyclePin(rec),
         "I5c: pre-enable divergence NOT retroactively replayed"
         .. " (record is " .. (rec and (rec.anchor and "anchor" or "explicit") or "nil") .. ")")
     note(parent_in("reader", "mir_i5") ~= "setting",

@@ -16,7 +16,8 @@ All new suites share this so failure reports stay comparable across areas.
 local FuzzLib = {}
 
 function FuzzLib.boot(project_dir)
-    dofile("/Applications/KOReader.app/Contents/koreader/setupkoenv.lua")
+    local koreader_dir = os.getenv("KOREADER_DIR") or "/Applications/KOReader.app/Contents/koreader"
+    dofile(koreader_dir .. "/setupkoenv.lua")
     assert(project_dir, "FuzzLib.boot needs the plugin directory")
     package.path = project_dir .. "/?.lua;" .. package.path
 

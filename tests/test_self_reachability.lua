@@ -43,6 +43,7 @@ local MenuOrderManager = require("reorderingmenus_menuorder_manager")
 local UIScreens = require("reorderingmenus_ui_screens")
 
 local T = RW.assert_counter()
+local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
 local settings_dir = DataStorage:getSettingsDir()
 local view = "filemanager"
 local SELF_ID = "reordering_menus"
@@ -78,6 +79,39 @@ local function scenario(name, setup_fn)
             .. tostring(err):gsub("\n", " "))
         RW.close_all_windows(UIManager)
         return
+    end
+    local menu = fresh_launch()
+    if os.getenv("R4_DEBUG") then
+        local IS = require("reorderingmenus_intent_store")
+        local sec = MenuOrderManager:stagedView(view)
+        local hidk = {}
+        for id in pairs(sec.hidden or {}) do hidk[#hidk+1] = id .. "(ord=" ..
+            tostring(sec.hidden[id].ordinal) .. ")" end
+        print("DBG[" .. name .. "] staged hidden:", table.concat(hidk, ","))
+        print("DBG[" .. name .. "] parent[self]:",
+            tostring(sec.parent_override[SELF_ID]
+                and sec.parent_override[SELF_ID].parent or nil))
+        local order = MenuOrderManager:loadOrder(view)
+        local dk = {}
+        for _, id in ipairs(order["KOMenu:disabled"] or {}) do dk[#dk+1] = id end
+        print("DBG[" .. name .. "] disabled:", table.concat(dk, ","))
+        for mid, lst in pairs(order) do
+            if type(lst) == "table" then
+                for _, id in ipairs(lst) do
+                    if id == SELF_ID then print("DBG[" .. name .. "] self in:", mid) end
+                end
+            end
+        end
+    end
+    if os.getenv("R4_DEBUG") and name == "R4" then
+        local natpath = KoreaderAdapter.getNativePath(view)
+        local f = io.open(natpath, "r")
+        local body = f and f:read("*a"); if f then f:close() end
+        local out = io.open("/tmp/r4_native.lua", "w")
+        if out then out:write(body or "<nil>") out:close() end
+        local IS = require("reorderingmenus_intent_store")
+        print("DBG-NATIVE-DUMPED canonical hidden setting?",
+            tostring((IS.view(view).hidden or {}).setting ~= nil))
     end
     local menu = fresh_launch()
     T.assert_true(type(menu.tab_item_table) == "table"

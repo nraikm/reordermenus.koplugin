@@ -250,8 +250,10 @@ do
     local f = io.open(ipath, "r")
     local good_bytes = f and f:read("*a"); if f then f:close() end
 
-    -- future build wrote schema 99 over it
-    local future = good_bytes:gsub('%["version"%] = 2,', '["version"] = 99,')
+    -- future build wrote a newer schema over it (version-agnostic: the
+    -- on-disk SCHEMA_VERSION moves independently of this suite).
+    local future = good_bytes:gsub('(%["version"%] = )%d+,',
+        '%199,', 1)
     assert(future ~= good_bytes, "O6 setup: version stamp rewritten")
     local g = io.open(ipath, "w") g:write(future) g:close()
 
@@ -400,7 +402,7 @@ do
         "P3b: v1 move record migrated")
     local meta = IntentStore.meta()
     note(type(meta.generation) == "number", "P3c: v1->v2 migration added generation")
-    note(IntentStore.SCHEMA_VERSION == 2, "P3d: current schema version stamped")
+    note(IntentStore.SCHEMA_VERSION == 3, "P3d: current schema version stamped")
     wipe_all()
 end
 

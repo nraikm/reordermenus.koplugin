@@ -143,7 +143,12 @@ do
     local items1 = Manager:getMenuItems(VIEW, "search")
     local moved = items1[3]
     Manager:moveItem(VIEW, "search", 3, #items1)  -- away
-    note(section_fp(VIEW) ~= before_fp or true, "C1-pre: staging ran")
+    -- Since copy-on-commit transactions landed, staging mutates ONLY the
+    -- transaction's snapshot: canonical views stay untouched until Save.
+    -- That is exactly what this pre-check pins (the old probe compared
+    -- canonical fingerprints and went vacuous when the txn machine landed).
+    note(staged_differs_from_canonical(VIEW),
+        "C1-pre: a staged move differs from canonical before any save")
     local cur
     for i, id in ipairs(Manager:getMenuItems(VIEW, "search")) do
         if id == moved then cur = i break end

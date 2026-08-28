@@ -27,6 +27,7 @@ local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
 local Materializer = require("reorderingmenus_materializer")
 local Validator = require("reorderingmenus_validator")
 local AtomicWriter = require("reorderingmenus_atomic_writer")
+local DataLoader = require("reorderingmenus_data_loader")
 local IntentStore = require("reorderingmenus_intent_store")
 local SemanticDiff = require("reorderingmenus_semantic_diff")
 local MenuSchema = require("reorderingmenus_menu_schema")
@@ -153,6 +154,34 @@ end
 local RESERVED = MenuSchema.RESERVED_KEYS
 NativeWriter.RESERVED = RESERVED
 
+local STATUS = {
+    UNCHANGED                   = "unchanged",
+    LEGACY                      = "legacy",
+    MALFORMED                   = "malformed",
+    CURRENT                     = "current",
+    STALE                       = "stale",
+    EXTERNAL                    = "external",
+    PROTECTED_READONLY          = "protected_readonly",
+    REGENERATED                 = "regenerated",
+    REGENERATED_INTERRUPTED     = "regenerated_interrupted",
+    REGENERATED_MALFORMED       = "regenerated_malformed",
+    REGENERATED_LAGGING         = "regenerated_lagging",
+    REGENERATED_STALE           = "regenerated_stale",
+    REGENERATED_WRITER_UPGRADE  = "regenerated_writer_upgrade",
+    CONVERGED_SPARSE            = "converged_sparse",
+    IMPORTED_LEGACY             = "imported_legacy",
+    IMPORTED_EXTERNAL           = "imported_external",
+    REVERTED                    = "reverted",
+    CLEAN                       = "clean",
+    CLEAN_EMPTY                 = "clean_empty",
+    -- Failure modes
+    REGENERATION_FAILED         = "regeneration_failed",
+    REMOVE_FAILED               = "remove_failed",
+    RECORD_CLEAR_FAILED         = "record_clear_failed",
+    CHECKPOINT_REFRESH_FAILED   = "checkpoint_refresh_failed",
+}
+NativeWriter.STATUS = STATUS
+
 -- Bump when the writer/fingerprint algorithm changes in a way that leaves
 -- previously emitted files unrecognizable by hash alone. Stamped into each
 -- per-view sidecar record by writeView; a record WITHOUT the field counts as
@@ -196,13 +225,63 @@ local sidecar_cache
 
 local function loadSidecar()
     if sidecar_cache then return sidecar_cache end
-    local data
+    -- P0-7: the materialization record is DATA, loaded restricted.
     local path = sidecarPath()
-    if lfs.attributes(path, "mode") == "file" then
-        local ok, res = pcall(dofile, path)
-        if ok and type(res) == "table" then data = res end
+    local data = DataLoader.loadTable(path)
+    if type(data) ~= "table" or type(data.views) ~= "table" then
+        data = { views = {} }
     end
-    if not data or type(data.views) ~= "table" then data = { views = {} } end
+    -- Full per-record shape validation (#6): every field actually consumed
+    -- downstream must have its documented type. The sidecar is DERIVED
+    -- state - it is always safe to discard malformed records and let the
+    -- next syncView/writeView regenerate them from canonical intent. A
+    -- malformed sidecar therefore NEVER quarantines anything and NEVER
+    -- touches canonical intent; dropping the record only costs one
+    -- regeneration. Unknown extra fields are tolerated (additive metadata
+    -- from newer writers must not be destroyed by older readers).
+    local malformed = 0
+    for view_name, record in pairs(data.views) do
+        local bad = false
+        if type(view_name) ~= "string" or not MenuSchema.isCanonicalView(view_name) then
+            bad = true
+        elseif type(record) ~= "table" then
+            bad = true
+        else
+            if record.fingerprint ~= nil and type(record.fingerprint) ~= "string" then
+                bad = true
+            end
+            if not bad and record.intent_gen ~= nil
+                    and tonumber(record.intent_gen) == nil then
+                bad = true
+            end
+            if not bad and record.writer_version ~= nil
+                    and tonumber(record.writer_version) == nil then
+                bad = true
+            end
+            if not bad and record.previous_fingerprint ~= nil
+                    and type(record.previous_fingerprint) ~= "string" then
+                bad = true
+            end
+            if not bad and record.structure ~= nil then
+                if type(record.structure) ~= "table" then
+                    bad = true
+                else
+                    local _, clean_struct = NativeWriter.normalizeNativeOrder(record.structure)
+                    if not clean_struct then
+                        bad = true
+                    end
+                end
+            end
+        end
+        if bad then
+            data.views[view_name] = nil
+            malformed = malformed + 1
+        end
+    end
+    if malformed > 0 then
+        logger.warn("ReorderingMenus: discarded", malformed,
+            "malformed materialization record(s); regenerating from intent")
+    end
     sidecar_cache = data
     return data
 end
@@ -232,6 +311,38 @@ function NativeWriter.getRecord(view)
     return loadSidecar().views[view]
 end
 
+-- True when a view's derived output must be (re)materialized EVEN THOUGH
+-- canonical intent did not change:
+--   * no checkpoint exists yet (a first save must establish the
+--     reconciliation baseline, or later external edits would be misclassified
+--     as legacy imports);
+--   * the checkpoint predates the current writer version (the upgrade stamp
+--     must refresh one-shot);
+--   * the checkpoint's bound intent_gen lags the canonical per-view counter
+--     (an unrelated-view commit advanced shared bookkeeping - the derived
+--     file is stale relative to canonical even though THIS save changed
+--     nothing);
+--   * REGISTRY DRIFT under unchanged intent (checked separately via
+--     emissionMatchesRecord by the funnel: a provider install/uninstall
+--     flips dormant tombstones on/off or retires ids - generations stay
+--     put while the correct derived output changes).
+function NativeWriter.recordNeedsMaterialization(view)
+    local record = loadSidecar().views[view]
+    if not record then return true end
+    if tonumber(record.writer_version) ~= WRITER_VERSION then return true end
+    -- The record claims on-disk content but the file is gone (mid-session
+    -- external deletion, or a crash after the sidecar write): the derived
+    -- state must be rebuilt from canonical before anything trusts it.
+    -- (Startup treats the same shape differently - a generation-consistent
+    -- content-bearing absence is a deliberate user revert handled by
+    -- syncView; this check only fires for IN-SESSION records.)
+    if record.structure ~= nil
+            and not KoreaderAdapter.nativeFileExists(view) then
+        return true
+    end
+    return tonumber(record.intent_gen) ~= IntentStore.generation(view)
+end
+
 -- Test hook: a real crash kills the process, so on-disk state alone decides
 -- recovery. In-process crash simulations must drop this cache to be faithful.
 function NativeWriter._resetCaches()
@@ -245,6 +356,55 @@ function NativeWriter.clearRecord(view)
     local ok, err = saveSidecar()
     if not ok then views[view] = previous end
     return ok, err
+end
+
+-- -------------------------------------------------------------------------
+-- THE one checkpoint constructor (P1A)
+--
+-- Every per-view materialization record - normal write, empty-emission
+-- checkpoint, startup convergence, external adoption/regeneration - is
+-- built here and only here. Same schema every time:
+--   fingerprint         hash of the on-disk emission ({} when file removed)
+--   structure           the on-disk emission itself (nil = no file)
+--   intent_gen          the ACTUAL COMMITTED canonical generation at stamp
+--                       time (IntentStore.generation reads committed state;
+--                       in-flight transactions are not visible until commit)
+--   writer_version      writer/fingerprint algorithm stamp
+--   previous_fingerprint  hash of the replaced generation's on-disk bytes
+--                       (one-generation lookback; see classifyParsedNative)
+-- Returns ok, err and restores the previous record on sidecar failure.
+-- -------------------------------------------------------------------------
+local function setCheckpointRecord(view, fields)
+    local prev_record = loadSidecar().views[view]
+    local record = {
+        fingerprint = fields.fingerprint,
+        structure = fields.structure,
+        intent_gen = IntentStore.generation(view),
+        writer_version = WRITER_VERSION,
+    }
+    if prev_record then
+        record.previous_fingerprint = prev_record.fingerprint
+    end
+    loadSidecar().views[view] = record
+    local ok, err = saveSidecar()
+    if not ok then
+        loadSidecar().views[view] = prev_record
+        return false, err
+    end
+    return true
+end
+
+-- Checkpoint an EMPTY emission (the derived file was deliberately removed -
+-- reset to stock). The record binds intent_gen and stamps writer_version so
+-- (a) the next startup classifies against a REAL baseline: any bytes that
+-- appear are EXTERNAL edits or stale generations of ours, never "legacy
+-- first contact"; (b) the maintenance branch of the commit funnel stops
+-- re-firing for this view. structure stays nil = "no file on disk".
+function NativeWriter.checkpointEmptyEmission(view)
+    return setCheckpointRecord(view, {
+        fingerprint = fingerprint({}),
+        structure = nil,
+    })
 end
 
 -- -------------------------------------------------------------------------
@@ -320,19 +480,102 @@ end
 -- "nothing to override" again - the file is removed and stock rules flow,
 -- keeping true sparseness for pristine worlds.
 local function stripEmptyReservedMaps(view, native)
+    -- Any real layout content: keep the whole emission verbatim.
     for key in pairs(native) do
         if not RESERVED[key] then return false end
     end
     local record = loadSidecar().views[view]
     local previous = record and record.structure
     for _, key in ipairs({ DISABLED_KEY, CUSTOM_SUBMENUS_KEY }) do
-        local value = type(previous) == "table" and previous[key] or nil
+        local value = native[key]
+        -- The CURRENT emission carries real reserved data (e.g. the first
+        -- hide makes KOMenu:disabled non-empty): that is information and
+        -- must reach disk - never strip a meaningful map. (Stripping used
+        -- to consult only the PREVIOUS record here and then delete
+        -- unconditionally, silently discarding a newly-hidden state.)
         if type(value) == "table" and next(value) ~= nil then return false end
         if type(value) == "string" then return false end
+        -- Current value is empty/nil: dropping it is safe UNLESS the
+        -- previous on-disk emission held a non-empty map there - that map
+        -- may have polluted the process-lifetime elements module, so one
+        -- more build needs the explicit empty override to scrub it.
+        local prev_value = type(previous) == "table" and previous[key] or nil
+        if type(prev_value) == "table" and next(prev_value) ~= nil then
+            return false
+        end
+        if type(prev_value) == "string" then return false end
     end
     native[DISABLED_KEY] = nil
     native[CUSTOM_SUBMENUS_KEY] = nil
     return next(native) == nil
+end
+
+-- Compute what writeView would ACTUALLY persist for this emission WITHOUT
+-- touching disk: graphToNative output after the cleaner-generation stripping
+-- of the reserved surface. Returns nil when writeView would remove/skip the
+-- file (everything stripped). Change detectors elsewhere (reconcile's
+-- maintenance branch) MUST compare against this projected shape, not the raw
+-- graphToNative result: the reserved maps are always filled for mid-session
+-- mergeAndSort hygiene but carry no information unless the PREVIOUS on-disk
+-- emission held non-empty reserved values - fingerprinting the raw shape can
+-- therefore never match an empty-emission checkpoint, making every mere
+-- observation look dirty and demanding a pointless durable write.
+-- (Declared AFTER stripEmptyReservedMaps: Lua locals are lexically scoped,
+-- so an earlier placement resolves it as a nil global at call time.)
+function NativeWriter.previewEmission(view, reg, intent, graph)
+    local empty_graph = Materializer.resolve(reg, nil)
+    local native = NativeWriter.graphToNative(reg, intent, graph, empty_graph)
+    if stripEmptyReservedMaps(view, native) then return nil end
+    return native
+end
+
+--- True when a (projected or parsed) emission carries NO real layout
+--- content: every key is a reserved map and every reserved value is an
+--- EMPTY table. Such files override nothing in a freshly-required elements
+--- module - they exist only as a transient scrub of a PREVIOUS emission's
+--- non-empty reserved surface, and startup convergence (syncView) removes
+--- them on sight. Callers deciding whether derived output justifies keeping
+--- a native file at all (materializeView's empty branch) must treat
+--- reserved-only shapes as EMPTY.
+function NativeWriter.emissionIsReservedOnly(native)
+    -- Inline twin of containsOnlyEmptyReservedMaps (declared further down;
+    -- Lua locals are lexically scoped so it is not callable up here).
+    if type(native) ~= "table" or next(native) == nil then return false end
+    for key, value in pairs(native) do
+        if not RESERVED[key] or type(value) ~= "table" or next(value) ~= nil then
+            return false
+        end
+    end
+    return true
+end
+
+--- Does the CURRENT canonical intent still project to exactly the recorded
+--- emission? False means the world moved under an unchanged sidecar record
+--- (a provider-era flip gating records out, an updated stock layout, an
+--- updated sorting hint): the derived file is STALE even though every
+--- generation counter agrees, because canonical never changed. Callers use
+--- this as derived-output maintenance signal - the same class as
+--- recordNeedsMaterialization, not as user-visible dirt.
+function NativeWriter.emissionMatchesRecord(view, reg)
+    local record = loadSidecar().views[view]
+    if not record then return false end
+    if not reg then return true end -- no registry this session; startup owns it
+    -- A raise inside the comparison (a fault-injected or genuinely broken
+    -- emission builder) conservatively means "assume drift": the caller will
+    -- regenerate through the funnel, where failures are contained and
+    -- reported per view. Swallowing the error here would hide it; letting it
+    -- propagate would escape maintenance paths that run OUTSIDE the funnel's
+    -- per-view pcall (startup sync, reconcile drift checks).
+    local ok_match, matches = pcall(function()
+        local section = IntentStore.view(view)
+        local graph = Materializer.resolve(reg, section)
+        local _, repaired = Validator.validate(graph, reg, section)
+        local would_persist = NativeWriter.previewEmission(view, reg,
+            section, repaired)
+        return fingerprint(would_persist or {}) == record.fingerprint
+    end)
+    if not ok_match then return false end
+    return matches
 end
 
 function NativeWriter.writeView(view, reg, intent, graph)
@@ -375,23 +618,11 @@ function NativeWriter.writeView(view, reg, intent, graph)
     -- fingerprint/structure describe the ON-DISK state (nil structure = file
     -- removed), so the next writeView's cleaner-generation check compares
     -- against reality; intent_gen still binds to this commit.
-    local prev_record = record
-    record = {
+    local ok_ckpt, ckpt_err = setCheckpointRecord(view, {
         fingerprint = fingerprint(on_disk_native or {}),
         structure = on_disk_native,
-        intent_gen = IntentStore.generation(view),
-        writer_version = WRITER_VERSION,
-    }
-    if prev_record then
-        record.previous_fingerprint = prev_record.fingerprint
-        record.previous_structure = prev_record.structure
-    end
-    loadSidecar().views[view] = record
-    local ok_sidecar, sidecar_err = saveSidecar()
-    if not ok_sidecar then
-        loadSidecar().views[view] = prev_record
-        return false, native, sidecar_err
-    end
+    })
+    if not ok_ckpt then return false, native, ckpt_err end
     return true, native
 end
 
@@ -448,10 +679,16 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
             local default_list = defaults[menu_id] and defaults[menu_id].list
             if not default_list then
                 -- Unknown level: a hand-created submenu without title info.
-                txn:setCustomMenu(view, menu_id, {
-                    title = menu_id,
-                    parent = findIdLocation(native, menu_id),
-                })
+                -- Title lives on the creation record; the parent lives ONLY
+                -- in parent_override (single parent authority, schema v3).
+                txn:setCustomMenu(view, menu_id, { title = menu_id })
+                local located_parent = findIdLocation(native, menu_id)
+                if located_parent then
+                    txn:setParentOverride(view, menu_id, {
+                        provider = nil,
+                        parent = located_parent,
+                    })
+                end
                 local unknown_seq = (function()
                     local s = {}
                     for _, x in ipairs(list) do
@@ -557,6 +794,11 @@ end
 
 local function regenerateView(view, reg, txn)
     local section = txn:view(view)
+    -- Regeneration fires precisely when the sidecar record CANNOT be
+    -- trusted to match canonical intent (interrupted commit, lagging
+    -- generation, corrupt file). Projection is a pure function of
+    -- (registry, canonical intent): derive from canonical alone - there is
+    -- no read-path seeding to defer continuity to anymore.
     local ok, native, err = NativeWriter.writeView(view, reg, section,
         materializeValidated(reg, section))
     if not ok then
@@ -568,7 +810,7 @@ end
 
 local function regenerateForStartup(view, reg, txn, success_mode)
     local ok = regenerateView(view, reg, txn)
-    if not ok then return false, "regeneration_failed" end
+    if not ok then return false, STATUS.REGENERATION_FAILED end
     return true, success_mode
 end
 
@@ -585,20 +827,39 @@ end
 local function classifyParsedNative(entry, was_clean, native_fingerprint)
     -- A file without a sidecar is legacy even when normalization repaired its
     -- shape: importAgainstDefaults is the only available baseline in that case.
-    if not entry then return "legacy" end
-    if not was_clean then return "malformed" end
-    if entry.fingerprint == native_fingerprint then return "current" end
+    if not entry then return STATUS.LEGACY end
+    if not was_clean then return STATUS.MALFORMED end
+    -- Hash recognition is only valid when the record's hashes were produced
+    -- by THIS writer/fingerprint algorithm: a foreign algorithm can collide
+    -- on different bytes, so version-mismatched records must fall through to
+    -- the structural bridge / external-import paths instead of adopting.
+    local same_writer = entry.writer_version == nil
+        or tonumber(entry.writer_version) == WRITER_VERSION
+    if not same_writer then return STATUS.EXTERNAL end
+    if entry.fingerprint == native_fingerprint then return STATUS.CURRENT end
     if entry.previous_fingerprint ~= nil
             and entry.previous_fingerprint == native_fingerprint then
-        return "stale"
+        return STATUS.STALE
     end
-    return "external"
+    return STATUS.EXTERNAL
 end
 
 local importExternalChanges
 
 -- Startup sync for one view. Returns changed(bool), mode(string).
 function NativeWriter.syncView(view, reg, txn)
+    -- Protected canonical storage (#1): while an unknown future schema
+    -- guards the intent file, this view's DERIVED output belongs to that
+    -- guarded world too. Regenerating it from the fresh in-memory state
+    -- would wipe the user's live menu layout (the sidecar's generation can
+    -- never agree with a frozen canonical counter), and importing foreign
+    -- bytes into a transaction that can never persist would silently drop
+    -- them on the next restart. Derived files are left byte-exactly alone;
+    -- protection is re-derived from disk on every load, so lifting the
+    -- guard (explicit reset / external replacement) resumes normal syncing.
+    if IntentStore.isProtected() then
+        return false, STATUS.PROTECTED_READONLY
+    end
     local native = KoreaderAdapter.readNativeOrder(view)
     local entry = NativeWriter.getRecord(view)
 
@@ -628,20 +889,26 @@ function NativeWriter.syncView(view, reg, txn)
                     "native file missing after an interrupted commit;",
                     "regenerating from canonical intent")
                 return regenerateForStartup(view, reg, txn,
-                    "regenerated_interrupted")
+                    STATUS.REGENERATED_INTERRUPTED)
             end
             if had_content then
                 -- The file we generated was deleted: treat as full revert.
                 txn:resetView(view)
                 local ok_clear = NativeWriter.clearRecord(view)
-                if not ok_clear then return false, "record_clear_failed" end
-                return true, "reverted"
+                if not ok_clear then return false, STATUS.RECORD_CLEAR_FAILED end
+                return true, STATUS.REVERTED
             end
-            local ok_clear = NativeWriter.clearRecord(view)
-            if not ok_clear then return false, "record_clear_failed" end
-            return false, "clean_empty"
+            -- Empty-emission checkpoint (structure = nil): the absence is OUR
+            -- OWN doing and the baseline must SURVIVE so a later hand edit is
+            -- still classified EXTERNAL rather than legacy first contact, and
+            -- so reconcile keeps treating this view as clean. Refresh the
+            -- intent_gen binding instead of destroying the record.
+            entry.intent_gen = canonical_gen
+            local ok_keep = saveSidecar()
+            if not ok_keep then return false, STATUS.CHECKPOINT_REFRESH_FAILED end
+            return false, STATUS.CLEAN_EMPTY
         end
-        return false, "clean"
+        return false, STATUS.CLEAN
     end
 
     if not native then
@@ -654,7 +921,7 @@ function NativeWriter.syncView(view, reg, txn)
         -- every customization and restores a parseable on-disk state.
         logger.warn("ReorderingMenus: native order file for", view,
             "is corrupt; regenerating from canonical intent")
-        return regenerateForStartup(view, reg, txn, "regenerated")
+        return regenerateForStartup(view, reg, txn, STATUS.REGENERATED)
     end
 
     -- Normalize shape before anything iterates the file: cyclic tables,
@@ -667,18 +934,18 @@ function NativeWriter.syncView(view, reg, txn)
     local native_state = classifyParsedNative(entry, was_clean,
         native_fingerprint)
 
-    if native_state == "legacy" then
+    if native_state == STATUS.LEGACY then
         local imported = NativeWriter.importAgainstDefaults(view, reg, txn, native)
-        return imported > 0, "imported_legacy"
+        return imported > 0, STATUS.IMPORTED_LEGACY
     end
 
-    if native_state == "malformed" then
+    if native_state == STATUS.MALFORMED then
         logger.warn("ReorderingMenus:", view,
             "native order file had malformed structure; regenerating from intent")
-        return regenerateForStartup(view, reg, txn, "regenerated_malformed")
+        return regenerateForStartup(view, reg, txn, STATUS.REGENERATED_MALFORMED)
     end
 
-    if native_state == "current" then
+    if native_state == STATUS.CURRENT then
         -- The file matches our last emission. That is only truly "unchanged"
         -- when the emission also matches canonical intent: a crash between
         -- the intent commit and writeView leaves OUR OWN OLD file on disk
@@ -690,7 +957,7 @@ function NativeWriter.syncView(view, reg, txn)
             logger.info("ReorderingMenus:", view,
                 "derived file lags committed intent; regenerating")
             return regenerateForStartup(view, reg, txn,
-                "regenerated_lagging")
+                STATUS.REGENERATED_LAGGING)
         end
         -- Startup convergence: the file matches our last emission AND that
         -- emission consists solely of EMPTY reserved maps. The elements
@@ -701,12 +968,19 @@ function NativeWriter.syncView(view, reg, txn)
             logger.info("ReorderingMenus:", view,
                 "removing empty reserved-key-only native file at startup")
             local ok_remove = KoreaderAdapter.removeNativeOrder(view)
-            if not ok_remove then return false, "remove_failed" end
-            local ok_clear = NativeWriter.clearRecord(view)
-            if not ok_clear then return false, "record_clear_failed" end
-            return false, "converged_sparse"
+            if not ok_remove then return false, STATUS.REMOVE_FAILED end
+            -- Keep the empty-emission baseline alive (structure = nil): this
+            -- is our own convergence, not an external wipe, so the record
+            -- must keep classifying later bytes as EXTERNAL vs legacy and
+            -- keep reconcile clean.
+            local ok_ckpt = setCheckpointRecord(view, {
+                fingerprint = fingerprint({}),
+                structure = nil,
+            })
+            if not ok_ckpt then return false, STATUS.RECORD_CLEAR_FAILED end
+            return false, STATUS.CONVERGED_SPARSE
         end
-        return false, "unchanged"
+        return false, STATUS.UNCHANGED
     end
 
     -- Generation lag alone must NOT classify the file: atomic renames mean
@@ -722,10 +996,10 @@ function NativeWriter.syncView(view, reg, txn)
     -- commit, or an external rollback to our previous output): the bytes
     -- match a KNOWN fingerprint of ours -> rematerialize from canonical
     -- intent, importing nothing.
-    if native_state == "stale" then
+    if native_state == STATUS.STALE then
         logger.info("ReorderingMenus:", view,
             "native file is a stale generation; regenerating from intent")
-        return regenerateForStartup(view, reg, txn, "regenerated_stale")
+        return regenerateForStartup(view, reg, txn, STATUS.REGENERATED_STALE)
     end
 
     -- LAST-RESORT self-recognition (writer/fingerprint algorithm changed
@@ -746,7 +1020,7 @@ function NativeWriter.syncView(view, reg, txn)
         -- one user record does "our own output" remain the safe reading.
         local section = txn:view(view)
         local has_intent = false
-        for _, coll in ipairs({ "hidden", "hidden_order", "parent_override",
+        for _, coll in ipairs({ "hidden", "parent_override",
                 "position_override", "order_override", "raw_override",
                 "separators", "custom_menus" }) do
             local c = section[coll]
@@ -764,7 +1038,7 @@ function NativeWriter.syncView(view, reg, txn)
                 "native file matches our last emission structurally",
                 "(writer/fingerprint version change); re-emitting from intent")
             return regenerateForStartup(view, reg, txn,
-                "regenerated_writer_upgrade")
+                STATUS.REGENERATED_WRITER_UPGRADE)
         end
     end
 
@@ -775,9 +1049,22 @@ end
 -- Convert differences from a recognized, externally edited native file into
 -- semantic intent. Startup classification stays in syncView; this helper owns
 -- only the three-way import against the last emitted structure.
+--
+-- LOADED-BASELINE IMMUTABILITY (P1A): `entry.structure` is the loaded
+-- sidecar baseline and is treated as strictly read-only here. Where an
+-- absent key's meaningful baseline is the stock default list, that
+-- substitution happens on a per-key LOCAL variable plus a derived shadow
+-- table - never by writing back into the sidecar record. (The old code did
+-- `last[menu_id] = default_menu.list`, silently mutating shared loaded
+-- state during analysis; a later saveSidecar could persist stock lists as
+-- if they were our emission.)
 importExternalChanges = function(view, reg, txn, native, entry)
     local imported = 0
     local last = entry.structure or {}
+    -- Derived analysis view over the baseline: identical content, but this
+    -- copy (and only this copy) may be extended with default-baseline rows.
+    local baseline = {}
+    for menu_id, list in pairs(last) do baseline[menu_id] = list end
     local disabled_ids = {}
     -- The file was normalized above, but the sidecar structure is trusted
     -- less (it may predate normalization or be hand-edited itself).
@@ -804,7 +1091,6 @@ importExternalChanges = function(view, reg, txn, native, entry)
         for id in pairs(old_disabled) do
             if not new_disabled[id] then
                 txn:setHidden(view, id, nil)
-                txn:clearHiddenAnchor(view, id)
                 imported = imported + 1
             end
         end
@@ -827,7 +1113,7 @@ importExternalChanges = function(view, reg, txn, native, entry)
     -- destination-wins policy, independent of pairs() order.
     local membership_claims = {}
     for menu_id, new_list in pairs(native) do
-        local old_list = last[menu_id]
+        local old_list = baseline[menu_id]
         if old_list == nil and not RESERVED[menu_id] then
             -- Key absent from our last emission. That does NOT mean the user
             -- authored this whole arrangement: the level was probably sparse
@@ -843,7 +1129,9 @@ importExternalChanges = function(view, reg, txn, native, entry)
                     -- list as newly authored).
                     old_list = new_list
                 else
-                    last[menu_id] = default_menu.list
+                    -- Derived-baseline substitution on the LOCAL copy only;
+                    -- the loaded sidecar structure stays untouched.
+                    baseline[menu_id] = default_menu.list
                     -- The downstream check reads the LOCAL old_list captured
                     -- before this branch; it must see the baseline too.
                     old_list = default_menu.list
@@ -881,6 +1169,9 @@ importExternalChanges = function(view, reg, txn, native, entry)
                     txn:setCustomMenu(view, menu_id, {
                         title = type(titles[menu_id]) == "string"
                             and titles[menu_id] or menu_id,
+                    })
+                    txn:setParentOverride(view, menu_id, {
+                        provider = nil,
                         parent = parent,
                     })
                 end
@@ -905,10 +1196,14 @@ importExternalChanges = function(view, reg, txn, native, entry)
                         if custom then
                             custom.title = title
                         else
-                            txn:setCustomMenu(view, id, {
-                                title = title,
-                                parent = findIdLocation(native, id),
-                            })
+                            txn:setCustomMenu(view, id, { title = title })
+                            local id_parent = findIdLocation(native, id)
+                            if id_parent then
+                                txn:setParentOverride(view, id, {
+                                    provider = nil,
+                                    parent = id_parent,
+                                })
+                            end
                         end
                         imported = imported + 1
                     end
@@ -955,18 +1250,17 @@ importExternalChanges = function(view, reg, txn, native, entry)
                     if type(section_now.order_override[menu_id]) == "table" then
                         local gone = {}
                         for _, id in ipairs(diff.removed or {}) do gone[id] = true end
+                        local old_record = section_now.order_override[menu_id]
                         local kept = {}
-                        for _, id in ipairs(section_now.order_override[menu_id]) do
-                            if not gone[id] then table.insert(kept, id) end
+                        for _, entry in ipairs(type(old_record) == "table"
+                                and old_record.entries or {}) do
+                            local entry_id = MenuSchema.isSeparatorEntry(entry)
+                                and MenuSchema.SEPARATOR_ID or entry.id
+                            if not gone[entry_id] then table.insert(kept, entry) end
                         end
                         if #kept > 0 then
-                            local kept_eras = {}
-                            local old_eras = section_now.sequence_eras
-                                and section_now.sequence_eras[menu_id]
-                            for _, id in ipairs(kept) do
-                                kept_eras[id] = old_eras and old_eras[id] or nil
-                            end
-                            txn:setOrderOverride(view, menu_id, kept, kept_eras)
+                            txn:view(view).order_override[menu_id] =
+                                { entries = kept }
                         else
                             txn:setOrderOverride(view, menu_id, nil)
                         end
@@ -1132,29 +1426,7 @@ importExternalChanges = function(view, reg, txn, native, entry)
         end
     end
 
-
-    -- Hidden-row display anchors are auxiliary UI metadata.  Drop a string
-    -- target only when it no longer exists in either the live registry, a
-    -- custom submenu, or the edited native structure; `false` remains the
-    -- valid start-of-list anchor.
-    local present = {}
-    for id in pairs(reg.nodes or {}) do present[id] = true end
-    for id in pairs(txn:getCustomMenus(view) or {}) do present[id] = true end
-    for _, list in pairs(native) do
-        if type(list) == "table" then
-            for _, id in ipairs(list) do
-                if type(id) == "string" then present[id] = true end
-            end
-        end
-    end
-    for id, anchor in pairs(txn:getHiddenAnchors(view) or {}) do
-        if type(anchor) == "string" and not present[anchor] then
-            txn:clearHiddenAnchor(view, id)
-            imported = imported + 1
-        end
-    end
-
-    return imported > 0, "imported_external"
+    return imported > 0, STATUS.IMPORTED_EXTERNAL
 end
 
 return NativeWriter

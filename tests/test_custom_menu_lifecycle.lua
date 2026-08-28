@@ -37,7 +37,9 @@ local UIManager = require("ui/uimanager")
 local MenuSorter = require("ui/menusorter")
 local _ = require("gettext")
 
-require("main")
+local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("reorderingmenus_ui_screens")
+local IntentStore = require("reorderingmenus_intent_store")
 
 local view = "filemanager"
 local settings_dir = DataStorage:getSettingsDir()
@@ -225,8 +227,8 @@ print("\n--- C3: disabling the plugin degrades gracefully ---")
 do
     drop_session_caches()
     local menu = launch({}) -- plugin gone
-    assert_eq(MenuOrderManager:getParentMenu(view, PLUGIN_ID), "more_tools",
-        "C3: stale entry stays persisted while provider is gone")
+    assert_eq(MenuOrderManager:getParentMenu(view, PLUGIN_ID), nil,
+        "C3: untouched plugin entry leaves parent resolution when provider is gone")
     assert_eq(count_new_prefix(menu.tab_item_table), 0, "C3: no NEW: orphans")
 
     -- Editors hide the provider-less entry entirely (ghost filtering).

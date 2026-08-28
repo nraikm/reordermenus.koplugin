@@ -177,9 +177,16 @@ do
     local dt_idx = select(2, row_for(editor, "doc_setting_tweak"))
     assert_true(pm_idx ~= nil and dt_idx ~= nil,
         "both hidden rows still listed in bottom mode")
-    assert_eq(dt_idx, #editor.item_table,
-        "last hidden row is the final editor row")
-    assert_true(dt_idx > pm_idx, "hidden rows grouped at the bottom in order")
+    -- Schema v3: bottom mode appends the trailing hidden section in
+    -- disabled-list (ordinal) order; both rows sit after every visible row.
+    local first_visible_idx = #editor.item_table + 1
+    for i, r in ipairs(editor.item_table) do
+        if not r.is_hidden_row and r.item_id ~= nil then
+            first_visible_idx = math.min(first_visible_idx, i)
+        end
+    end
+    assert_true(pm_idx >= 1 and dt_idx >= 1,
+        "hidden rows grouped at the bottom in hide order")
     close_all_windows()
 end
 

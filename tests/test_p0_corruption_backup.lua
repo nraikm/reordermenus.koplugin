@@ -66,6 +66,7 @@ end
 local function clear_backups()
     os.execute("rm -f " .. settings_dir .. "/reorderingmenus_intent.lua.corrupt-*")
     os.execute("rm -f " .. settings_dir .. "/reorderingmenus_intent.lua.unsupported*")
+    os.execute("rm -f " .. settings_dir .. "/reorderingmenus_intent.unsupported.lua")
 end
 
 local CORRUPT_BYTES = "this is { not lua at all"
@@ -117,7 +118,9 @@ end
 
 print("\n--- B3: restart with working backup heals normally ---")
 do
-    -- Fresh process semantics: re-load with injections lifted.
+    -- Fresh process semantics: the quarantine retry runs again with
+    -- injections lifted.
+    IntentStore._resetPreservationForTests()
     clear_backups()
     write_intent(CORRUPT_BYTES)
     local state, problems, backup_path = IntentStore.load(true)
@@ -135,22 +138,21 @@ end
 
 print("\n--- B4: healthy file unaffected ---")
 do
+    IntentStore._resetPreservationForTests()
     clear_backups()
     local healthy = {
-        version = 2,
+        -- Schema v3 shape (the current on-disk format this build writes).
+        version = 3,
         views = {
-            reader = { hidden = {}, hidden_order = {}, parent_override = {},
+            reader = { hidden = {}, parent_override = {},
                 position_override = {}, order_override = {},
-                sequence_eras = {}, custom_menus = {}, separators = {},
-                raw_override = {} },
-            filemanager = { hidden = {}, hidden_order = {},
-                parent_override = {}, position_override = {},
-                order_override = {}, sequence_eras = {},
+                custom_menus = {}, separators = {}, raw_override = {} },
+            filemanager = { hidden = {}, parent_override = {},
+                position_override = {}, order_override = {},
                 custom_menus = {}, separators = {}, raw_override = {} },
         },
         meta = { generation = 4,
-            view_generations = { reader = 2, filemanager = 2 },
-            ui_state = { hidden_anchors = { reader = {}, filemanager = {} } } },
+            view_generations = { reader = 2, filemanager = 2 } },
     }
     local text = table.concat({ "-- ", INTENT_FILE, "\nreturn ",
         dump(healthy, nil, true), "\n" })
@@ -164,6 +166,7 @@ end
 
 print("\n--- B5: unsupported schema + failed quarantine ---")
 do
+    IntentStore._resetPreservationForTests()
     clear_backups()
     local future = table.concat({ "-- ", INTENT_FILE, "\nreturn ",
         dump({ version = 99, views = {}, meta = {} }, nil, true), "\n" })
@@ -173,7 +176,8 @@ do
     local real_rename = os.rename
     os.rename = function(a, b)
         if type(b) == "string"
-                and b:find("reorderingmenus_intent%.lua%.unsupported") then
+                and (b:find("reorderingmenus_intent%.lua%.unsupported")
+                    or b:find("reorderingmenus_intent%.unsupported%.lua")) then
             return nil, "permission denied (injected)"
         end
         return real_rename(a, b)
@@ -184,9 +188,12 @@ do
     assert_true(type(state) == "table", "B5: usable empty state returned")
     local preserved_flag = false
     for _, p in ipairs(problems or {}) do
-        if p.preserved == false then preserved_flag = true end
+        if p.kind == "unsupported_future_schema" and p.preserved == false then
+            preserved_flag = true
+        end
     end
-    assert_true(preserved_flag, "B5: problem carries preserved=false")
+    assert_true(preserved_flag,
+        "B5: unsupported_future_schema problem carries preserved=false")
     assert_eq(read_intent(), before,
         "B5: unsupported ORIGINAL bytes untouched")
     assert_true(IntentStore.isOriginalPreserved() == false,

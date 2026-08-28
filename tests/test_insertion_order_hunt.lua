@@ -216,9 +216,19 @@ local function build_and_capture(mode)
 
     if mode == "canon" then
         -- Test-side canonicalization of the ONLY legitimate chronological
-        -- collection, making logical state bit-equal across turns.
+        -- collection. Schema v3 stores hide chronology ON each hidden
+        -- record (ordinal); bit-equal logical state therefore requires
+        -- bit-equal ordinals, so assign them deterministically here (sorted
+        -- id order) exactly like the old hidden_order sort did.
         local sec = IntentStore.view(VIEW)
-        table.sort(sec.hidden_order or {})
+        local hidden_ids = {}
+        for id in pairs(sec.hidden or {}) do table.insert(hidden_ids, id) end
+        table.sort(hidden_ids)
+        for i, id in ipairs(hidden_ids) do
+            if type(sec.hidden[id]) == "table" then
+                sec.hidden[id].ordinal = i
+            end
+        end
     end
 
     local save_ok = Manager:saveOrder(VIEW)

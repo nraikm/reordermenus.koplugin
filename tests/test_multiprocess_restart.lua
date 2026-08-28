@@ -50,28 +50,27 @@ print("===============================================================")
 -- ---- P1 -----------------------------------------------------------------
 local p1 = H.run_phase("p1", PRELUDE .. [[
 MenuOrderManager:setLiveRegistrations(view,
-    { fuzzplugin_item = { text = "Fuzz plugin" } },
+    { fuzzplugin_item = { text = "Fuzz plugin", sorting_hint = "more_tools" } },
     { fuzzplugin_item = "fuzzplugin" })
 local order = MenuOrderManager:loadOrder(view)
-if type(order.more_tools) ~= "table" then order.more_tools = {} end
--- go through the REAL persistence funnel: stageList converts the arranged
--- list into provider-stamped intent records
-table.insert(order.more_tools, "fuzzplugin_item")
-local ok_stage = MenuOrderManager:stageList(view, "more_tools", order.more_tools)
 local ok_save = MenuOrderManager:saveOrder(view)
 local IntentStore = require("reorderingmenus_intent_store")
 local s = IntentStore.load()
-s.views.filemanager.hidden["read_timer"] = { provider = "stock", origin = "tools" }
-table.insert(s.views.filemanager.hidden_order, "read_timer")
+s.views.filemanager.hidden["read_timer"] =
+    { provider = "stock", origin = "tools", ordinal = 1 }
 IntentStore.save()
-emit("p1_saved", tostring(ok_stage and ok_save))
+emit("p1_saved", tostring(ok_save))
 ]])
 
 local r1 = H.parse_results(p1)
+print("P1 RAW OUTPUT:\n" .. p1.output)
 assert_eq(r1.p1_saved, "true", "P1: customization persisted in process 1")
 
 -- ---- P2 -----------------------------------------------------------------
 local p2 = H.run_phase("p2", PRELUDE .. [[
+MenuOrderManager:setLiveRegistrations(view,
+    { fuzzplugin_item = { text = "Fuzz plugin", sorting_hint = "more_tools" } },
+    { fuzzplugin_item = "fuzzplugin" })
 local order = MenuOrderManager:loadOrder(view)
 local found = false
 for _, id in ipairs(order.more_tools or {}) do
@@ -115,7 +114,7 @@ emit("p2_read_timer_still_hidden",
 -- the provider returns (plugin re-enabled): its row must come back
 MenuOrderManager:dropSessionState(view)
 MenuOrderManager:setLiveRegistrations(view,
-    { fuzzplugin_item = { text = "Fuzz plugin" } },
+    { fuzzplugin_item = { text = "Fuzz plugin", sorting_hint = "more_tools" } },
     { fuzzplugin_item = "fuzzplugin" })
 order = MenuOrderManager:loadOrder(view)
 found = false
@@ -146,7 +145,7 @@ assert_eq(r2.p2_reordered, "true", "P2: reorder persisted in process 2")
 -- ---- P3 -----------------------------------------------------------------
 local p3 = H.run_phase("p3", PRELUDE .. [[
 MenuOrderManager:setLiveRegistrations(view,
-    { fuzzplugin_item = { text = "Fuzz plugin" } },
+    { fuzzplugin_item = { text = "Fuzz plugin", sorting_hint = "more_tools" } },
     { fuzzplugin_item = "fuzzplugin" })
 local order = MenuOrderManager:loadOrder(view)
 -- exactly one plugin row, and it must be the FIRST row (reversed in P2)
@@ -163,7 +162,7 @@ emit("p3_read_timer_hidden",
 -- guards are process-local: a fresh process must have re-derived them
 local ms = require("ui/menusorter")
 emit("p3_guard_present", tostring(ms.reordering_menus_hint_guard == true))
--- insert_menu singleton: exactly one entry after one require("main")
+-- insert_menu removal (P1B #11): shared elements tables are never mutated
 local fm_order = require("ui/elements/filemanager_menu_order")
 local ins_count = 0
 for _, id in ipairs(fm_order.more_tools or {}) do
@@ -177,7 +176,7 @@ assert_eq(r3.p3_plugin_count, "1", "P3: exactly one plugin row (no duplicates)")
 assert_eq(r3.p3_first_is_plugin, "true", "P3: reversed order survived")
 assert_eq(r3.p3_read_timer_hidden, "true", "P3: hidden item still hidden")
 assert_eq(r3.p3_guard_present, "true", "P3: runtime guards re-derived per process")
-assert_eq(r3.p3_self_entry_count, "1", "P3: exactly one self menu entry")
+assert_eq(r3.p3_self_entry_count, "0", "P3: filemanager_menu_order not polluted (no insert_menu mutation)")
 
 print(string.format("\n=== %d passed, %d failed (multi-process) ===", passed, failed))
 if failed > 0 then os.exit(1) end

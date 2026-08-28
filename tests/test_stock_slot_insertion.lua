@@ -57,6 +57,7 @@ end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
 local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
 local UIScreens = require("reorderingmenus_ui_screens")
 
 local mock_ui_fm = {
@@ -183,7 +184,13 @@ local function count_new_prefix(tree)
         for _, entry in ipairs(node) do
             if type(entry) == "table" then
                 if type(entry.text) == "string"
-                        and entry.text:sub(1, 5) == "NEW: " then n = n + 1 end
+                        and entry.text:sub(1, 5) == "NEW: " then
+                    n = n + 1
+                    if os.getenv("S_TRACE") then
+                        print("DBG-NEWROW", tostring(entry.text),
+                            "id=", tostring(entry.item_id or entry.id))
+                    end
+                end
                 if type(entry.sub_item_table) == "table" then walk(entry.sub_item_table)
                 elseif #entry > 0 then walk(entry) end
             end
@@ -268,6 +275,20 @@ do
     end
     assert_true(new_idx ~= nil and pm_idx ~= nil and next_real_after_new == "plugin_management",
         "S2: new tool slots before its following stock sibling")
+    if os.getenv("S_TRACE") then
+        local function walk(t, path)
+            for k, v in pairs(t or {}) do
+                if type(k) == "string" and k:find("^NEW:") then
+                    print("DBG-NEWWALK", path, k, tostring(type(v)))
+                end
+                if type(v) == "table" then walk(v, path .. "/" .. tostring(k)) end
+            end
+        end
+        walk(menu.tab_item_table, "")
+        local natf = io.open(KoreaderAdapter.getNativePath(view), "r")
+        local body = natf and natf:read("*a"); if natf then natf:close() end
+        local out = io.open("/tmp/s2_native.lua", "w") out:write(body or "") out:close()
+    end
     assert_eq(count_new_prefix(menu.tab_item_table or {}), 0, "S2: no NEW: rows")
     close_all_windows()
 end
@@ -333,7 +354,7 @@ print("\n--- S5: repeated launches are idempotent ---")
 do
     local before = table.concat(
         MenuOrderManager:getMenuItems(view, "setting"), ",")
-    local menu = launch(make_provider_stub(INJECTED_IDS))
+    local menu = launch(make_provider_stub({ "trailing_search_tool" }))
     local after = table.concat(
         MenuOrderManager:getMenuItems(view, "setting"), ",")
     assert_eq(after, before, "S5: healed list identical on the next launch")

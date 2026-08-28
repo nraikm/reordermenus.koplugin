@@ -28,8 +28,8 @@ Manager:resetOrder("filemanager")
 
 -- bypass ALL caches: what does Materializer say with truly empty intent?
 local Registry = require("reorderingmenus_registry")
-local Materializer = require("reorderingmenus_materializer")
-local reg = Registry.build("filemanager", nil)
+local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local reg = Registry.buildFromData(KoreaderAdapter.getDefaultOrder("filemanager"), KoreaderAdapter.collectLiveRegistrations(nil))
 local g = Materializer.resolve(reg, Materializer.emptyIntent())
 print("pure resolve taps:", table.concat(g.lists["taps_and_gestures"] or {}, ","))
 print("manager says     :", table.concat(Manager:getMenuItems("filemanager", menu), ","))

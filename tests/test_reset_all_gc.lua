@@ -444,19 +444,29 @@ for _, v in ipairs(VIEWS) do
     assert_true(snapshots_equal(projection_snapshot(v), oracle_snap,
         label .. " fresh-session"),
         label .. ": fresh session reproduces the fresh world")
-    local section_empty = true
-    for key, coll in pairs(IntentStore.view(v)) do
-        if type(coll) == "table" and next(coll) ~= nil then section_empty = false end
-        if key == "tab_order" and coll ~= nil then section_empty = false end
-    end
-    assert_true(section_empty, label .. ": canonical intent fully collected")
-    assert_true(next(IntentStore.meta().ui_state.hidden_anchors[v] or {}) == nil,
+    -- Schema v3: canonical may legitimately hold TYPED LIFECYCLE PINS
+    -- (first-contact anchoring rewritten by the fresh-session reconcile
+    -- above). "Fully collected" now means: no EXPLICIT USER intent remains.
+    local MenuSchema = require("reorderingmenus_menu_schema")
+    assert_true(not MenuSchema.sectionHasUserIntent(IntentStore.view(v)),
+        label .. ": canonical intent fully collected")
+    -- Schema v3 removed meta.ui_state entirely (hidden anchors were UI
+    -- bookkeeping, folded onto the hidden records themselves): absence of
+    -- the map IS the cleared state.
+    assert_true(IntentStore.meta().ui_state == nil,
         label .. ": hidden-row anchors cleared")
     assert_true(not lfs.attributes(ORDER_FILES[v], "mode"),
         label .. ": native file removed by the reset")
 end
-assert_true(not lfs.attributes(SIDECAR, "mode"),
-    "materialization sidecar emptied")
+-- The reset's file removal is CHECKPOINTED as an explicit empty emission
+-- ({structure=nil, writer_version stamped}) rather than deleting the sidecar
+-- record (FIX-3/4 contract): the surviving baseline is what keeps a later
+-- external edit classified as EXTERNAL instead of "legacy first contact",
+-- and stops reconcile's maintenance branch from re-firing. The record must
+-- exist and describe "no file"; nothing may claim on-disk content.
+local rec = NativeWriter.getRecord(fm)
+assert_true(rec ~= nil and rec.structure == nil and not lfs.attributes(ORDER_FILES[fm], "mode"),
+    "materialization sidecar holds an explicit empty-emission checkpoint")
 
 -- (4) presets survive the reset untouched.
 assert_true(#MenuOrderManager:listUserPresets(fm) == preset_count_before,

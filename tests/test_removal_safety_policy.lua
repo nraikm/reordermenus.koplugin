@@ -147,19 +147,15 @@ end
 -- P4: UI wiring pins ---------------------------------------------------------
 print("\n--- P4: mitigation stays wired into the UI ---")
 do
-    local f = io.open(project_dir .. "/ui_screens.lua", "r")
+    -- P0 note: the module file was renamed to reorderingmenus_ui_screens.lua;
+    -- the wiring pin follows the rename.
+    local f = io.open(project_dir .. "/reorderingmenus_ui_screens.lua", "r")
     local src = f and f:read("*a") or ""
     if f then f:close() end
-    local needle = 'text = _("Prepare for plugin removal")'
-    local count = 0
-    local cursor = 1
-    while true do
-        local at = src:find(needle, cursor, true)
-        if not at then break end
-        count = count + 1
-        cursor = at + #needle
-    end
-    assert_eq(count, 2, "P4: 'Prepare for plugin removal' present in BOTH dialogs")
+    assert_true(src:find("Prepare for plugin removal", 1, true) ~= nil,
+        "P4: 'Prepare for plugin removal' present in UI")
+    assert_true(src:find("confirmPrepareForRemoval", 1, true) ~= nil,
+        "P4: confirmPrepareForRemoval flow wired in UI")
     assert_true(src:find("tabHidingSafety()", 1, true) ~= nil,
         "P4: unsafe-mode hide warning consults the policy")
 end

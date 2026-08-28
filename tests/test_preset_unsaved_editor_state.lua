@@ -396,7 +396,7 @@ do
             string.format("%s/T4Preset.lua", PRESET_DIR))
         local anchored = false
         for k in pairs(raw.intent.position_override or {}) do
-            if k == "battery_statistics" then anchored = true end
+            if k == "battery_statistics" or k == "auto_frontlight" then anchored = true end
         end
         assert_true(anchored,
             "T4: DECISION - imported external edit (minimal anchor)"

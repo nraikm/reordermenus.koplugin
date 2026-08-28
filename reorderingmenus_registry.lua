@@ -21,9 +21,18 @@ Items whose provider disappeared are simply absent; their persisted intent
 survives in the intent store until they return.
 --]]
 
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
 local MenuSchema = require("reorderingmenus_menu_schema")
-local util = require("util")
+local ok_util, util = pcall(require, "util")
+
+local function deepCopy(t)
+    if ok_util and util and util.tableDeepCopy then
+        return util.tableDeepCopy(t)
+    end
+    if type(t) ~= "table" then return t end
+    local copy = {}
+    for k, v in pairs(t) do copy[k] = deepCopy(v) end
+    return copy
+end
 
 local Registry = {}
 
@@ -32,11 +41,16 @@ local RESERVED_KEYS = MenuSchema.RESERVED_KEYS
 Registry.RESERVED_KEYS = RESERVED_KEYS
 
 -- Pure constructor: build the registry from explicit inputs (tests inject
--- these; production resolves them through koreader_adapter).
-function Registry.buildFromData(defaults, registrations, providers)
+-- these; production resolves them through koreader_adapter). Signature:
+--   buildFromData(defaults, registrations, providers, collisions)
+--     defaults       view -> ordered id list (stock layout)
+--     registrations  id -> { sorting_hint = ... } live contributions
+--     providers      id -> widget name (attribution)
+--     collisions     id -> { sorted widget names } (>1 entry = contested)
+function Registry.buildFromData(defaults, registrations, providers, collisions)
     local reg = {
         menus = {},
-        tab_list = util.tableDeepCopy(defaults[MenuSchema.MENU_BUTTONS_KEY] or {}),
+        tab_list = deepCopy(defaults[MenuSchema.MENU_BUTTONS_KEY] or {}),
         nodes = {},
     }
 
@@ -49,7 +63,7 @@ function Registry.buildFromData(defaults, registrations, providers)
     table.sort(menu_ids)
     for _, menu_id in ipairs(menu_ids) do
         reg.menus[menu_id] = {
-            list = util.tableDeepCopy(defaults[menu_id]),
+            list = deepCopy(defaults[menu_id]),
             is_tab = false,
         }
     end
@@ -98,6 +112,9 @@ function Registry.buildFromData(defaults, registrations, providers)
 
     -- Live contributions fill in anything the static defaults cannot know,
     -- most importantly freshly updated plugins and their sorting hints.
+    -- P1B (#2/#8): collision metadata arrives via the SEPARATE `collisions`
+    -- map ({ [id] = { sorted widget names } }) and is stored only on registry
+    -- nodes - never written back into provider-owned entry tables.
     for id, item in pairs(registrations or {}) do
         if type(id) == "string" and not RESERVED_KEYS[id] then
             local hint = item and item.sorting_hint or nil
@@ -108,16 +125,20 @@ function Registry.buildFromData(defaults, registrations, providers)
                 end
             else
                 local widget_name = providers and providers[id] or nil
-                local node = addNode(id,
-                    widget_name and ("plugin:" .. tostring(widget_name)) or nil,
+                local prov = nil
+                if widget_name then
+                    local s = tostring(widget_name)
+                    prov = (s:find("^plugin:") or s == "stock") and s or ("plugin:" .. s)
+                end
+                local node = addNode(id, prov,
                     nil, nil, hint, reg.menus[id] and "submenu" or "item")
                 -- Simultaneous collision: several widgets contribute the same
                 -- id right now. Attribution is deterministic (smallest widget
                 -- name) but the identity is inherently unstable, so the node
                 -- is flagged; reconciliation refuses to pin such ids.
-                if node and type(item) == "table"
-                        and type(item.colliding_providers) == "table"
-                        and #item.colliding_providers > 1 then
+                if node and type(collisions) == "table"
+                        and type(collisions[id]) == "table"
+                        and #collisions[id] > 1 then
                     node.collides = true
                 end
             end
@@ -127,11 +148,6 @@ function Registry.buildFromData(defaults, registrations, providers)
     return reg
 end
 
-function Registry.build(view, ui)
-    local defaults = KoreaderAdapter.getDefaultOrder(view)
-    local registrations, providers = KoreaderAdapter.collectLiveRegistrations(ui)
-    return Registry.buildFromData(defaults, registrations, providers)
-end
 
 function Registry.isKnown(reg, id)
     return reg.nodes[id] ~= nil

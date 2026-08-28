@@ -604,9 +604,9 @@ do
     -- Second launch on the healed file stays stable.
     MenuOrderManager.orders[view] = nil
     MenuOrderManager.default_orders[view] = util.tableDeepCopy(default_module)
-    MenuOrderManager.recent_moves[view] = {}
     menu = new_menu({ pre_update, core_stub })
     UIScreens:reconcileRegisteredItems({ ui = mock_ui_fm }, view, true)
+    package.loaded["ui/elements/" .. view .. "_menu_order"] = util.tableDeepCopy(default_module)
     menu:setUpdateItemTable()
     assert_eq(count_new_prefix_rows(menu.tab_item_table), 0,
         "E: healed configuration stays clean on the next launch")

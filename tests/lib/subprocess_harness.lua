@@ -21,7 +21,7 @@ end
 
 local H = {}
 
-H.koreader_dir = "/Applications/KOReader.app/Contents/koreader"
+H.koreader_dir = os.getenv("KOREADER_DIR") or "/Applications/KOReader.app/Contents/koreader"
 H.luajit = H.koreader_dir .. "/luajit"
 H.plugin_dir = arg and arg[0]
     and arg[0]:match("^(.*)/tests/[^/]+$") or nil
@@ -52,6 +52,12 @@ require("gettext")
     f:close()
 
     local env = ""
+    if not (env_extra and env_extra.KO_HOME) and os.getenv("KO_HOME") then
+        env = env .. "KO_HOME=" .. sh_quote(os.getenv("KO_HOME")) .. " "
+    end
+    if not (env_extra and env_extra.KOREADER_DIR) and os.getenv("KOREADER_DIR") then
+        env = env .. "KOREADER_DIR=" .. sh_quote(os.getenv("KOREADER_DIR")) .. " "
+    end
     if env_extra then
         for k, v in pairs(env_extra) do
             env = env .. k .. "=" .. sh_quote(v) .. " "

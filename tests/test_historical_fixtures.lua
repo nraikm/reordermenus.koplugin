@@ -249,8 +249,10 @@ do
     assert(not IntentStore.hasPersistedState(),
         "P3 setup: canonical intent must not pre-exist")
 
+    package.loaded["reorderingmenus_intent_store"] = nil
     package.loaded["reorderingmenus_menuorder_manager"] = nil
     package.loaded["reorderingmenus_ui_screens"] = nil
+    IntentStore = require("reorderingmenus_intent_store")
     Manager = require("reorderingmenus_menuorder_manager")
     UIScreens = require("reorderingmenus_ui_screens")
     NativeWriter._resetCaches(); launch()
@@ -300,14 +302,14 @@ do
     note(sec.hidden.history ~= nil
         and sec.parent_override.opds ~= nil
         and sec.parent_override.opds.parent == "tools"
-        and sec.order_override.search[1] == "opds",
+        and sec.order_override.search.entries[1].id == "opds",
         "P4: v0 records migrated losslessly")
     note(IntentStore.meta().generation == 0,
         "P4b: generation counter initialized at 0")
     local raw = io.open(sd .. "/reorderingmenus_intent.lua", "r")
     local body = raw and raw:read("*a"); if raw then raw:close() end
-    note(body:find("%[\"version\"%] = 2") ~= nil,
-        "P4c: on-disk file stamped schema version 2")
+    note(body and body:find('["version"] = 3', 1, true) ~= nil,
+        "P4c: on-disk file stamped schema version 3")
 
     -- Idempotence: reload changes nothing, quarantines nothing.
     local n_before = count_records(sec)
@@ -388,9 +390,9 @@ do
         "P5: v1 anchor + move records survive migration")
     note(type(IntentStore.meta().generation) == "number",
         "P5b: v1->v2 stamped meta.generation")
-    note(IntentStore.SCHEMA_VERSION == 2
+    note(IntentStore.SCHEMA_VERSION == 3
         and IntentStore.meta().generation == 0,
-        "P5c: current build reads/writes schema 2")
+        "P5c: current build reads/writes schema 3")
     wipe_all()
 end
 

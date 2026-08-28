@@ -363,11 +363,10 @@ if SCENARIO == "S1_staged_exit" then
 
         -- Documented instant-persist UI bookkeeping: hidden-row anchors may
         -- survive a discarded edit. Report, never fail (non-semantic).
-        local anchor = IntentStore.getHiddenAnchor(VIEW, VICTIM_TAB)
-        if anchor ~= nil then
-            print("    [NOTE] hidden-row anchor residue survived the discarded" ..
-                " hide (documented instant-persist UI preference)")
-        end
+        -- Schema v3 removed the ui_state anchor side-map entirely, so there
+        -- is nothing left to observe: the check reduces to a no-op note.
+        print("    [NOTE] hidden-anchor residue check retired (schema v3" ..
+            " dropped ui_state anchors; nothing non-semantic can persist)")
     end
 
 -- =========================================================================
@@ -507,8 +506,9 @@ elseif SCENARIO == "S4_two_view_window" then
         local dest = MenuOrderManager:getDefaultOrder(OTHER)["setting"]
             and MenuOrderManager:getDefaultOrder(VIEW)["setting"] and "setting" or "search"
 
+        local widgets = { STUB_WIDGET }
         -- Reader starts FIRST: its stale file must regenerate from canonical.
-        launch(OTHER)
+        launch(OTHER, widgets)
         assert_eq(MenuOrderManager:getParentMenu(OTHER, STUB_ID), dest,
             "reader projection follows committed canonical")
         local rd_order = dofile(OTHER_ORDER_FILE)
@@ -521,7 +521,7 @@ elseif SCENARIO == "S4_two_view_window" then
         assert_eq(rd_rec and rd_rec.intent_gen, IntentStore.generation(OTHER),
             "reader sidecar re-bound after lagged-generation recovery")
 
-        launch(VIEW)
+        launch(VIEW, widgets)
         assert_eq(MenuOrderManager:getParentMenu(VIEW, STUB_ID), dest,
             "FM view unchanged by the recovery")
         assert_true(MenuOrderManager:isMirroringEnabled(),
@@ -564,7 +564,15 @@ elseif SCENARIO == "S5_reset_after_commit" then
         end
         assert_true(not lfs.attributes(ORDER_FILE, "mode"),
             "native file removed once the world is stock again")
-        assert_eq(NativeWriter.getRecord(VIEW), nil, "sidecar record cleared")
+        -- P0 pipeline: the removal is checkpointed as an explicit EMPTY
+        -- emission ({structure=nil, writer_version stamped}) rather than
+        -- clearing the record - that baseline is what keeps the next
+        -- external edit classified as EXTERNAL (never "legacy first
+        -- contact") and stops maintenance from re-firing. The record must
+        -- therefore exist and describe "no file".
+        local rec_after = NativeWriter.getRecord(VIEW)
+        assert_true(rec_after ~= nil and rec_after.structure == nil,
+            "sidecar holds an explicit empty-emission checkpoint")
         assert_eq(#tmp_litter(), 0, "no temp litter after recovery")
     end
 

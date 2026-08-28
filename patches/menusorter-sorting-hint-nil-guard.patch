@@ -1,0 +1,41 @@
+Upstream defensive fix for orphaned sorting_hint targets.
+
+frontend/ui/menusorter.lua, MenuSorter:sort(), orphan handling:
+
+    local sorting_hint_menu = self:findById(menu_table["KOMenu:menu_buttons"], sorting_hint)
+    sorting_hint_menu = sorting_hint_menu.sub_item_table or sorting_hint_menu
+    table.insert(sorting_hint_menu, v)
+
+findById returns nil when the hinted menu is not reachable in the rendered
+tree - most commonly because the tab it points at is hidden through
+KOMenu:disabled (or removed upstream). The unguarded dereference then crashes
+the whole menu build. Any plugin may leave such a world behind after being
+uninstalled, so this is a stock-robustness issue independent of Reordering
+Menos.
+
+Proposed patch (fallback to the first menu, mirroring the no-hint orphan
+path, instead of crashing):
+
+--- a/frontend/ui/menusorter.lua
++++ b/frontend/ui/menusorter.lua
+@@ -177,9 +177,14 @@ function MenuSorter:sort(item_table, order)
+         if sorting_hint then
+             local sorting_hint_menu = self:findById(menu_table["KOMenu:menu_buttons"], sorting_hint)
+-            sorting_hint_menu = sorting_hint_menu.sub_item_table or sorting_hint_menu
+-            table.insert(sorting_hint_menu, v)
++            if sorting_hint_menu then
++                sorting_hint_menu = sorting_hint_menu.sub_item_table or sorting_hint_menu
++                table.insert(sorting_hint_menu, v)
++            else
++                -- hinted target unreachable (hidden or removed): safe fallback
++                v.sorting_hint = nil
++                v.text = self.orphaned_prefix .. v.text
++                table.insert(menu_table["KOMenu:menu_buttons"][1], v)
++            end
+         else
+             table.insert(menu_table["KOMenu:menu_buttons"][1], v)
+         end
+
+Until this lands upstream, Reordering Menus installs an equivalent runtime
+guard (koreader_adapter.installSortingHintGuard) and locks the hazard down in
+tests/test_self_absence_contract.lua.

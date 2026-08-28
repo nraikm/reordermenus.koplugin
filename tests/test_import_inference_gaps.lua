@@ -133,16 +133,19 @@ do
     end)
     restart("filemanager")
     local items = Manager:getMenuItems("filemanager", "help")
-    local seq = IntentStore.view("filemanager").order_override.help
+    local seq_rec = IntentStore.view("filemanager").order_override.help
+    -- Schema v3: the sequence lives in rec.entries with {id=...} records.
+    local seq = seq_rec and (seq_rec.entries or seq_rec) or nil
     assert_true(seq ~= nil or next(IntentStore.view("filemanager").position_override or {}) ~= nil,
         "G1: block move recorded as explicit intent")
     -- semantic: layout matches the edit (last two rows are the moved pair)
     local sec = IntentStore.view("filemanager")
     if seq then
         -- help = [quickstart | search_menu | report_bug | system_statistics
---         | version | about]; rows 2..3 (search_menu, report_bug) close the list
-        assert_eq(seq[#seq], "report_bug", "G1: block order kept in sequence")
-        assert_eq(seq[#seq - 1], "search_menu", "G1: block order kept in sequence (2)")
+        -- | version | about]; rows 2..3 (search_menu, report_bug) close the list
+        local function eid(e) return type(e) == "table" and e.id or e end
+        assert_eq(eid(seq[#seq]), "report_bug", "G1: block order kept in sequence")
+        assert_eq(eid(seq[#seq - 1]), "search_menu", "G1: block order kept in sequence (2)")
     end
     _ = items
 end

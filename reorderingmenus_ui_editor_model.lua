@@ -1,8 +1,27 @@
 -- Pure helpers shared by KOReader editor screens.
 
 local EditorModel = {
-    EMPTY_HINT_ID = "__empty_hint__",
+    -- Structural placeholder for the "menu is empty" hint row. A unique
+    -- TABLE, not a string: no provider id can ever collide with it
+    -- (a real item with id "__empty_hint__" must behave as a normal item).
+    -- Identity is compared with `==`, never serialized, and never persisted:
+    -- buildPersistentOrder skips it exactly like the old string id did.
+    EMPTY_HINT_SENTINEL = {},
 }
+
+-- Backwards-compatible alias: code that only needs "some non-colliding key"
+-- can keep using a constant name. Row matching must use the sentinel object
+-- (EditorModel.isEmptyHintRow), not this value.
+EditorModel.EMPTY_HINT_ID = EditorModel.EMPTY_HINT_SENTINEL
+
+function EditorModel.isEmptyHintRow(row)
+    return row ~= nil and row.item_id == EditorModel.EMPTY_HINT_SENTINEL
+end
+
+function EditorModel.isRealItemId(item_id)
+    return item_id ~= nil
+        and item_id ~= EditorModel.EMPTY_HINT_SENTINEL
+end
 
 function EditorModel.idsMatch(a, b)
     if #a ~= #b then return false end
@@ -45,7 +64,7 @@ function EditorModel.removeRow(rows, target)
 end
 
 function EditorModel.removeEmptyHints(rows)
-    return EditorModel.removeRowsById(rows, EditorModel.EMPTY_HINT_ID)
+    return EditorModel.removeRows(rows, EditorModel.isEmptyHintRow)
 end
 
 function EditorModel.insertRow(rows, index, row)
@@ -64,13 +83,15 @@ end
 -- Translate a position in the editor's row model to an insertion point in a
 -- persisted id sequence. Rows omitted from persistence (such as the empty
 -- hint) are ignored, while repeated ids such as separators retain multiplicity.
+-- (ignored_row is accepted for call-site compatibility; hint rows are always
+-- recognized structurally via their sentinel.)
 function EditorModel.persistedIndexForRowPosition(rows, row_position,
-                                                   persisted_ids, ignored_id)
+                                                   persisted_ids, ignored_row)
     local remaining = {}
     for index = 1, row_position - 1 do
         local row = rows[index]
         local item_id = row and row.item_id
-        if item_id and item_id ~= ignored_id then
+        if EditorModel.isRealItemId(item_id) then
             remaining[item_id] = (remaining[item_id] or 0) + 1
         end
     end

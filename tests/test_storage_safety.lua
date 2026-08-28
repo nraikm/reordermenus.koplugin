@@ -60,6 +60,20 @@ local function fresh()
     MenuOrderManager:dropSessionState(view)
 end
 
+-- Recursive removal for test setup/teardown (settings trees are tiny).
+local function rmdir(path)
+    if lfs.attributes(path, "mode") == "directory" then
+        for entry in lfs.dir(path) do
+            if entry ~= "." and entry ~= ".." then
+                rmdir(path .. "/" .. entry)
+            end
+        end
+        lfs.rmdir(path)
+    else
+        os.remove(path)
+    end
+end
+
 print("===============================================================")
 print("=== Storage safety: loaders, versions, identity, sidecars   ===")
 print("===============================================================")
@@ -132,7 +146,6 @@ do
     MenuOrderManager:saveOrder(view)
 
     local intent_path = sd .. "/reorderingmenus_intent.lua"
-    local orig = assert(io.open(intent_path, "r")):read("*a")
     -- Rewrite as a FUTURE schema version.
     local fh = io.open(intent_path, "w")
     local future_bytes = '-- future\nreturn {\n    version = 99,\n    views = {},\n'
@@ -167,6 +180,75 @@ do
     assert_true(not IntentStore.isProtected(), "S2: protection lifted")
     local ok_after = IntentStore.save()
     assert_eq(ok_after, true, "S2: durable write works after explicit recovery")
+    for f in lfs.dir(sd) do
+        if f:find("reorderingmenus_intent%.unsupported") then
+            os.remove(sd .. "/" .. f)
+        end
+    end
+    fresh()
+end
+
+-- S2b: the future-schema guard holds through the REAL save path (#1):
+-- opening the plugin (startup reconciliation), ordinary reads, an attempted
+-- Save and a restart must all leave the guarded bytes untouched; only the
+-- explicit reset path resumes durable writes.
+print("\n--- S2b: saveOrder/restart/reconcile respect the future-schema guard ---")
+do
+    fresh()
+    -- Seed REAL customization so the intent file AND the derived native
+    -- emission exist and matter.
+    local txn = IntentStore.openTransaction()
+    txn:setParentOverride(view, "fm_sort", { provider = "stock", parent = "main" })
+    assert_true(txn:commit(), "S2b: seed commit")
+    assert_true(MenuOrderManager:saveOrder(view), "S2b: baseline saveOrder")
+
+    local intent_path = sd .. "/reorderingmenus_intent.lua"
+    local order_path = sd .. "/" .. view .. "_menu_order.lua"
+    local fh = io.open(intent_path, "w")
+    local future_bytes = '-- s2b guarded\nreturn {\n'
+        .. '    version = 99,\n    views = {},\n}\n'
+    fh:write(future_bytes)
+    fh:close()
+    local function read_bytes(p)
+        local h = io.open(p, "r")
+        if not h then return nil end
+        local c = h:read("*a"); h:close(); return c
+    end
+    local order_bytes_before = read_bytes(order_path)
+
+    -- Guard derived from disk, then the ORDINARY plugin-open path runs:
+    -- startup reconciliation may try to persist its import; it must fail
+    -- harmlessly instead of rewriting anything.
+    IntentStore.load(true)
+    assert_true(IntentStore.isProtected(), "S2b: protection derived")
+    MenuOrderManager:dropSessionState(view)
+    local UIScreens = require("reorderingmenus_ui_screens")
+    local open_ok, open_err = pcall(function()
+        local ui = { menu = { registered_widgets = {} } }
+        UIScreens:reconcileRegisteredItems({ ui = ui }, view, false)
+        MenuOrderManager:getMenuItems(view, "main")
+    end)
+    assert_true(open_ok,
+        "S2b: opening the plugin survives the guard (" ..
+        tostring(open_err) .. ")")
+    -- Attempted Save through the manager must refuse...
+    local ok_save = MenuOrderManager:saveOrder(view)
+    assert_eq(ok_save, false, "S2b: saveOrder refuses while protected")
+    -- ...and a restart-equivalent re-derivation keeps the guard.
+    IntentStore.load(true); NativeWriter._resetCaches()
+    MenuOrderManager:dropSessionState(view)
+    assert_true(IntentStore.isProtected(), "S2b: guard survives restart")
+    -- Neither the guarded canonical bytes NOR the derived emission changed.
+    assert_eq(read_bytes(intent_path), future_bytes,
+        "S2b: guarded intent bytes byte-identical after open/save/restart")
+    assert_eq(read_bytes(order_path), order_bytes_before,
+        "S2b: derived native order not rewritten while protected")
+
+    -- Explicit user reset lifts the guard and writes resume.
+    assert_true(IntentStore.clearProtectedState(), "S2b: explicit reset ok")
+    assert_true(not IntentStore.isProtected(), "S2b: guard lifted")
+    assert_true(MenuOrderManager:saveOrder(view),
+        "S2b: saveOrder works after authorized reset")
     for f in lfs.dir(sd) do
         if f:find("reorderingmenus_intent%.unsupported") then
             os.remove(sd .. "/" .. f)
@@ -274,37 +356,41 @@ end
 print("\n--- S5: mkdir failures surface as structured errors ---")
 do
     fresh()
-    -- Discovery must not create anything.
-    lfs.mkdir(sd .. "/menu_order_presets")          -- base exists...
+    -- Discovery must not create anything: wipe ALL preset storage
+    -- recursively (S3/S4 left nested content behind), then list against
+    -- absent directories.
+    rmdir(sd .. "/menu_order_presets")
     local view_dir = sd .. "/menu_order_presets/" .. view
-    assert_true(lfs.attributes(view_dir) == nil, "S5: pre-state clean")
+    assert_true(lfs.attributes(sd .. "/menu_order_presets") == nil,
+        "S5: pre-state clean")
     local listed = MenuOrderManager:listUserPresets(view)
     assert_eq(type(listed), "table", "S5: discovery returns a list")
     assert_eq(#listed, 0, "S5: empty list from absent storage")
     assert_true(lfs.attributes(view_dir) == nil,
         "S5: listing created no directories")
-    -- Squat the path with an ordinary FILE: mkdir must fail and the
-    -- failure must come back structured instead of crashing later I/O.
-    local fh = io.open(sd .. "/menu_order_presets/.hidden_builtins.lua.squatter", "w")
-    fh:write("x"); fh:close()
-    os.remove(sd .. "/menu_order_presets/.hidden_builtins.lua.squatter")
-    -- Squat the VIEW dir path itself.
-    fh = io.open(view_dir, "w"); fh:write("not a dir"); fh:close()
+    -- Squat the VIEW dir path itself with an ordinary FILE: mkdir must
+    -- fail and surface as a structured error instead of a later crash.
+    lfs.mkdir(sd .. "/menu_order_presets")
+    local fh = io.open(view_dir, "w"); assert(fh); fh:write("not a dir"); fh:close()
     local ok_save, save_err = MenuOrderManager:savePreset(view, "s5blocked")
     assert_eq(ok_save, false,
         "S5: save into squatted path fails cleanly")
     assert_true(type(save_err) == "string" and #save_err > 0,
         "S5: failure carries a presentable message ("
         .. tostring(save_err):sub(1, 60) .. ")")
+    assert_true(lfs.attributes(view_dir, "mode") == "file",
+        "S5: squatter file untouched by the failed save")
     os.remove(view_dir)
-    -- ensureSubmenuPresetsDir propagates too.
-    fh = io.open(sd .. "/menu_order_presets/submenus", "w")
-    fh:write("file, not dir"); fh:close()
+    -- ensureSubmenuPresetsDir propagates too (its per-menu root lives
+    -- UNDER the view directory).
+    assert(lfs.mkdir(view_dir))
+    fh = io.open(sd .. "/menu_order_presets/" .. view .. "/submenus", "w")
+    assert(fh); fh:write("file, not dir"); fh:close()
     local dir, dir_err = Presets.ensureSubmenuPresetsDir(view, "some_menu")
     assert_eq(dir, nil, "S5: ensureSubmenuPresetsDir fails on squat root")
     assert_true(type(dir_err) == "string",
         "S5: submenu dir failure carries message")
-    os.remove(sd .. "/menu_order_presets/submenus")
+    os.remove(sd .. "/menu_order_presets/" .. view .. "/submenus")
 end
 
 -- S6: malformed sidecar records are discarded + regenerated.
@@ -319,8 +405,6 @@ do
     local canonical_before = io.open(intent_path, "r"):read("*a")
 
     local sidecar_path = sd .. "/reorderingmenus_materialization.lua"
-    assert_true(lfs.attributes(sidecar_path, "mode") == "file"
-        or true, "S6: sidecar may be absent in sparse worlds")
     -- Inject malformed records: reader = true (audit case), plus bad types
     -- for every consumed field.
     local fh = io.open(sidecar_path, "w")
@@ -334,13 +418,16 @@ do
     fh:close()
     NativeWriter._resetCaches()
     IntentStore.load(true)
-    -- Startup sync over the malformed sidecar: must classify as legacy/
-    -- regenerate rather than crash or misclassify external state.
+    -- Startup sync over the malformed sidecar (the launch() helper drives
+    -- reconcileRegisteredItems -> sessionFor -> syncView): must complete,
+    -- regenerate derived state, and never crash or misclassify external
+    -- state.
+    local UIScreens = require("reorderingmenus_ui_screens")
+    local ui = { menu = { registered_widgets = {} } }
+    assert_true(UIScreens:reconcileRegisteredItems({ ui = ui }, view, false)
+        ~= nil, "S6: startup reconciliation completes")
+    MenuOrderManager:getMenuItems(view, "main")
     MenuOrderManager:dropSessionState(view)
-    local changed, mode = NativeWriter.syncView(view,
-        MenuOrderManager.registryFor and MenuOrderManager:registryFor(view)
-            or MenuOrderManager:getRegistry(view), IntentStore.openTransaction())
-    assert_true(changed ~= nil, "S6: syncView completes over malformed sidecar")
     -- Canonical intent byte-stable through it all.
     local canonical_after = io.open(intent_path, "r"):read("*a")
     assert_eq(canonical_after, canonical_before,
@@ -351,6 +438,51 @@ do
         if f:find("materialization%.corrupt") then quarantined = true end
     end
     assert_true(not quarantined, "S6: derived-data recovery never quarantines")
+    fresh()
+end
+
+-- S7: hidden-builtins state is shape-validated, not trusted (#4/#7).
+print("\n--- S7: malformed hidden-builtin state regenerates safely ---")
+do
+    fresh()
+    local hidden_path = sd .. "/menu_order_presets/" .. view
+        .. "/.hidden_builtins.lua"
+    -- Map-shaped junk (the audit's views.reader=true analog), scalars,
+    -- and mixed arrays must all degrade to "nothing hidden", never crash
+    -- the builtin listing.
+    for _, payload in ipairs({
+        'return { reader = true }',
+        'return "just a string"',
+        'return { "builtin_default", 42, { nested = true }, "ok_id" }',
+    }) do
+        lfs.mkdir(sd .. "/menu_order_presets")
+        lfs.mkdir(sd .. "/menu_order_presets/" .. view)
+        local fh = io.open(hidden_path, "w"); fh:write(payload); fh:close()
+        local ok_list, ids = pcall(function()
+            return Presets.getHiddenBuiltinIds(view)
+        end)
+        assert_true(ok_list, "S7: getHiddenBuiltinIds survives '" ..
+            payload:sub(1, 30) .. "'")
+        assert_true(type(ids) == "table",
+            "S7: ids list stays a table under junk state")
+        if ok_list and type(ids) == "table" then
+            for _, id in ipairs(ids) do
+                assert_true(type(id) == "string",
+                    "S7: only string ids survive validation")
+            end
+        end
+        os.remove(hidden_path)
+    end
+    -- Clean state still round-trips through hide/unhide.
+    assert_true(Presets.hideBuiltinPreset(view, "reader_top"),
+        "S7: hide writes valid state")
+    assert_true(Presets.isBuiltinHidden(view, "reader_top"),
+        "S7: hidden id takes effect")
+    assert_true(Presets.unhideBuiltinPreset(view, "reader_top"),
+        "S7: unhide restores visibility")
+    assert_true(not Presets.isBuiltinHidden(view, "reader_top"),
+        "S7: unhidden id no longer filtered")
+    rmdir(sd .. "/menu_order_presets")
     fresh()
 end
 

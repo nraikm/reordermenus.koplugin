@@ -26,7 +26,7 @@ Invariant battery (checked after every op unless noted):
   I13 no-fabrication  MenuSorter output contains no id outside the supplied
                       item table (no "NEW:" orphans from our own emission)
   I15 order-preserve  relative order of order_override survivors is kept
-  I16 hidden-order    disabled == hidden_order (filtered) + sorted leftovers
+  I16 hidden-order    disabled == ordinal-ordered hidden records + leftovers
   I8  restart-equiv   fingerprint stable across dropSessionState + reload
                       (checked on restart ops and every Nth step)
   I9  native-fixpoint save -> reloadFromDisk -> identical projection
@@ -35,6 +35,7 @@ Invariant battery (checked after every op unless noted):
                       (checked on save ops)
 --]]
 
+local MenuSchema = require("reorderingmenus_menu_schema")
 local Registry = require("reorderingmenus_registry")
 local Materializer = require("reorderingmenus_materializer")
 local Validator = require("reorderingmenus_validator")
@@ -176,9 +177,14 @@ function World:isolateProcessState()
     else
         for _, view in ipairs(VIEWS) do Manager:dropSessionState(view) end
     end
+    Manager.backups = { reader = nil, filemanager = nil }
+    Manager.synced_views = { reader = nil, filemanager = nil }
+    Manager.staged_txn_probe = nil
     Manager.setMirroringEnabled(false)
     Manager.setHiddenInPlace(true)
     KoreaderAdapter.invalidateNativeModuleCache()
+    KoreaderAdapter._tab_safety_cache = nil
+    NativeWriter._resetCaches()
 end
 
 function World:syncRegistrations(view)
@@ -192,6 +198,7 @@ function World:setDefaults(view, defaults)
     self.defaults[view] = defaults
     Manager.default_orders[view] = defaults
     Manager:dropSessionState(view)
+    self:syncRegistrations(view)
 end
 
 function World:restart()
@@ -653,6 +660,12 @@ define_op("upstream_remove", function(w)
 end, function(w, a)
     local defaults = deep_copy(w.defaults[a.view])
     local list = defaults[a.menu]
+    -- The picked menu can vanish between pick and apply when replaying a
+    -- recorded history (earlier ops reshaped the defaults): skip instead of
+    -- crashing on a nil list — mirrors external_native_edit's guard.
+    if type(list) ~= "table" then
+        return "upstream_remove skipped (menu gone)"
+    end
     for i, id in ipairs(list) do
         if id == a.id then table.remove(list, i) break end
     end
@@ -669,8 +682,15 @@ define_op("upstream_reorder", function(w)
     local i = w:rand(#list - 1)
     return { menu = menu, i = i, view = w.view }
 end, function(w, a)
+    -- The picked menu can vanish between pick and apply when replaying a
+    -- recorded history (earlier ops reshaped the defaults): skip instead of
+    -- crashing on a nil list — mirrors external_native_edit's guard.
     local defaults = deep_copy(w.defaults[a.view])
     local list = defaults[a.menu]
+    if type(list) ~= "table" or type(a.i) ~= "number"
+            or a.i < 1 or a.i + 1 > #list then
+        return "upstream_reorder skipped (menu gone)"
+    end
     list[a.i], list[a.i + 1] = list[a.i + 1], list[a.i]
     w:setDefaults(a.view, defaults)
     return string.format("upstream_reorder %s (%s)", a.menu, a.view)
@@ -1136,9 +1156,11 @@ function World:check(opts)
         end
     end
     for id, custom in pairs(section.custom_menus or {}) do
-        if type(custom) == "table" and custom.parent
-                and section.custom_menus[custom.parent] then
-            supplied[custom.parent] = true
+        local rec = section.parent_override and section.parent_override[id] or nil
+        if type(custom) == "table" and type(rec) == "table"
+                and type(rec.parent) == "string"
+                and section.custom_menus[rec.parent] then
+            supplied[rec.parent] = true
         end
     end
     -- Removed-tab residue: after upstream_remove_tab the tab id leaves the
@@ -1266,7 +1288,7 @@ function World:check(opts)
             -- menu; anchors parked on rows that stayed legitimately reorder
             -- the surviving sequence.
             for id, rec in pairs(section.position_override or {}) do
-                if type(rec) == "table" and rec.after then
+                if type(rec) == "table" and (rec.after ~= nil or rec.before ~= nil) then
                     local home = Materializer.effectiveParent(reg, section, id)
                         or (reg.nodes[id] and reg.nodes[id].default_parent)
                     if home == node.default_parent then
@@ -1344,16 +1366,23 @@ function World:check(opts)
         end
     end
 
-    -- I6 strengthened: explicit parent override holds while era applies.
-    -- A hidden id legitimately renders nowhere; skip those. A ghost whose
-    -- recorded home level was itself cascaded away (unreachable container)
-    -- renders nowhere too - the override still applies but has no visible
-    -- owner; skip instead of failing (matches validator cascade semantics).
+    -- I6: explicit parent override holds while its provider is present and matches.
+    -- Stamped intent for an absent provider is dormant (renders nowhere) and does not fail I6.
     for id, record in pairs(section.parent_override or {}) do
         if type(record) == "table" then
             local node = reg.nodes[id]
-            local applies = record.provider == nil
-                or (node == nil and true or node.provider == record.provider)
+            local is_custom = type(section.custom_menus) == "table" and section.custom_menus[id] ~= nil
+            local current_provider = node and node.provider or (is_custom and "custom" or nil)
+            local applies = false
+            if current_provider ~= nil then
+                if is_custom then
+                    applies = (record.provider == nil or record.provider == "custom")
+                elseif record.provider == nil then
+                    applies = true
+                else
+                    applies = (record.provider == current_provider)
+                end
+            end
             if applies and not disabled[id] and not section.hidden[id] then
                 if order[record.parent] == nil then
                     -- home cascaded away: row is invisible by design
@@ -1387,38 +1416,81 @@ function World:check(opts)
 
     -- I16: the disabled list must contain exactly the applying hidden
     -- records plus validator-cascaded unreachable-subtree members.
-    -- ORDER rules (ground truth from probes):
-    --   no cascade  -> hidden_order relative order first, sorted leftovers
+    -- ORDER rules (schema v3 ground truth):
+    --   no cascade  -> per-record ordinal order first, sorted leftovers
     --   any cascade -> validator emits traversal order (implementation
-    --                  detail); assert SET equality + hidden_order survival
+    --                  detail); assert SET equality + ordinal survival
     local expected_disabled = {}
+    local expected_seen = {}
     local listed_set = {}
-    for _, id in ipairs(section.hidden_order or {}) do
-        listed_set[id] = true
-        if Manager:isItemHidden(view, id) then
-            expected_disabled[#expected_disabled + 1] = id
+    do
+        local ordered_hidden = {}
+        for hid, hrec in pairs(section.hidden or {}) do
+            listed_set[hid] = true
+            ordered_hidden[#ordered_hidden + 1] = {
+                id = hid,
+                ordinal = type(hrec) == "table"
+                    and type(hrec.ordinal) == "number" and hrec.ordinal or nil,
+            }
         end
+        table.sort(ordered_hidden, function(a, b)
+            if a.ordinal and b.ordinal and a.ordinal ~= b.ordinal then
+                return a.ordinal < b.ordinal
+            end
+            if a.ordinal and not b.ordinal then return true end
+            if not a.ordinal and b.ordinal then return false end
+            return tostring(a.id) < tostring(b.id)
+        end)
+        for _, entry in ipairs(ordered_hidden) do
+            if Manager:isItemHidden(view, entry.id) then
+                expected_disabled[#expected_disabled + 1] = entry.id
+                expected_seen[entry.id] = true
+            end
+        end
+    end
+    -- Where does the projection say this id LIVES once intent applies?
+    -- Mirrors Materializer.effectiveParent precedence: an applying
+    -- parent_override wins, then a created-submenu parent, then the
+    -- registry default home. Checking the DEFAULT home alone (the original
+    -- oracle) misclassifies rows deliberately re-homed into a later-hidden
+    -- container: their default home is alive, their ACTUAL home is gone,
+    -- and the validator correctly cascades them.
+    local function intended_home(id)
+        local rec = section.parent_override and section.parent_override[id]
+        if type(rec) == "table" and rec.parent then
+            local n = reg.nodes[id]
+            -- Schema v3: the parent_override record IS also the custom-menu
+            -- parent authority; provider gating applies to registry ids only.
+            local applies = rec.provider == nil
+                or (n ~= nil and n.provider == rec.provider)
+                or (section.custom_menus and section.custom_menus[id] ~= nil)
+            if applies then return rec.parent end
+        end
+        local n = reg.nodes[id]
+        return n and (n.default_parent or n.sorting_hint) or nil
     end
     local cascade = false
     for id in pairs(disabled) do
         if not listed_set[id] and section.hidden[id] == nil then
             local node = reg.nodes[id]
             if node then
-                -- Stock rows cascade via default_parent; plugin rows cascade
-                -- via their sorting_hint home (default_parent is nil for
-                -- them). Either way: a live row whose only home level is
-                -- absent from the projection has been cascaded.
-                local home = node.default_parent or node.sorting_hint
-                if home and order[home] == nil then
+                -- Reachability follows the ACTUAL home: a live row whose
+                -- current container level is absent from the projection has
+                -- been cascaded (its default home may well still exist).
+                local home = Materializer.effectiveParent(reg, section, id)
+                if not home or order[home] == nil then
                     cascade = true
                     break
                 end
             else
-                -- Custom submenus: home comes from the creation record, and
-                -- they cascade with their (absent) parent level too.
+                -- Custom submenus: home comes from their parent_override
+                -- record (schema v3 parent authority), and they cascade with
+                -- their (absent) parent level too.
                 local custom = section.custom_menus and section.custom_menus[id]
-                if custom and type(custom.parent) == "string"
-                        and order[custom.parent] == nil then
+                local custom_rec = custom
+                    and section.parent_override and section.parent_override[id] or nil
+                local parent = type(custom_rec) == "table" and custom_rec.parent or nil
+                if custom and (parent == nil or order[parent] == nil) then
                     cascade = true
                     break
                 end
@@ -1432,13 +1504,16 @@ function World:check(opts)
         -- without a live registry node.
         local extras = {}
         for id in pairs(section.hidden or {}) do
-            if not listed_set[id] and Manager:isItemHidden(view, id) then
+            if not listed_set[id] and not expected_seen[id]
+                    and Manager:isItemHidden(view, id) then
                 extras[#extras + 1] = id
             end
         end
         for id in pairs(section.parent_override or {}) do
             local rec = section.parent_override[id]
-            if type(rec) == "table" and reg.nodes[id] == nil
+            local is_custom = type(section.custom_menus) == "table" and section.custom_menus[id] ~= nil
+            if type(rec) == "table" and (reg.nodes[id] ~= nil or is_custom)
+                    and not expected_seen[id]
                     and rec.parent and order[rec.parent] == nil
                     and not RESERVED[rec.parent] then
                 extras[#extras + 1] = id
@@ -1501,10 +1576,11 @@ function World:check(opts)
 end
 
 function World:inAnySequence(section, id)
-    for _, seq in pairs(section.order_override or {}) do
-        if type(seq) == "table" then
-            for _, seq_id in ipairs(seq) do
-                if seq_id == id then return true end
+    -- Schema v3: sequences are { entries = [ {id,...} | {separator=true} ] }.
+    for _, record in pairs(section.order_override or {}) do
+        if type(record) == "table" and type(record.entries) == "table" then
+            for _, entry in ipairs(record.entries) do
+                if MenuSchema.entryId(entry) == id then return true end
             end
         end
     end

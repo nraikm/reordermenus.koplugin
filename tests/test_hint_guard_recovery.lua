@@ -114,7 +114,8 @@ do
     local menu = fresh()
     local reg_ok = false
     for w in pairs(ui.menu.registered_widgets) do reg_ok = true break end
-    T.assert_true(reg_ok or true, "C1: harness sanity")
+    T.assert_true(reg_ok,
+        "C1: harness registered at least one widget before the scenario")
 
     -- register the stub explicitly for this scenario
     add_widget("stub_recoverer", stub)
@@ -188,6 +189,7 @@ do
     add_widget("stub_cycle", stub)
     T.assert_true(MenuOrderManager:setTabHidden(view, "search", true),
         "C4: search hidden")
+    MenuOrderManager:saveOrder(view)
     remove_widget("stub_cycle")                          -- uninstalled
     fresh()
     T.assert_true(stub.last_entry().sorting_hint == "search",
@@ -198,8 +200,9 @@ do
         "C4: hint survives reinstall against a hidden target")
     T.assert_true(MenuOrderManager:setTabHidden(view, "search", false),
         "C4: search unhidden")
-    fresh()
-    T.assert_true(where_is(ui.menu, "cycle_plugin"),
+    MenuOrderManager:saveOrder(view)
+    local m4 = fresh()
+    T.assert_true(where_is(m4, "cycle_plugin"),
         "C4: item renders once its target is visible again")
 end
 

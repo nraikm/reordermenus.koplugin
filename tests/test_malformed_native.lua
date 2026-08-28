@@ -164,8 +164,12 @@ local t = {
 t.help.self = t
 t.help.list = { "quickstart_guide" }
 return t]], function()
-    assert_true(MenuOrderManager:getMenuItems(view, "help") ~= nil
-        or true, "N9: post-cycle resolution ran")
+    local items = MenuOrderManager:getMenuItems(view, "help")
+    assert_true(type(items) == "table",
+        "N9: help resolves to a list after cyclic input (got "
+            .. type(items) .. ")")
+    assert_true(type(MenuOrderManager:getMenuItems(view, "setting")) == "table",
+        "N9: untouched sibling menu still resolves")
 end)
 
 run_with_raw("N10 unknown root keys preserved", [[
@@ -175,12 +179,28 @@ return {
     ["KOMenu:disabled"] = {},
 }]])
 do
-    local body = dofile(ORDER_FILE) or {}
-    -- unknown key must survive at least the first resave
+    -- Contract under test: foreign-but-parseable root data must survive the
+    -- import/save/reload cycle without crashing, corrupting the file, or
+    -- breaking the reserved keys - whichever reconciliation branch classifies
+    -- the rewritten file (external import vs regenerate-from-intent; that
+    -- choice is deliberately out of scope for loader-safety tests).
+    -- Documented normalizer policy: a MAP-shaped unknown value like
+    -- my_future_section cannot represent a menu list and is dropped;
+    -- LIST-shaped unknown keys survive whenever the external-import branch
+    -- runs (verified standalone), but are regenerated away when the file is
+    -- instead treated as self-produced - do not pin that branch choice here.
     local fh = io.open(ORDER_FILE, "r")
-    local c = fh:read("*a"); fh:close()
-    assert_true(c:find("my_future_section", 1, true) ~= nil
-        or true, "N10: unknown key tolerated (preserved or dropped cleanly)")
+    assert_true(fh ~= nil, "N10: emitted order file exists")
+    local c = fh and fh:read("*a") or ""
+    if fh then fh:close() end
+    -- Sparse purity may legitimately have removed a degenerate emission
+    -- (nothing differs from stock); the harness then recreates a minimal
+    -- valid file so later probes work. Either way what sits at the path
+    -- must be parseable data - never a truncated half-document.
+    local fn = loadstring(c)
+    assert_true(fn ~= nil, "N10: emitted file still parses as Lua")
+    local tbl = fn and fn() or nil
+    assert_true(type(tbl) == "table", "N10: emitted file returns a table")
 end
 
 run_with_raw("N11 invalid KOMenu:disabled shape", [[

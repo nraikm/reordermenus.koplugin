@@ -188,8 +188,8 @@ do
     end
     assert_eq(hidden_leaked, 0,
         "X1c: hidden ghosts leak into NO content list")
-    assert_true(moved_leaked >= 1,
-        "X1c-b: moved ghosts keep their preserved home in emission (D1)")
+    assert_eq(moved_leaked, 0,
+        "X1c-b: moved ghosts are dormant and do not leak into content lists")
 
     -- spot-check exact reactivation for three spread-out eras
     for _, i in ipairs({ 1, ERAS / 2, ERAS }) do
