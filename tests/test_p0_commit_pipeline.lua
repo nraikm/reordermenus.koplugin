@@ -191,6 +191,12 @@ do
     wipe_all()
     launch("reader")
     launch("filemanager")
+    MenuOrderManager:saveOrder("reader")
+    MenuOrderManager:saveOrder("filemanager")
+    local idle_outcome = MenuOrderManager:commitStaged()
+    assert_eq(idle_outcome.status, "unchanged",
+        "F6: status is unchanged on idle commit")
+
     MenuOrderManager:setItemHidden("reader", "opds", true)
     -- A move forces a real list emission for FM (hide-only would strip).
     MenuOrderManager:moveItemToMenu("filemanager", "opds", "search", "tools")
@@ -223,10 +229,6 @@ do
         "F6: healthy view not flagged")
     assert_eq(type(outcome.generation), "number",
         "F6: actual committed generation reported")
-
-    local idle_outcome = MenuOrderManager:commitStaged()
-    assert_eq(idle_outcome.status, "unchanged",
-        "F6: status is unchanged on idle commit")
 end
 
 print("\n--- F7: Reset All atomic at the intent layer ---")

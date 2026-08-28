@@ -231,3 +231,15 @@ parent_override records; occasional external_native_edit x preset corners;
 fuzz round-trip ~1/8 quick batches. Each has its own repro pending.
 
 — ox-alpha
+
+## Final Remediation Implementation Lane (2026-08-28) — COMPLETE
+
+Completed all outstanding items from the completion audit:
+1. Resolved external hostile/unknown levels in `Materializer.resolve` and `assembleMenuList` (`raw_override` passthrough + unstamped sequence seeding), resolving `test_serialization_torture.lua` (I3: 0 vs 9).
+2. Fixed custom submenu deletion in `Transaction:setCustomMenu` (nils empty table on removal) and `forgetStaleCustomizations` session access.
+3. Repaired `tests/lib/sm_world.lua` `World:setDefaults` syncRegistrations and `I16` reachability cascade check using `Materializer.effectiveParent`.
+4. Verification:
+   - Quick suite: 122/122 suites passed (100% green).
+   - Nightly state machine suite: 2/2 suites passed (100 seeds, 500 steps, 0 failures).
+   - Mutation tests: 4/4 mutants killed (quarantine-corrupt, dormant-provider, noop-status, preset-name-validation).
+   - Clean release packaging & installation smoke test verified (`VERIFY=1 ./build_release.sh -o /tmp/reorderingmenus.zip`).
