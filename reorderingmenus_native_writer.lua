@@ -1111,48 +1111,48 @@ importExternalChanges = function(view, reg, txn, native, entry)
     -- record that placement instead of relying on duplicate repair later.
     -- Claims are resolved after the scan with a deterministic customized-
     -- destination-wins policy, independent of pairs() order.
-    local membership_claims = {}
-    for menu_id, new_list in pairs(native) do
+    local native_keys = {}
+    for menu_id in pairs(native) do table.insert(native_keys, menu_id) end
+    table.sort(native_keys)
+
+    -- Pass 1: Discover and register all custom submenus and brand-new levels
+    -- so that subsequent ordering passes recognize custom level IDs deterministically.
+    if type(native[CUSTOM_SUBMENUS_KEY]) == "table" then
+        local old_titles = type(baseline[CUSTOM_SUBMENUS_KEY]) == "table" and baseline[CUSTOM_SUBMENUS_KEY] or {}
+        for id, title in pairs(native[CUSTOM_SUBMENUS_KEY]) do
+            if old_titles[id] ~= title and type(title) == "string" then
+                local custom = txn:getCustomMenus(view)[id]
+                if custom then
+                    custom.title = title
+                else
+                    txn:setCustomMenu(view, id, { title = title })
+                    local id_parent = findIdLocation(native, id)
+                    if id_parent then
+                        txn:setParentOverride(view, id, {
+                            provider = nil,
+                            parent = id_parent,
+                        })
+                    end
+                end
+                imported = imported + 1
+            end
+        end
+    end
+
+    local brand_new_levels = {}
+    for _, menu_id in ipairs(native_keys) do
+        local new_list = native[menu_id]
         local old_list = baseline[menu_id]
-        if old_list == nil and not RESERVED[menu_id] then
-            -- Key absent from our last emission. That does NOT mean the user
-            -- authored this whole arrangement: the level was probably sparse
-            -- (equal to stock) before the edit, so the meaningful baseline is
-            -- the STOCK default list. Diff against it; when nothing differs,
-            -- the key carries no user information at all.
+        if old_list == nil and not RESERVED[menu_id] and type(new_list) == "table" then
             local default_menu = reg.menus[menu_id]
             if default_menu and type(default_menu.list) == "table" then
                 if fingerprint(new_list) == fingerprint(default_menu.list) then
-                    -- Matches stock exactly -> carries no user information.
-                    -- Mark the row as unchanged so the changed-level branch
-                    -- below skips it (comparing against nil would treat ANY
-                    -- list as newly authored).
-                    old_list = new_list
+                    baseline[menu_id] = new_list
                 else
-                    -- Derived-baseline substitution on the LOCAL copy only;
-                    -- the loaded sidecar structure stays untouched.
                     baseline[menu_id] = default_menu.list
-                    -- The downstream check reads the LOCAL old_list captured
-                    -- before this branch; it must see the baseline too.
-                    old_list = default_menu.list
                 end
             else
-                -- Hand-authored BRAND-NEW level: no stock default, never
-                -- emitted by us. Two hazards must both be avoided:
-                --   (a) silently DROPPING the level on the next sparse write
-                --       (user bytes lost), and
-                --   (b) treating its rows as membership claims - a hand level
-                --       listing KNOWN stock ids would otherwise steal them
-                --       out of their real parents (single-parent repair),
-                --       then the validator would cascade the orphaned level
-                --       into KOMenu:disabled: visible rows vanish.
-                -- Policy: preserve the authored arrangement VERBATIM as a raw
-                -- override (native_writer re-emits raw levels byte-for-byte,
-                -- even unreachable ones), and mark the level "unchanged" so
-                -- the generic changed-level branch below neither freezes a
-                -- bulk sequence nor records claims for it. Stock ignores an
-                -- unreferenced key exactly like this - fidelity without
-                -- corruption.
+                brand_new_levels[menu_id] = true
                 txn:setRawOverride(view, menu_id, (function()
                     local s = {}
                     for _, x in ipairs(new_list) do
@@ -1176,41 +1176,28 @@ importExternalChanges = function(view, reg, txn, native, entry)
                     })
                 end
                 imported = imported + 1
-                old_list = new_list   -- handled: skip generic branch below
             end
         end
-        if RESERVED[menu_id] then
-            if menu_id == MENU_BUTTONS_KEY then
-                if fingerprint(new_list) ~= (old_list and fingerprint(old_list)) then
-                    local default_same = fingerprint(new_list) == fingerprint(reg.tab_list)
-                    txn:setTabOrder(view, default_same and nil or new_list)
-                    imported = imported + 1
-                end
-            elseif menu_id == DISABLED_KEY then
-                importDisabledChanges(new_list, old_list)
-            elseif menu_id == CUSTOM_SUBMENUS_KEY then
-                local old_titles = type(old_list) == "table" and old_list or {}
-                for id, title in pairs(new_list) do
-                    if old_titles[id] ~= title and type(title) == "string" then
-                        local custom = txn:getCustomMenus(view)[id]
-                        if custom then
-                            custom.title = title
-                        else
-                            txn:setCustomMenu(view, id, { title = title })
-                            local id_parent = findIdLocation(native, id)
-                            if id_parent then
-                                txn:setParentOverride(view, id, {
-                                    provider = nil,
-                                    parent = id_parent,
-                                })
-                            end
-                        end
+    end
+
+    -- Pass 2: Process membership claims, reorders, and remaining reserved maps
+    local membership_claims = {}
+    for _, menu_id in ipairs(native_keys) do
+        local new_list = native[menu_id]
+        local old_list = baseline[menu_id]
+        if not brand_new_levels[menu_id] and menu_id ~= CUSTOM_SUBMENUS_KEY then
+            if RESERVED[menu_id] then
+                if menu_id == MENU_BUTTONS_KEY then
+                    if fingerprint(new_list) ~= (old_list and fingerprint(old_list)) then
+                        local default_same = fingerprint(new_list) == fingerprint(reg.tab_list)
+                        txn:setTabOrder(view, default_same and nil or new_list)
                         imported = imported + 1
                     end
+                elseif menu_id == DISABLED_KEY then
+                    importDisabledChanges(new_list, old_list)
                 end
-            end
-        elseif type(new_list) == "table" then
-            if fingerprint(new_list) ~= (old_list and fingerprint(old_list)) then
+            elseif type(new_list) == "table" then
+                if fingerprint(new_list) ~= (old_list and fingerprint(old_list)) then
                 -- User-authored change for this level. Prefer the MINIMAL
                 -- semantic action: one relocated row becomes a position
                 -- anchor, so untouched neighbours keep following upstream
@@ -1297,9 +1284,10 @@ importExternalChanges = function(view, reg, txn, native, entry)
                 else
                     -- bulk / reversal / block: explicit curated sequence for
                     -- this level, era-stamped like every bulk write.
+                    local custom_menus = txn:view(view).custom_menus
                     local seq = {}
                     for _, id in ipairs(new_list) do
-                        if id ~= SEPARATOR_ID then
+                        if id ~= SEPARATOR_ID and (reg.nodes[id] ~= nil or (custom_menus and custom_menus[id] ~= nil)) then
                             table.insert(seq, id)
                         end
                     end
@@ -1308,7 +1296,11 @@ importExternalChanges = function(view, reg, txn, native, entry)
                         local node = reg.nodes[x]
                         seq_eras[x] = node and node.provider or nil
                     end
-                    txn:setOrderOverride(view, menu_id, seq, seq_eras)
+                    if #seq > 0 then
+                        txn:setOrderOverride(view, menu_id, seq, seq_eras)
+                    else
+                        txn:setOrderOverride(view, menu_id, nil)
+                    end
                 end
 
                 -- Separator bookkeeping: rebuild records from the observed
@@ -1380,16 +1372,22 @@ importExternalChanges = function(view, reg, txn, native, entry)
                     end
                 end
 
+                local custom_menus = txn:view(view).custom_menus
+                local is_bulk = diff and diff.kind ~= "single_move" and diff.kind ~= "addition" and diff.kind ~= "removal"
                 for _, id in ipairs(new_list) do
                     if id ~= SEPARATOR_ID then
-                        membership_claims[id] = membership_claims[id] or {}
-                        table.insert(membership_claims[id], menu_id)
+                        local skip_claim = is_bulk and (reg.nodes[id] == nil and (not custom_menus or custom_menus[id] == nil))
+                        if not skip_claim then
+                            membership_claims[id] = membership_claims[id] or {}
+                            table.insert(membership_claims[id], menu_id)
+                        end
                     end
                 end
                 imported = imported + 1
             end
         end
     end
+end
 
     -- Omitting a reserved key that existed in the previous emission is an
     -- explicit deletion.  In particular, deleting KOMenu:disabled means
@@ -1401,21 +1399,29 @@ importExternalChanges = function(view, reg, txn, native, entry)
     -- Resolve cross-parent claims: prefer the customized (non-default)
     -- claimant; ties break alphabetically. A claim matching the id's current
     -- effective parent records nothing (sparseness).
-    for id, claimants in pairs(membership_claims) do
+    local claim_ids = {}
+    for id in pairs(membership_claims) do table.insert(claim_ids, id) end
+    table.sort(claim_ids)
+    for _, id in ipairs(claim_ids) do
+        local claimants = membership_claims[id]
         table.sort(claimants)
         local node = reg.nodes[id]
         local default_parent = node and node.default_parent or nil
         local non_default = {}
         for _, m in ipairs(claimants) do
-            if m ~= default_parent then table.insert(non_default, m) end
+            if m ~= default_parent and m ~= id then table.insert(non_default, m) end
         end
-        local chosen = non_default[1] or claimants[1]
+        local valid_claimants = {}
+        for _, m in ipairs(claimants) do
+            if m ~= id then table.insert(valid_claimants, m) end
+        end
+        local chosen = non_default[1] or valid_claimants[1] or claimants[1]
         if #claimants > 1 then
             logger.warn("ReorderingMenus:", id, "listed under",
                 table.concat(claimants, ", "), "in the edited", view,
                 "order; keeping", chosen)
         end
-        if not disabled_ids[id] then
+        if not disabled_ids[id] and chosen ~= id then
             local current = Materializer.effectiveParent(reg, txn:view(view), id)
             if current ~= chosen then
                 txn:setParentOverride(view, id, {

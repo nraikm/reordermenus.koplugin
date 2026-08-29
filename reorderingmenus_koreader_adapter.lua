@@ -58,10 +58,10 @@ function KoreaderAdapter.getDefaultOrder(view, force_reload)
     local loaded
     local ok, res = pcall(dofile, string.format("frontend/ui/elements/%s_menu_order.lua", view))
     if ok and type(res) == "table" then
-        loaded = res
+        loaded = util.tableDeepCopy(res)
     else
         local req_ok, req_res = pcall(require, string.format("ui/elements/%s_menu_order", view))
-        if req_ok and type(req_res) == "table" then loaded = req_res end
+        if req_ok and type(req_res) == "table" then loaded = util.tableDeepCopy(req_res) end
     end
     if not loaded then
         logger.warn("ReorderingMenus: cannot load default menu order for", view)
@@ -70,9 +70,34 @@ function KoreaderAdapter.getDefaultOrder(view, force_reload)
             [MenuSchema.DISABLED_KEY] = {},
         }
     end
-    if not pristine_defaults[view] then
-        -- Capture the untouched baseline once; later reads of the shared
-        -- module may already carry mergeAndSort overlay pollution.
+
+    -- Merge plugin-contributed tabs and menu definitions from live module in package.loaded
+    local live_mod = package.loaded[string.format("ui/elements/%s_menu_order", view)]
+    if type(live_mod) == "table" then
+        local stock_tabs = {}
+        for _, t in ipairs(loaded[MenuSchema.MENU_BUTTONS_KEY] or {}) do
+            stock_tabs[t] = true
+        end
+        if type(live_mod[MenuSchema.MENU_BUTTONS_KEY]) == "table" then
+            for idx, tab_id in ipairs(live_mod[MenuSchema.MENU_BUTTONS_KEY]) do
+                if type(tab_id) == "string" and not stock_tabs[tab_id]
+                        and not KoreaderAdapter.isInReservedNamespace(tab_id) then
+                    local target_idx = math.min(idx, #(loaded[MenuSchema.MENU_BUTTONS_KEY]) + 1)
+                    table.insert(loaded[MenuSchema.MENU_BUTTONS_KEY], target_idx, tab_id)
+                    stock_tabs[tab_id] = true
+                end
+            end
+        end
+        for menu_id, list in pairs(live_mod) do
+            if type(menu_id) == "string" and not loaded[menu_id]
+                    and not KoreaderAdapter.isInReservedNamespace(menu_id)
+                    and type(list) == "table" then
+                loaded[menu_id] = util.tableDeepCopy(list)
+            end
+        end
+    end
+
+    if not pristine_defaults[view] or force_reload then
         pristine_defaults[view] = util.tableDeepCopy(loaded)
     end
     default_orders[view] = util.tableDeepCopy(pristine_defaults[view])
@@ -167,8 +192,17 @@ function KoreaderAdapter.isStockResident(view, id)
 end
 
 function KoreaderAdapter.invalidateNativeModuleCache()
-    package.loaded["ui/elements/reader_menu_order"] = nil
-    package.loaded["ui/elements/filemanager_menu_order"] = nil
+    -- Reset package.loaded for menu orders to an unpolluted baseline (stock + plugin additions + test defaults)
+    -- without MenuSorter mergeAndSort user pollution (e.g. disabled items, user custom submenus).
+    local M = package.loaded["reorderingmenus_menuorder_manager"]
+    for _, view in ipairs({ "reader", "filemanager" }) do
+        local mod = string.format("ui/elements/%s_menu_order", view)
+        if package.loaded[mod] ~= nil then
+            local def = (M and M.default_orders and M.default_orders[view])
+                or KoreaderAdapter.getDefaultOrder(view)
+            package.loaded[mod] = util.tableDeepCopy(def)
+        end
+    end
 end
 
 -- -------------------------------------------------------------------------

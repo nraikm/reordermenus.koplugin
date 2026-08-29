@@ -207,11 +207,15 @@ local function sessionFor(view, ui)
         s = { reg = buildRegistry(view, ui), defaults_identity = defaultsIdentity(view) }
         sessions[view] = s
     end
+    if not s.reg then
+        s.reg = buildRegistry(view, ui)
+    end
     -- Rebuild the ephemeral registry whenever the effective defaults change
     -- (KOReader update, or a test injecting a new defaults table).
     if s.defaults_identity ~= nil and s.defaults_identity ~= defaultsIdentity(view) then
         s.reg = buildRegistry(view, ui)
         s.defaults_identity = defaultsIdentity(view)
+        synced_views[view] = nil
         -- No healing history to drop: the projection is derived from the
         -- NEW registry + unchanged canonical intent, exactly as a fresh
         -- process would.
@@ -283,9 +287,6 @@ function MenuOrderManager:refreshRegistry(view, ui)
 end
 
 -- Called by the UI layer with freshly collected live menu contributions so
--- newly installed plugins show up in projections immediately. P1B (#2): the
--- optional fourth argument carries the collision map ({ [id] = { names } })
--- separately, so provider-owned entry tables are never annotated.
 function MenuOrderManager:setLiveRegistrations(view, menu_items, providers, collisions)
     live_registrations[view] = {
         items = menu_items,
