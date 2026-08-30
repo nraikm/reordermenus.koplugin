@@ -80,7 +80,11 @@ This unhides all items across both views, ensuring that stock KOReader and other
 
 ## Supported KOReader Versions
 
-- Compatible with current stable releases and nightly builds of KOReader.
+- The automated integration baseline is KOReader
+  `v2025.10-43-g562fc11_2025-11-28`. Other releases may work, but are not
+  claimed supported until they pass the same suite. Private integration
+  points are capability-gated where KOReader exposes a reliable probe; see
+  the compatibility matrix before widening this window.
 - Works entirely within user settings (`settings/reader_menu_order.lua`, `settings/filemanager_menu_order.lua`, `settings/reorderingmenus_intent.lua`) without patching core KOReader application files.
 
 ---
@@ -105,4 +109,18 @@ To run a specific test suite or test tier:
 ```bash
 ./run_tests.sh tests/test_ui_flows.lua
 TIER=ci ./run_tests.sh
+TIER=nightly FRESH_SEEDS=1 ./run_tests.sh
+SM_SEED_LIST=7919,15838 TIER=nightly ./run_tests.sh
 ```
+
+`FRESH_SEEDS=1` prints the exact generated seed list for replay. Promoted
+regression fixtures run as separate deterministic suites.
+
+Build and verify the exact release archive with:
+
+```bash
+VERIFY=1 ./build_release.sh
+```
+
+Verification extracts the just-built ZIP into an isolated plugin directory
+and refuses fallback module resolution from the development checkout.

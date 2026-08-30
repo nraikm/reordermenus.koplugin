@@ -52,6 +52,39 @@ CommitPipeline.STATUS = {
     SAVED = "saved",
 }
 
+local function safeGeneration(view)
+    local ok, value = pcall(IntentStore.generation, view)
+    return ok and value or 0
+end
+
+--- Construct the one canonical Outcome shape used at every boundary.
+--- Public so the manager can turn an unexpected raised exception into the
+--- same fail-closed contract without reconstructing status from booleans.
+function CommitPipeline.newOutcome(status, err)
+    return {
+        status = status,
+        committed = false,
+        generation = safeGeneration(),
+        view_generations = {
+            reader = safeGeneration("reader"),
+            filemanager = safeGeneration("filemanager"),
+        },
+        changed_views = {},
+        failed_views = {},
+        reload_failed = {},
+        error = err and tostring(err) or nil,
+    }
+end
+
+function CommitPipeline.failureOutcome(err)
+    return CommitPipeline.newOutcome(CommitPipeline.STATUS.NOT_SAVED,
+        err or "commit pipeline raised")
+end
+
+function CommitPipeline.unchangedOutcome()
+    return CommitPipeline.newOutcome(CommitPipeline.STATUS.UNCHANGED)
+end
+
 --- Materialize ONE view's committed section to its derived native file.
 ---
 --- The remove-vs-write decision is SEMANTIC, based on what the sparse
@@ -133,16 +166,7 @@ end
 ---   }
 function CommitPipeline.commitAndApply(txn, options)
     options = options or {}
-    local outcome = {
-        status = nil,
-        committed = false,
-        generation = IntentStore.generation(),
-        view_generations = {},
-        changed_views = {},
-        failed_views = {},
-        reload_failed = {},
-        error = nil,
-    }
+    local outcome = CommitPipeline.newOutcome(nil)
 
     -- Protected canonical storage (#1): refuse EVERYTHING at the funnel
     -- entrance - commits, no-op commits, and derived-output maintenance
@@ -209,6 +233,18 @@ function CommitPipeline.commitAndApply(txn, options)
         outcome.status = CommitPipeline.STATUS.NOT_SAVED
         outcome.error = tostring(commit_err or "commit failed")
         return outcome
+    end
+
+    -- Registry-only changes (provider arrival/removal/replacement, sorting
+    -- hint or defaults changes) can alter a derived graph without changing
+    -- canonical intent. The manager marks those views explicitly so they are
+    -- regenerated even when another view also has a canonical change (the
+    -- ordinary no-change maintenance branch below would otherwise be skipped).
+    for _, view in ipairs(MenuSchema.VIEWS) do
+        if options.force_views and options.force_views[view] then
+            changed[view] = true
+            any_changed = true
+        end
     end
 
     outcome.committed = true

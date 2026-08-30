@@ -1,9 +1,9 @@
 # ReorderingMenus — Reference Semantics
 
-This document defines what the plugin's data pipeline is *supposed* to do,
-records where current behavior diverges from the documented contract, and
-cites the probe/test evidence for each claim. It is the conformance
-baseline for the state machine, differential fuzzing, and future refactors.
+This document defines the current data-pipeline contract. It is the
+conformance baseline for the state machine, differential fuzzing, and future
+refactors; dated review documents are historical evidence rather than
+competing specifications.
 
 Pipeline under specification:
 
@@ -25,15 +25,18 @@ Collections (per view):
 | collection         | record shape                     | meaning |
 |--------------------|----------------------------------|---------|
 | hidden             | id -> {provider, origin}         | item/tab hidden; era-stamped |
-| hidden_order       | string[]                         | user hide sequence (order preserved for UI) |
 | parent_override    | id -> {provider?, parent}        | explicit re-parenting |
-| position_override  | id -> {anchor, before}           | single-relocation drag anchor |
-| order_override     | menu_id -> id[]                  | bulk frozen sequence |
-| sequence_eras      | menu_id -> id -> provider-era    | which era each sequence member belongs to |
-| custom_menus       | id -> {title, parent}            | user-created submenus |
-| separators         | key -> {parent, index?}          | separator placements |
-| raw_override       | menu_id -> table                 | dense passthrough |
+| position_override  | id -> {after?/before?, provider?}| one-row relocation anchor |
+| order_override     | menu_id -> {entries={id,provider}[]} | explicit bulk sequence; item entries only |
+| custom_menus       | id -> {title}                    | user-created submenu identity/title |
+| separators         | key -> {parent, after}           | sole divider-placement authority |
+| raw_override       | menu_id -> {list=table}          | isolated verbatim passthrough |
 | tab_order          | id[]?                            | explicit tab bar order |
+
+`parent_override` is the sole parent authority for custom containers as well
+as moved rows. A level with `raw_override` has no simultaneous
+`order_override` or separator records. Historical inline separator tokens and
+raw/semantic conflicts are normalized deterministically on load.
 
 ### S1 — corrupt canonical intent must never silently vanish
 
@@ -60,7 +63,7 @@ collections and are flagged `malformed_collection`.
 
 ## 2. Materialization
 
-`Materializer.resolve(reg, intent, prev_lists?)` produces
+`Materializer.resolve(reg, intent)` produces
 `{tabs, lists, disabled, custom_titles, unplaced}`.
 
 ### S3 — ID-based correctness
@@ -78,30 +81,27 @@ in the projection (validator cascades it to `KOMenu:disabled`).
 ### S5 — customized-user-intent wins
 
 Explicit user records beat defaults while their provider era applies.
-Provider-less ghosts keep dormant intent but **must not materialize into
-visible lists** (see §5 divergence D1 — current behavior differs; captured
-for review rather than silently changed).
+Provider-less ghosts keep dormant canonical intent but do not materialize
+into visible lists. A different provider serving the same ID does not inherit
+the dormant records. If the original provider returns, its records apply
+again.
 
-### S6 — update healing anchors within an era only
+### S6 — resolution is history-free
 
-`prev_lists` anchoring ("rows the previous layout knew keep their
-arrangement") is legitimate *within* one defaults era. Across a defaults
-identity change (KOReader update), the old arrangement must not anchor the
-new projection. **Status:** FIXED (`s.last_graph = nil` on rebuild;
-mutation-tested as `era-graph-drop`).
+No previous-list snapshot participates in resolution. The current registry
+and canonical intent completely determine the graph, so a KOReader/defaults
+change cannot inherit a stale in-memory arrangement.
 
 ### S7 — emit == re-import (native fixpoint)
 
 The native file written for a state must, when imported by a fresh
 session, reproduce the same semantic projection. Two fixes enforce this:
 
-1. `resolve` collapses adjacent duplicate separators (import normalizes
-   them; emitting doubled forms made persisted bytes diverge from restart).
-2. `saveOrder` caches the *written* graph (`last_graph = repaired`) so the
-   served projection equals persisted bytes instead of a stale
-   prev_lists-anchored arrangement.
-
-Evidence: `tests/test_differential_fuzz.lua` (12 seeds x 40 steps green).
+Divider import normalizes placement into anchored separator records, and the
+served graph is always re-derived from the committed canonical state. The
+second import of plugin-emitted bytes must be a semantic no-op. Evidence is
+provided by `test_differential_fuzz.lua`, external-edit lifecycle suites, and
+restart-equivalence suites at the runner's selected tier.
 
 ### S8 — sparse emission
 
@@ -160,35 +160,21 @@ current defaults era.
 
 ---
 
-## 5. Known divergences (captured, not silently changed)
+## 5. Semantic boundaries
 
-### D1 — ghost materialization
+### B1 — cross-menu preset membership
 
-Documented contract: provider-less ghosts retain dormant intent but do not
-render. Observed (probe `probe_ghost_semantics.lua`): ghost rows DO appear
-in emitted lists; real MenuSorter later drops them at render time because
-no widget supplies the item. Existing test G1 asserts presence-in-intent,
-G3 checks editor lists but not the hint-home menu where the ghost lingers.
-**Decision needed:** change materializer to filter ghosts from lists, or
-amend the docs. Tests currently encode observed behavior.
+Presets carrying `parent_override` records re-home items across menus. Arrival
+slotting can shift untouched siblings' absolute indices, but their relative
+order is preserved. This is a membership change, not an ordering claim over
+the untouched siblings.
 
-### D2 — preset apply vs minimizeIntent interaction
+### B2 — raw external levels
 
-Applying a preset whose snapshot governs a surface can drop records that
-prev_lists anchoring made look redundant; the session view may briefly show
-an arrangement with less backing than the file will later reproduce.
-Auto-promoted fixtures under `tests/fixtures/regression/` capture concrete
-histories (replayed by `test_regressions_generated.lua`). These are known-
-failing on purpose: they turn green exactly when the divergence is fixed,
-at which point the fixture retires itself.
-
-### D3 — cross-menu preset import ordering
-
-Presets carrying parent_override records re-home items across menus; the
-arrival slotting of those items can shift untouched siblings' absolute
-positions (relative order among untouched siblings is preserved). I7
-treats menus with incoming parent_override as "membership altered" and
-skips default-sibling comparisons there.
+Raw fallback is limited to hand-authored levels that cannot be represented
+losslessly in the live registry. It does not make malformed entries live and
+does not override explicit hidden or moved-away semantics. Once present, the
+raw record is the exclusive ordering authority for that level.
 
 ---
 
@@ -202,7 +188,7 @@ skips default-sibling comparisons there.
 | shrinking/fixtures | tests/lib/shrinker.lua, fixtures/, test_regressions_generated | regression permanence |
 | differential | test_differential_fuzz | native fixpoint, serialization determinism |
 | mutation | tests/mutation_test.lua | dead safety logic |
-| tiers | tests/run_tier.sh quick/ci/nightly/soak | scaled random coverage |
+| tiers | `TIER=quick|ci|nightly|soak ./run_tests.sh` (`tests/run_tier.sh` delegates here) | scaled random coverage |
 
 Generated ids in the SM (`xitem%d`, `nitem%d`, presets `sm<seed>_<n>`) are
 per-world counters: module-level counters leaked state between worlds in

@@ -166,6 +166,7 @@ local STATUS = {
     REGENERATED_INTERRUPTED     = "regenerated_interrupted",
     REGENERATED_MALFORMED       = "regenerated_malformed",
     REGENERATED_LAGGING         = "regenerated_lagging",
+    REGENERATED_REGISTRY_DRIFT  = "regenerated_registry_drift",
     REGENERATED_STALE           = "regenerated_stale",
     REGENERATED_WRITER_UPGRADE  = "regenerated_writer_upgrade",
     CONVERGED_SPARSE            = "converged_sparse",
@@ -959,6 +960,18 @@ function NativeWriter.syncView(view, reg, txn)
             return regenerateForStartup(view, reg, txn,
                 STATUS.REGENERATED_LAGGING)
         end
+        -- Generations and bytes can both agree while the world that must be
+        -- projected has changed: a KOReader default moved, a provider
+        -- arrived/disappeared, or a sorting hint changed. Compare the
+        -- canonical+registry projection to the recorded emission before
+        -- accepting CURRENT, otherwise a fresh process can retain an old
+        -- sparse list indefinitely and KOReader renders the newcomer as NEW:.
+        if not NativeWriter.emissionMatchesRecord(view, reg) then
+            logger.info("ReorderingMenus:", view,
+                "registry/defaults changed under committed intent; regenerating")
+            return regenerateForStartup(view, reg, txn,
+                STATUS.REGENERATED_REGISTRY_DRIFT)
+        end
         -- Startup convergence: the file matches our last emission AND that
         -- emission consists solely of EMPTY reserved maps. The elements
         -- module was freshly required (no mergeAndSort overlay pollution in
@@ -1287,7 +1300,9 @@ importExternalChanges = function(view, reg, txn, native, entry)
                     local custom_menus = txn:view(view).custom_menus
                     local seq = {}
                     for _, id in ipairs(new_list) do
-                        if id ~= SEPARATOR_ID and (reg.nodes[id] ~= nil or (custom_menus and custom_menus[id] ~= nil)) then
+                        if id ~= SEPARATOR_ID and not disabled_ids[id]
+                                and (reg.nodes[id] ~= nil
+                                    or (custom_menus and custom_menus[id] ~= nil)) then
                             table.insert(seq, id)
                         end
                     end
@@ -1296,7 +1311,16 @@ importExternalChanges = function(view, reg, txn, native, entry)
                         local node = reg.nodes[x]
                         seq_eras[x] = node and node.provider or nil
                     end
-                    if #seq > 0 then
+                    local default_items = {}
+                    for _, id in ipairs(reg.menus[menu_id]
+                            and reg.menus[menu_id].list or {}) do
+                        if id ~= SEPARATOR_ID then
+                            default_items[#default_items + 1] = id
+                        end
+                    end
+                    if Materializer.listEquals(seq, default_items) then
+                        txn:setOrderOverride(view, menu_id, nil)
+                    elseif #seq > 0 then
                         txn:setOrderOverride(view, menu_id, seq, seq_eras)
                     else
                         txn:setOrderOverride(view, menu_id, nil)

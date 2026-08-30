@@ -93,8 +93,8 @@ do
     assert_nil(MenuOrderManager.sanitizeOrder, "MenuOrderManager.sanitizeOrder is removed")
     assert_nil(MenuOrderManager.getHiddenAnchor, "MenuOrderManager.getHiddenAnchor is removed")
     assert_nil(MenuOrderManager.hasBackup, "MenuOrderManager.hasBackup is removed")
-    assert_eq(MenuOrderManager:reconcileMenuItems("reader", "tools", {}), false,
-        "reconcileMenuItems retained as deprecated safety stub returning false")
+    assert_nil(MenuOrderManager.reconcileMenuItems,
+        "deprecated reconcileMenuItems stub is removed")
 end
 
 -- =========================================================================
@@ -114,6 +114,8 @@ do
     assert_eq(S.REGENERATED_INTERRUPTED, "regenerated_interrupted", "STATUS.REGENERATED_INTERRUPTED")
     assert_eq(S.REGENERATED_MALFORMED, "regenerated_malformed", "STATUS.REGENERATED_MALFORMED")
     assert_eq(S.REGENERATED_LAGGING, "regenerated_lagging", "STATUS.REGENERATED_LAGGING")
+    assert_eq(S.REGENERATED_REGISTRY_DRIFT, "regenerated_registry_drift",
+        "STATUS.REGENERATED_REGISTRY_DRIFT")
     assert_eq(S.REGENERATED_STALE, "regenerated_stale", "STATUS.REGENERATED_STALE")
     assert_eq(S.REGENERATED_WRITER_UPGRADE, "regenerated_writer_upgrade", "STATUS.REGENERATED_WRITER_UPGRADE")
     assert_eq(S.CONVERGED_SPARSE, "converged_sparse", "STATUS.CONVERGED_SPARSE")

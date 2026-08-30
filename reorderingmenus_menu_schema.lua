@@ -9,7 +9,7 @@
 -- were converged between two parallel sessions that both implemented parts of
 -- the consolidation. The record shapes below are the single agreed truth:
 --   hidden[id]           = { provider?, origin?, ordinal }        ONE record
---   order_override[menu] = { entries = [ {id, provider?} | {separator=true} ] }
+--   order_override[menu] = { entries = [ {id, provider?} ] }
 --   parent_override[id]  = { provider?, parent }   <- custom-menu parent authority
 --   custom_menus[id]     = { title, after? }
 -- Earlier drafts that kept hidden_order / sequence_eras / ui_state anchors or
@@ -66,14 +66,13 @@ MenuSchema.PROTECTED_TABS = {
 --                        too (creation-time homes are folded here)
 --   position_override[id]{ provider?, after|before } sparse single-item slot
 --   order_override[menu] ONE record: entries = array of
---                          { id = string, provider? = era stamp } or
---                          { separator = true } inline divider tokens.
+--                          { id = string, provider? = era stamp }.
 --                        Per-entry era stamps travel with their entry, so no
 --                        parallel sequence_eras map can drift.
 --   custom_menus[id]     { title, after? } user-created submenu. Parent lives
 --                        ONLY in parent_override[id].
---   separators[key]      { parent, after } user-inserted dividers NOT yet
---                        represented as sequence tokens (see intent_store).
+--   separators[key]      { parent, after } THE canonical authority for
+--                        user-inserted dividers.
 --   raw_override[menu]   { list = {...} } verbatim passthrough; installing
 --                        one clears that level's semantic records.
 --
@@ -125,8 +124,8 @@ function MenuSchema.newViewSection()
         parent_override = {},
         position_override = {},
         -- [menu_id] = { entries = {...} }; nil entry = follow defaults.
-        -- Entries are { id, provider? } or { separator = true }; eras ride
-        -- the entry, legacy unstamped data carries no provider field.
+        -- Entries are { id, provider? }; eras ride the entry. Historical
+        -- inline separator tokens are accepted only at migration boundaries.
         order_override = {},
         custom_menus = {},
         separators = {},
@@ -173,21 +172,21 @@ function MenuSchema.newHiddenRecord(fields)
     }
 end
 
---- Inline separator token for an order_override entry list.
+--- Historical inline separator token constructor. Current canonical writers
+--- use the `separators` collection exclusively; retained for migration/tests.
 function MenuSchema.newSeparatorEntry()
     return { separator = true }
 end
 
 --- One combined order record from a plain id sequence + optional per-id era
---- map (the historical writer signature, kept for compatibility).
+--- map. Separators are deliberately omitted: callers persist them through the
+--- canonical anchored `separators` collection.
 function MenuSchema.newOrderRecord(sequence, eras)
     local rec = { entries = {} }
     if type(sequence) ~= "table" then return rec end
     local seen = {}
     for _, id in ipairs(sequence) do
-        if id == MenuSchema.SEPARATOR_ID then
-            rec.entries[#rec.entries + 1] = MenuSchema.newSeparatorEntry()
-        elseif not seen[id] then
+        if id ~= MenuSchema.SEPARATOR_ID and not seen[id] then
             seen[id] = true
             local era = type(eras) == "table" and eras[id] or nil
             if era ~= nil then
@@ -200,7 +199,7 @@ function MenuSchema.newOrderRecord(sequence, eras)
     return rec
 end
 
---- Is this order_override entry an inline separator token?
+--- Is this a historical inline separator token?
 function MenuSchema.isSeparatorEntry(entry)
     return type(entry) == "table" and entry.separator == true
 end

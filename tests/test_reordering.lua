@@ -352,8 +352,8 @@ assert_eq(MenuOrderManager:isItemHidden("reader", "calibre"), false, "calibre is
 local dynamic_search_item = "annas_archive_fixture"
 -- Anchoring is implicit now: the materializer places hinted items without
 -- persisting anything, so the reconciliation hook has nothing to do.
-assert_eq(MenuOrderManager:reconcileMenuItems("reader", "search", { dynamic_search_item }),
-    false, "Anchoring is implicit; the reconciliation hook stays a no-op")
+assert_eq(MenuOrderManager.reconcileMenuItems, nil,
+    "Anchoring is implicit; the obsolete reconciliation hook is removed")
 MenuOrderManager:setItemHidden("reader", dynamic_search_item, true, "search")
 assert_true(MenuOrderManager:isItemHidden("reader", dynamic_search_item),
     "Dynamic Search plugin is hidden")

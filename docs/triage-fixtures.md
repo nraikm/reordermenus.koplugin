@@ -1,4 +1,8 @@
-# P1 — Generated-fixture triage (live document)
+# P1 — Generated-fixture triage (historical)
+
+> **Historical triage snapshot.** Counts and OPEN/XFAIL labels below describe
+> the corpus at the time of that triage pass; they are not current defect or
+> release status. The executable fixture suites are authoritative.
 
 State: post-Bug-1/1b fix. 110 promoted fixtures collapsed to **68 XFAIL across
 ~20 signatures / 5 root-cause classes**; 48 retired as XPASS after fixes;
@@ -20,3 +24,14 @@ State: post-Bug-1/1b fix. 110 promoted fixtures collapsed to **68 XFAIL across
   (which menu, which items, which trigger op chain), verified via targeted replays.
 - XPASS fixtures were retired only after confirming a deterministic positive
   regression suite (`test_reset_after_stage_regression.lua`) covers Bug 1.
+
+## Current retention policy
+
+- Promote a randomized failure only after it reproduces in a fresh process
+  with its complete seed prefix.
+- Cluster by normalized operation sequence and violated invariant, then keep
+  the smallest history that represents each distinct root cause.
+- Retire a duplicate only when a deterministic positive regression test
+  covers the same semantic boundary; raw fixture count is not a quality goal.
+- `test_regressions_generated.lua` and `test_regressions_promoted.lua`, not
+  this historical table, decide whether the retained corpus is green.

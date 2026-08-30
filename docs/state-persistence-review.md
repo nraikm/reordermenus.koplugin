@@ -1,5 +1,11 @@
 # Reordering Menus — State/Persistence Review (Final)
 
+> **Historical audit snapshot.** The suite counts, schema references, open
+> decisions, and implementation notes below describe the 2026-08-23 review.
+> They are retained for provenance, not as current specifications. Use
+> `REFERENCE_SEMANTICS.md`, `docs/architecture.md`, and
+> `docs/migration-policy.md` for the current contract.
+
 Date: 2026-08-23 · Reviewer lane: ox-alpha (test infrastructure + coordinated production fixes)
 Verification: `./run_tests.sh` → **95 suites passed, 0 failed, exit 0** (quick tier), plus repeated-run stability checks on the touched suites.
 

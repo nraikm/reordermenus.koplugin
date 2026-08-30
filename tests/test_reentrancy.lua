@@ -36,6 +36,7 @@ local Manager = require("reorderingmenus_menuorder_manager")
 local IntentStore = require("reorderingmenus_intent_store")
 local NativeWriter = require("reorderingmenus_native_writer")
 local UIScreens = require("reorderingmenus_ui_screens")
+local CommitPipeline = require("reorderingmenus_commit_pipeline")
 
 local passed, failed = 0, 0
 local function note(cond, msg)
@@ -303,6 +304,45 @@ do
     end)
     note(ok_repeat and IntentStore.generation() == gen_stable,
         "F7f: repeating the chain performs no additional durable commit")
+    wipe_all()
+end
+
+-- F8: a genuinely raised commit error is contained and, critically, cannot
+-- leave the manager's in-commit guard stuck for the rest of the process.
+do
+    wipe_all()
+    Manager:setLiveRegistrations(VIEW, {}, {})
+    Manager:loadOrder(VIEW)
+    local seed = IntentStore.openTransaction()
+    seed:setHidden(VIEW, "reent_stale", {
+        provider = "plugin:gone", origin = "tools", ordinal = 1,
+    })
+    assert(seed:commit(true))
+    Manager:dropSessionState(VIEW)
+    Manager:setLiveRegistrations(VIEW, {}, {})
+    Manager:loadOrder(VIEW)
+
+    local original_commit = CommitPipeline.commitAndApply
+    CommitPipeline.commitAndApply = function()
+        error("injected raised commit", 0)
+    end
+    local call_ok, cleanup_ok = pcall(
+        Manager.forgetStaleCustomizations, Manager, VIEW)
+    CommitPipeline.commitAndApply = original_commit
+    note(call_ok and cleanup_ok == false,
+        "F8: raised commit becomes a structured cleanup failure")
+
+    Manager:dropSessionState(VIEW)
+    local sync_calls = 0
+    local original_sync = NativeWriter.syncView
+    NativeWriter.syncView = function(...)
+        sync_calls = sync_calls + 1
+        return original_sync(...)
+    end
+    local reload_ok = pcall(Manager.loadOrder, Manager, VIEW)
+    NativeWriter.syncView = original_sync
+    note(reload_ok and sync_calls > 0,
+        "F8b: post-error session synchronization still runs")
     wipe_all()
 end
 

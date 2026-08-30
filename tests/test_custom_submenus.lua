@@ -56,6 +56,8 @@ local MenuOrderManager = require("reorderingmenus_menuorder_manager")
 local UIScreens = require("reorderingmenus_ui_screens")
 local ReorderingMenus = require("main")
 local UIManager = require("ui/uimanager")
+local MenuSchema = require("reorderingmenus_menu_schema")
+local IntentStore = require("reorderingmenus_intent_store")
 
 local passed = 0
 local failed = 0
@@ -278,11 +280,50 @@ assert_true(fresh_id ~= first_id and fresh_id ~= second_id,
     "deleted ids are never reused")
 assert_true(MenuOrderManager:deleteCustomSubmenu("reader", fresh_id),
     "cleanup deletion succeeds")
+
+-- A hidden container is absent from the projected menu tree, but canonical
+-- custom-menu membership still identifies it as deletable. Separator-only
+-- content is empty for safety purposes and all related records must cascade.
+local hidden_ok, hidden_id = MenuOrderManager:createSubmenu(
+    "reader", "tools", "Hidden Empty", 1)
+assert_true(hidden_ok, "hidden-empty custom submenu created")
+MenuOrderManager:stageList("reader", hidden_id, { MenuSchema.SEPARATOR_ID })
+MenuOrderManager:setItemHidden("reader", hidden_id, true, "tools")
+local hidden_txn = MenuOrderManager:peekTransaction()
+hidden_txn:setSeparator("reader", "delete_anchor_ref", {
+    parent = "tools", after = hidden_id,
+})
+hidden_txn:setPositionOverride("reader", "go_to", {
+    after = hidden_id, provider = "stock",
+})
+assert_true(MenuOrderManager:deleteCustomSubmenu("reader", hidden_id),
+    "hidden separator-only custom submenu deletes cleanly")
+local hidden_section = MenuOrderManager:stagedView("reader")
+assert_eq(hidden_section.custom_menus[hidden_id], nil,
+    "hidden custom record removed")
+assert_eq(hidden_section.hidden[hidden_id], nil,
+    "hidden-container tombstone removed")
+assert_eq(hidden_section.parent_override[hidden_id], nil,
+    "hidden-container parent record removed")
+local hidden_sep_residue = false
+for _, sep in pairs(hidden_section.separators or {}) do
+    if sep.parent == hidden_id or sep.after == hidden_id then
+        hidden_sep_residue = true
+    end
+end
+assert_eq(hidden_sep_residue, false,
+    "hidden custom divider records removed")
+assert_eq(hidden_section.position_override.go_to, nil,
+    "anchors targeting the deleted custom container are removed")
 -- Production deletion paths persist immediately (hold-dialog delete runs
 -- saveAndApply); mirror that here so later suites read a consistent disk
 -- state and rebuilt live trees no longer offer the deleted submenus.
 assert_true(MenuOrderManager:saveOrder("reader"), "post-deletion save")
 MenuOrderManager:applyLiveReload(mock_ui_reader, "reader")
+MenuOrderManager:dropSessionState("reader")
+IntentStore.load(true)
+assert_eq(IntentStore.view("reader").custom_menus[hidden_id], nil,
+    "hidden custom deletion survives restart")
 
 -- =========================================================================
 print("\n--- 4. Hamburger exposes Add/Insert submenu below the separator ---")

@@ -58,6 +58,7 @@ local UIScreens = require("reorderingmenus_ui_screens")
 local UIEditorRegistry = require("reorderingmenus_ui_editor_registry")
 local IntentStore = require("reorderingmenus_intent_store")
 local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local CommitPipeline = require("reorderingmenus_commit_pipeline")
 local util = require("util")
 local lfs = require("libs/libkoreader-lfs")
 
@@ -856,7 +857,9 @@ do
     -- the editor's phantom dirt exactly like a real save does.
     local orig_save = MenuOrderManager.saveOrder
     MenuOrderManager.saveOrder = function(self, v)
-        return false, "unchanged"
+        local outcome = CommitPipeline.unchangedOutcome()
+        outcome.committed = true
+        return true, "unchanged", outcome
     end
     dismiss_prompt(p, "save")
     MenuOrderManager.saveOrder = orig_save

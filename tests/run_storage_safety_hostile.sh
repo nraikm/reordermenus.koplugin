@@ -8,6 +8,7 @@
 set -u
 KOREADER_DIR="${1:-/Applications/KOReader.app/Contents/koreader}"
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PLUGIN_DIR KOREADER_DIR
 cd "$KOREADER_DIR" || exit 2
 
 pass=0; fail=0

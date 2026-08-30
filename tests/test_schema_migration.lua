@@ -9,6 +9,9 @@ Schema versioning & migration fixtures.
       the live state starts clean but the user's bytes are preserved.
   M6  unknown top-level fields in a CURRENT-version file are preserved
       across load and resave (forward-compatible field tolerance).
+  M7  current-version contradictory authority converges deterministically:
+      raw levels win over order/separators, and legacy inline dividers become
+      anchored separator records without surviving in bulk entries.
 --]]
 
 dofile("/Applications/KOReader.app/Contents/koreader/setupkoenv.lua")
@@ -217,6 +220,58 @@ do
     f = io.open(INTENT_FILE, "r"); c = f:read("*a"); f:close()
     assert_true(c:find("future_field", 1, true) ~= nil,
         "M6: unknown field survives load+resave round trip")
+end
+
+print("\n--- M7: current-schema authority normalization ---")
+do
+    wipe(); launch()
+    -- Force a durable canonical file, then replace its view payload with the
+    -- adversarial current-version fixture below.
+    MenuOrderManager:moveItemToMenu(view, "opds", "search", "tools")
+    MenuOrderManager:saveOrder(view)
+    local data = read_intent()
+    local section = data.views[view]
+    section.parent_override = {}
+    section.position_override = {}
+    section.hidden = {}
+    section.raw_override.help = { list = { "hostile_unknown", "about" } }
+    section.order_override.help = {
+        entries = { { id = "about", provider = "stock" } },
+    }
+    section.separators.conflicting_help = { parent = "help", after = "about" }
+    section.order_override.search = {
+        entries = {
+            { id = "file_search", provider = "stock" },
+            { separator = true },
+            { id = "opds", provider = "stock" },
+        },
+    }
+    local f = assert(io.open(INTENT_FILE, "w"))
+    f:write("return " .. dump(data, nil, true)); f:close()
+
+    IntentStore.load(true)
+    local normalized = IntentStore.view(view)
+    assert_true(normalized.raw_override.help ~= nil,
+        "M7: raw passthrough survives as the level authority")
+    assert_eq(normalized.order_override.help, nil,
+        "M7: raw level clears contradictory bulk order")
+    assert_eq(normalized.separators.conflicting_help, nil,
+        "M7: raw level clears contradictory separator authority")
+    local search = normalized.order_override.search
+    assert_eq(#(search and search.entries or {}), 2,
+        "M7: inline divider removed from bulk entries")
+    local anchored = false
+    for _, sep in pairs(normalized.separators or {}) do
+        if sep.parent == "search" and sep.after == "file_search" then
+            anchored = true
+        end
+    end
+    assert_true(anchored, "M7: inline divider migrated to one anchored authority")
+
+    IntentStore.load(true)
+    local again = IntentStore.view(view)
+    assert_eq(#(again.order_override.search.entries or {}), 2,
+        "M7: normalization is idempotent after restart")
 end
 
 wipe()

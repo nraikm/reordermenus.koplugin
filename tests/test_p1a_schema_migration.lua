@@ -174,12 +174,16 @@ do print("G4: sequence_eras fold into order_override entries")
     local rec = sec.order_override.menu_a
     assert_true(rec ~= nil and type(rec.entries) == "table",
         "order record converted to entries form")
-    assert_eq(#rec.entries, 3, "sequence length preserved including separator token")
+    assert_eq(#rec.entries, 2, "sequence keeps item entries only")
     assert_eq(rec.entries[1].id, "item_1", "entry id preserved")
     assert_eq(rec.entries[1].provider, "stock", "era stamp travels onto the entry")
-    assert_eq(rec.entries[2].separator, true, "inline separator token recorded")
-    assert_eq(rec.entries[3].id, "item_2", "trailing entry preserved")
-    assert_true(rec.entries[3].provider == nil, "absent era stays absent")
+    assert_eq(rec.entries[2].id, "item_2", "trailing entry preserved")
+    assert_true(rec.entries[2].provider == nil, "absent era stays absent")
+    local migrated_separator
+    for _, sep in pairs(sec.separators) do migrated_separator = sep end
+    assert_true(migrated_separator and migrated_separator.parent == "menu_a"
+            and migrated_separator.after == "item_1",
+        "inline separator migrated to anchored authority")
     assert_true(sec.sequence_eras == nil, "parallel era map removed from section")
 end
 

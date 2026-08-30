@@ -1,5 +1,10 @@
 # Reordering Menus — KOReader Integration Review (2026-08-23)
 
+> **Historical audit snapshot.** Findings and measurements below describe the
+> 2026-08-23 review, not the current release contract. Current support claims
+> live in the README and the current workaround inventory lives in
+> `docs/compatibility-matrix.md`.
+
 Scope: KOReader integration, plugin lifecycle, malformed plugin contributions,
 runtime contexts, upstream compatibility, real-process behavior. All findings
 verified empirically against the installed stock `menusorter.lua`

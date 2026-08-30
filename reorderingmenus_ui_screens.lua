@@ -263,11 +263,6 @@ function UIScreens:reconcileRegisteredItems(plugin, view, persist)
     return changed
 end
 
-function UIScreens:reconcileLiveMenuItems(plugin, view, menu_id)
-    local live_ids = self:_getLiveMenuItems(plugin, menu_id)
-    return MenuOrderManager:reconcileMenuItems(view, menu_id, live_ids)
-end
-
 function UIScreens:promptRestart(msg)
     local message_text = msg or _("Menu order changes have been saved. Would you like to restart KOReader now for all changes to take full effect?")
     -- Prefer the adapter's native UIManager:askForRestart when supported;
@@ -322,7 +317,7 @@ function UIScreens:presentSaveOutcome(outcome)
         return false
     elseif status == CommitPipeline.STATUS.UNCHANGED then
         -- Semantic no-op: nothing durable happened, nothing to report.
-        return false
+        return true
     else
         self:showError(T(_("Error saving configuration:\n%1"),
             tostring(outcome.error or "save failed")))
@@ -336,17 +331,10 @@ function UIScreens:saveAndApply(plugin, view, silent)
     self:reconcileRegisteredItems(active_plugin, view, false)
     local ok_save, path_or_err, outcome = MenuOrderManager:saveOrder(view)
     if type(outcome) ~= "table" then
-        outcome = {
-            status = ok_save and CommitPipeline.STATUS.SAVED
-                or (path_or_err == CommitPipeline.STATUS.UNCHANGED and CommitPipeline.STATUS.UNCHANGED)
-                or (type(path_or_err) == "string" and path_or_err:find("^saved_needs_regeneration") and CommitPipeline.STATUS.NEEDS_REGENERATION)
-                or CommitPipeline.STATUS.NOT_SAVED,
-            committed = ok_save,
-            error = not ok_save and path_or_err or nil,
-            path = ok_save and path_or_err or nil,
-            changed_views = { [view] = true },
-            failed_views = {},
-        }
+        outcome = CommitPipeline.failureOutcome(
+            "manager returned no structured commit outcome")
+        ok_save = false
+        path_or_err = outcome.error
     end
     outcome.silent = silent
     outcome.view_name = view == "reader" and _("Book view") or _("File Manager")
@@ -355,7 +343,7 @@ function UIScreens:saveAndApply(plugin, view, silent)
         self:reloadLiveMenu(active_plugin, view)
     end
     local presented_ok = self:presentSaveOutcome(outcome)
-    return presented_ok, outcome.path or outcome.error
+    return presented_ok, outcome.path or outcome.error, outcome
 end
 
 function UIScreens:_getHiddenForMenu(view, menu_id)
@@ -644,10 +632,15 @@ function UIScreens:confirmResetAllMenus(plugin, view, reopen, on_committed)
         text = _("Reset all menus in both views to default?"),
         ok_text = _("Reset all"),
         ok_callback = function()
-            local all_ok, all_err = MenuOrderManager:resetAllOrders()
-            local status = all_ok and CommitPipeline.STATUS.SAVED
-                or (all_err == CommitPipeline.STATUS.NEEDS_REGENERATION and CommitPipeline.STATUS.NEEDS_REGENERATION or CommitPipeline.STATUS.NOT_SAVED)
+            local all_ok, all_err, outcome = MenuOrderManager:resetAllOrders()
+            if type(outcome) ~= "table" then
+                outcome = CommitPipeline.failureOutcome(
+                    "manager returned no structured Reset All outcome")
+            end
+            local status = outcome.status
             if status ~= CommitPipeline.STATUS.SAVED
+                    and status ~= CommitPipeline.STATUS.SAVED_RESTART_REQUIRED
+                    and status ~= CommitPipeline.STATUS.UNCHANGED
                     and status ~= CommitPipeline.STATUS.NEEDS_REGENERATION then
                 self:showError(all_err)
                 return
@@ -868,7 +861,6 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
                             timeout = 8,
                         })
                     end
-                    self:reconcileLiveMenuItems(plugin, view, tid)
                     self:reconcileRegisteredItems(plugin, view, false)
                 end
                 MenuOrderManager:setTabHidden(view, tid, not is_hidden)
@@ -896,7 +888,6 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
                                 })
                                 return
                             end
-                            self:reconcileLiveMenuItems(plugin, view, tid)
                             self:reconcileRegisteredItems(plugin, view, false)
                             MenuOrderManager:setTabHidden(view, tid, true)
                             if refresh_func then refresh_func() end
@@ -2480,11 +2471,12 @@ function UIScreens:showDestinationMenuChooser(
                         -- confirmation is the only feedback needed here;
                         -- skip saveAndApply's separate "menu order saved"
                         -- toast.
-                        local moved_saved, save_err =
+                        local moved_saved, save_err, save_outcome =
                             self:saveAndApply(plugin, view, true)
                         if not moved_saved then
-                            if save_err == CommitPipeline.STATUS.NEEDS_REGENERATION
-                                    or (type(save_err) == "string" and save_err:find("^saved_needs_regeneration")) then
+                            if save_outcome
+                                    and save_outcome.status
+                                        == CommitPipeline.STATUS.NEEDS_REGENERATION then
                                 -- P0 §5: canonical intent IS durably
                                 -- committed here; only a derived view /
                                 -- live refresh failed. The move STANDS -

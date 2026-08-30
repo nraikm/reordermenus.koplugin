@@ -408,6 +408,62 @@ local function sanitizeSection(section)
     return section
 end
 
+-- Converge historical/current-but-contradictory shapes onto one canonical
+-- authority model. This is lossless normalization, not corruption recovery:
+-- dividers become anchored `separators` records, and a raw passthrough owns
+-- its menu level exclusively.
+local function normalizeCanonicalModes(section)
+    local changed = false
+    local separators = section.separators
+    local order_override = section.order_override
+
+    local menu_ids = {}
+    for menu_id in pairs(order_override) do menu_ids[#menu_ids + 1] = menu_id end
+    table.sort(menu_ids, function(a, b) return tostring(a) < tostring(b) end)
+    for _, menu_id in ipairs(menu_ids) do
+        local record = order_override[menu_id]
+        if type(record) == "table" and type(record.entries) == "table" then
+            local kept, previous, found_inline = {}, false, false
+            for index, entry in ipairs(record.entries) do
+                if MenuSchema.isSeparatorEntry(entry) then
+                    found_inline = true
+                    local base = "legacy_inline:" .. tostring(menu_id)
+                        .. ":" .. tostring(index)
+                    local key, suffix = base, 1
+                    while separators[key] ~= nil do
+                        suffix = suffix + 1
+                        key = base .. ":" .. tostring(suffix)
+                    end
+                    separators[key] = { parent = menu_id, after = previous }
+                else
+                    kept[#kept + 1] = entry
+                    if type(entry) == "table" and type(entry.id) == "string" then
+                        previous = entry.id
+                    end
+                end
+            end
+            if found_inline then
+                record.entries = kept
+                changed = true
+            end
+        end
+    end
+
+    for menu_id in pairs(section.raw_override) do
+        if order_override[menu_id] ~= nil then
+            order_override[menu_id] = nil
+            changed = true
+        end
+        for key, sep in pairs(separators) do
+            if type(sep) == "table" and sep.parent == menu_id then
+                separators[key] = nil
+                changed = true
+            end
+        end
+    end
+    return changed
+end
+
 -- -------------------------------------------------------------------------
 -- Canonical-state validation (P0 hardening): a corrupt canonical intent
 -- file must never silently become a clean empty configuration.
@@ -775,6 +831,7 @@ local function normalizeViews(loaded, problems)
         end
         local tab_order = loaded.views[view].tab_order
         sanitizeSection(loaded.views[view])
+        if normalizeCanonicalModes(loaded.views[view]) then changed = true end
         for collection in pairs(malformed) do
             loaded.views[view][collection] = {}
             changed = true
@@ -1304,8 +1361,8 @@ end
 -- sequences are id-unique per menu (the loader treats a duplicate as
 -- corruption); every writer funnels through here, so the invariant is
 -- enforced at the door: keep the FIRST occurrence - the position already
--- arranged - and drop later copies. Separator tokens are stored inline as
--- { separator = true } so divider placement travels with the arrangement.
+-- arranged - and drop later copies. Dividers are converted immediately into
+-- anchored records in the sole canonical `separators` collection.
 function Transaction:setOrderOverride(view, menu_id, sequence, eras)
     if not mutator_gate(self) then return end
     if sequence == nil or #sequence == 0 then
@@ -1314,11 +1371,36 @@ function Transaction:setOrderOverride(view, menu_id, sequence, eras)
     end
     self:section(view, "raw_override")[menu_id] = nil
     local pos_overrides = self:section(view, "position_override")
+    local separators = self:section(view, "separators")
+    local sequence_has_separators = false
+    for _, id in ipairs(sequence) do
+        if id == MenuSchema.SEPARATOR_ID then
+            sequence_has_separators = true
+            break
+        end
+    end
+    -- A plain item sequence and separator anchors are independent canonical
+    -- authorities. Preserve existing anchors unless this call explicitly
+    -- supplies divider tokens, in which case it is replacing both facets.
+    if sequence_has_separators then
+        for key, sep in pairs(separators) do
+            if type(sep) == "table" and sep.parent == menu_id then
+                separators[key] = nil
+            end
+        end
+    end
     local deduped, dropped = {}, nil
     local seen = {}
+    local previous = false
     for index, id in ipairs(sequence) do
         if id == MenuSchema.SEPARATOR_ID then
-            table.insert(deduped, { separator = true })
+            local base = "sequence:" .. tostring(menu_id) .. ":" .. tostring(index)
+            local key, suffix = base, 1
+            while separators[key] ~= nil do
+                suffix = suffix + 1
+                key = base .. ":" .. tostring(suffix)
+            end
+            separators[key] = { parent = menu_id, after = previous }
         elseif seen[id] then
             dropped = dropped or id
         else
@@ -1330,6 +1412,7 @@ function Transaction:setOrderOverride(view, menu_id, sequence, eras)
             -- Era stamps travel with their entry; an override written
             -- without stamps (legacy/imported shape) applies unconditionally.
             table.insert(deduped, { id = id, provider = era })
+            previous = id
         end
     end
     if dropped then
@@ -1339,10 +1422,6 @@ function Transaction:setOrderOverride(view, menu_id, sequence, eras)
             ") - keeping first occurrence")
     end
     self:section(view, "order_override")[menu_id] = { entries = deduped }
-end
-
-function Transaction:getOrderOverride(view, menu_id)
-    return self:section(view, "order_override")[menu_id]
 end
 
 -- Custom-menu creation record: title (+ optional arrival anchor) only. The
@@ -1529,6 +1608,16 @@ function Transaction:changedViews()
     return changed
 end
 
+function Transaction:hasMetaChanges()
+    if type(self.staged_meta) ~= "table" or type(self.meta_base) ~= "table" then
+        return false
+    end
+    for key, value in pairs(self.staged_meta) do
+        if not util.tableEquals(value, self.meta_base[key]) then return true end
+    end
+    return false
+end
+
 -- Remove references to a deleted custom submenu everywhere.
 function Transaction:deleteCustomMenu(view, submenu_id)
     if not mutator_gate(self) then return end
@@ -1536,6 +1625,50 @@ function Transaction:deleteCustomMenu(view, submenu_id)
     -- The parent record IS the placement authority; deleting the menu
     -- removes it (and everything that placed items inside the level).
     self:view(view).parent_override[submenu_id] = nil
+    self:view(view).position_override[submenu_id] = nil
+    self:view(view).hidden[submenu_id] = nil
+    self:view(view).raw_override[submenu_id] = nil
+    self:view(view).order_override[submenu_id] = nil
+    for key, sep in pairs(self:view(view).separators or {}) do
+        if type(sep) == "table"
+                and (sep.parent == submenu_id or sep.after == submenu_id) then
+            self:view(view).separators[key] = nil
+        end
+    end
+    -- Defensive direct-API semantics: bypassing the manager's non-empty
+    -- refusal still cannot leave children aimed at a deleted level.
+    for id, record in pairs(self:view(view).parent_override or {}) do
+        if type(record) == "table" and record.parent == submenu_id then
+            self:view(view).parent_override[id] = nil
+        end
+    end
+    for _, record in pairs(self:view(view).hidden or {}) do
+        if type(record) == "table" and record.origin == submenu_id then
+            record.origin = nil
+        end
+    end
+    for id, record in pairs(self:view(view).position_override or {}) do
+        if type(record) == "table"
+                and (record.after == submenu_id or record.before == submenu_id) then
+            self:view(view).position_override[id] = nil
+        end
+    end
+    for _, raw in pairs(self:view(view).raw_override or {}) do
+        if type(raw) == "table" and type(raw.list) == "table" then
+            local kept = {}
+            for _, id in ipairs(raw.list) do
+                if id ~= submenu_id then kept[#kept + 1] = id end
+            end
+            raw.list = kept
+        end
+    end
+    if type(self:view(view).tab_order) == "table" then
+        local kept = {}
+        for _, id in ipairs(self:view(view).tab_order) do
+            if id ~= submenu_id then kept[#kept + 1] = id end
+        end
+        self:view(view).tab_order = #kept > 0 and kept or nil
+    end
     local touched = {}
     for menu_id in pairs(self:view(view).order_override or {}) do
         table.insert(touched, menu_id)

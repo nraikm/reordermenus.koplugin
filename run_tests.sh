@@ -20,6 +20,7 @@
 #   SEED / ITERATIONS / SM_SEEDS / SM_STEPS   per-suite knobs
 #   SM_SEED_LIST   explicit seed list replayed by both state machines
 #                  ("7919,15838,..." — overrides the tier's seed count)
+#   FRESH_SEEDS=1  generate and print a new explicit state-machine seed list
 #
 # P0-A: randomized suites print an EFFECTIVE_CONFIG line; this runner parses
 # it and FAILS the whole run if the executed configuration does not match the
@@ -53,8 +54,17 @@ case "$TIER" in
     *) echo "Unknown TIER '$TIER' (quick|ci|nightly|soak)" >&2; exit 2 ;;
 esac
 
-# Fresh randomized seeds are run for state machine suites (SM_SEEDS × SM_STEPS).
-# Promoted regression fixtures in test_regressions_promoted.lua replay the seed bank.
+# Tiers use a deterministic schedule by default. Opt-in fresh runs emit their
+# exact replayable list, while promoted fixtures remain a separate suite.
+if [ "${FRESH_SEEDS:-0}" = "1" ] && [ -z "${SM_SEED_LIST:-}" ]; then
+    generated=""
+    for ((i=0; i<SM_SEEDS; i++)); do
+        raw_seed="$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
+        seed=$(( raw_seed % 2147483646 + 1 ))
+        generated="${generated}${generated:+,}${seed}"
+    done
+    export SM_SEED_LIST="$generated"
+fi
 
 cd "$KOREADER_DIR"
 export PLUGIN_DIR="$PLUGIN_DIR"
@@ -75,6 +85,7 @@ if [ $# -gt 0 ]; then
     done
 else
     for f in "$PLUGIN_DIR"/tests/test_*.lua; do suites+=("$f"); done
+    suites+=("$PLUGIN_DIR/tests/run_storage_safety_hostile.sh")
 fi
 
 pass=0 fail=0 failed_list=""
@@ -92,7 +103,10 @@ for f in "${suites[@]}"; do
     suite_home="$(mktemp -d "${TMPDIR:-/tmp}/rm_kohome.XXXXXX")"
     mkdir -p "$suite_home/settings"
     export KO_HOME="$suite_home"
-    if [ "$name" = "test_crash_pipeline.lua" ]; then
+    if [ "$name" = "run_storage_safety_hostile.sh" ]; then
+        bash "$f" "$KOREADER_DIR" > "/tmp/rm_test_$name.log" 2>&1
+        suite_rc=$?
+    elif [ "$name" = "test_crash_pipeline.lua" ]; then
         # Multi-stage suite: stage -1 hard-exits (simulated crash) and the
         # recovery stage must run as a separate process, exactly like a real
         # crash+restart. Running the file bare would always report failure.

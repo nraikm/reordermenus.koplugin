@@ -100,6 +100,42 @@ local synced_views = {}        -- [view] = true after three-way startup sync
 local live_registrations = {}  -- [view] = { items, providers } last collected
 local backups = {}             -- [view] = staged section snapshot
 local in_commit = false        -- reentrancy guard for CommitPipeline
+local registry_dirty = {}      -- registry-only changes needing new emission
+
+-- Exception-safe boundary around THE save funnel. CommitPipeline normally
+-- contains operation failures in its structured Outcome, but this guard also
+-- covers programming errors and test/future adapters that raise before an
+-- Outcome exists. The previous guard state is restored on every path.
+local function commitWithGuard(txn, options)
+    options = options or {}
+    options.force_views = util.tableDeepCopy(registry_dirty)
+    local previous = in_commit
+    in_commit = true
+    local ok, outcome = xpcall(function()
+        return CommitPipeline.commitAndApply(txn, options)
+    end, function(err)
+        return tostring(err)
+    end)
+    in_commit = previous
+    if not ok then
+        logger.err("ReorderingMenus: commit pipeline raised:", outcome)
+        return CommitPipeline.failureOutcome(outcome)
+    end
+    if type(outcome) ~= "table" or outcome.status == nil
+            or type(outcome.failed_views) ~= "table"
+            or type(outcome.changed_views) ~= "table" then
+        logger.err("ReorderingMenus: commit pipeline returned an invalid outcome")
+        return CommitPipeline.failureOutcome("invalid commit outcome")
+    end
+    if outcome.committed then
+        for view in pairs(registry_dirty) do
+            if outcome.changed_views[view] and not outcome.failed_views[view] then
+                registry_dirty[view] = nil
+            end
+        end
+    end
+    return outcome
+end
 
 -- Drop derived caches for a view. There is deliberately NO healing-history
 -- snapshot here: the projection is a pure function of (registry, canonical
@@ -215,6 +251,7 @@ local function sessionFor(view, ui)
     if s.defaults_identity ~= nil and s.defaults_identity ~= defaultsIdentity(view) then
         s.reg = buildRegistry(view, ui)
         s.defaults_identity = defaultsIdentity(view)
+        registry_dirty[view] = true
         synced_views[view] = nil
         -- No healing history to drop: the projection is derived from the
         -- NEW registry + unchanged canonical intent, exactly as a fresh
@@ -252,12 +289,10 @@ local function sessionFor(view, ui)
             -- write leaves the lagging (intent_gen mismatch) pair, which the
             -- next startup regenerates from canonical intent alone.
             if active_txn and active_txn:isOpen() then
-                in_commit = true
-                local outcome = CommitPipeline.commitAndApply(active_txn,
+                local outcome = commitWithGuard(active_txn,
                     { get_session = function(v)
                         return v == view and sessions[v] or nil end,
                       prepare = minimizeIntent })
-                in_commit = false
                 if not outcome.committed then
                     synced_views[view] = nil
                     active_txn:discard()
@@ -281,7 +316,12 @@ end
 
 function MenuOrderManager:refreshRegistry(view, ui)
     local s = sessionFor(view, ui)
-    s.reg = buildRegistry(view, ui)
+    local refreshed = buildRegistry(view, ui)
+    if not util.tableEquals(s.reg, refreshed) then
+        registry_dirty[view] = true
+        synced_views[view] = nil
+    end
+    s.reg = refreshed
     invalidate(view)
     return true
 end
@@ -437,16 +477,28 @@ local function minimizeIntent(view, txn, reg)
     if has_orders then
         for menu_id, override in pairs(section.order_override) do
             local def_menu = reg.menus and reg.menus[menu_id]
-            if def_menu and def_menu.list and type(override) == "table" and type(override.entries) == "table" then
+            if type(override) == "table" and type(override.entries) == "table" then
                 local seq = {}
+                local has_non_hidden_entry = false
                 for _, ent in ipairs(override.entries) do
                     if MenuSchema.isSeparatorEntry(ent) then
                         seq[#seq + 1] = MenuSchema.SEPARATOR_ID
                     else
                         seq[#seq + 1] = ent.id
+                        if not (section.hidden and section.hidden[ent.id]) then
+                            has_non_hidden_entry = true
+                        end
                     end
                 end
-                if Materializer.listEquals(seq, def_menu.list) then
+                local default_items = {}
+                for _, id in ipairs(def_menu and def_menu.list or {}) do
+                    if id ~= MenuSchema.SEPARATOR_ID then
+                        default_items[#default_items + 1] = id
+                    end
+                end
+                if not has_non_hidden_entry
+                        or (def_menu and def_menu.list
+                            and Materializer.listEquals(seq, default_items)) then
                     section.order_override[menu_id] = nil
                 end
             end
@@ -490,13 +542,43 @@ function MenuOrderManager:saveOrder(view)
     sessionFor(view)
 
     local txn = ensureTxn()
-    in_commit = true
-    local outcome = CommitPipeline.commitAndApply(txn, {
+    -- Common immediate no-op: no staged semantic/meta change and no derived
+    -- checkpoint needs materialization. sessionFor(view) above has already
+    -- reconciled supported external edits for the requested view. Avoid
+    -- running minimization and commit-time
+    -- graph work merely to rediscover that nothing happened.
+    local staged_changed = txn:changedViews()
+    local fast_noop = not IntentStore.isProtected()
+        and not txn:hasMetaChanges()
+        and not next(registry_dirty)
+        and not staged_changed.reader and not staged_changed.filemanager
+    if fast_noop then
+        for _, v in ipairs(MenuSchema.VIEWS) do
+            if NativeWriter.recordNeedsMaterialization(v) then
+                fast_noop = false
+                break
+            end
+        end
+    end
+    local outcome
+    if fast_noop then
+        -- Spend the transaction just like the full funnel does. changedViews
+        -- and hasMetaChanges proved this is an in-memory identity swap, so
+        -- Transaction:commit performs no durable write. If its concurrency
+        -- generation is stale, fall through to the normal one-rebase path.
+        local closed = txn:commit(false)
+        if closed then
+            outcome = CommitPipeline.unchangedOutcome()
+            outcome.committed = true
+        end
+    end
+    if not outcome then
+        outcome = commitWithGuard(txn, {
         get_session = function(v) return sessionFor(v) end,
         prepare = minimizeIntent,
         invalidate = invalidate,
-    })
-    in_commit = false
+        })
+    end
     ensureTxn() -- committed transaction is spent; fresh staging either way
 
     outcome.path = KoreaderAdapter.getNativePath(view)
@@ -545,13 +627,11 @@ end
 --- without naming a view. Used by semantic multi-view operations (plugin-
 --- removal preparation) that stage first and persist once.
 function MenuOrderManager:commitStaged()
-    in_commit = true
-    local outcome = CommitPipeline.commitAndApply(ensureTxn(), {
+    local outcome = commitWithGuard(ensureTxn(), {
         get_session = function(v) return sessionFor(v) end,
         prepare = minimizeIntent,
         invalidate = invalidate,
     })
-    in_commit = false
     ensureTxn()
     if outcome.committed then
         for _, v in ipairs(MenuSchema.VIEWS) do
@@ -573,22 +653,20 @@ function MenuOrderManager:resetOrder(view)
     -- (remove, then commit) crashed into a window where both files were gone
     -- but canonical intent still held every customization: a restart would
     -- resurrect it out of nowhere.
-    in_commit = true
-    local outcome = CommitPipeline.commitAndApply(txn, {
+    local outcome = commitWithGuard(txn, {
         get_session = function(v) return sessionFor(v) end,
         invalidate = invalidate,
     })
-    in_commit = false
     ensureTxn() -- spent transaction replaced by fresh staging
 
     if not outcome.committed then
         logger.err("ReorderingMenus: failed to persist reset:", outcome.error)
-        return false, outcome.error
+        return false, outcome.error, outcome
     end
     if outcome.failed_views[view] then
         logger.err("ReorderingMenus: reset intent was saved, but the derived",
             "menu file could not be removed:", outcome.failed_views[view])
-        return false, outcome.failed_views[view]
+        return false, outcome.failed_views[view], outcome
     end
     KoreaderAdapter.invalidateNativeModuleCache()
     -- Reset erases canonical intent; the next projection derives from the
@@ -596,30 +674,28 @@ function MenuOrderManager:resetOrder(view)
     invalidate(view)
     MenuOrderManager.recent_moves[view] = {}
     backups[view] = nil
-    return true
+    return true, nil, outcome
 end
 
 --- P0-9: Reset All as ONE semantic operation. Both views' intents are
 --- emptied inside ONE transaction and committed ONCE - canonical state can
 --- never represent "Reader reset but FileManager not reset". Derived output
 --- may still fail per view; that is reported truthfully per view while the
---- canonical layer stays atomic. Returns ok(bool), err|nil.
+--- canonical layer stays atomic. Returns ok(bool), err|nil, Outcome.
 function MenuOrderManager:resetAllOrders()
     local txn = ensureTxn()
     for _, view in ipairs(MenuSchema.VIEWS) do
         txn:resetView(view)
     end
-    in_commit = true
-    local outcome = CommitPipeline.commitAndApply(txn, {
+    local outcome = commitWithGuard(txn, {
         get_session = function(v) return sessionFor(v) end,
         invalidate = invalidate,
     })
-    in_commit = false
     ensureTxn()
 
     if not outcome.committed then
         logger.err("ReorderingMenus: failed to persist Reset All:", outcome.error)
-        return false, outcome.error
+        return false, outcome.error, outcome
     end
     for failed_view, write_err in pairs(outcome.failed_views) do
         logger.err("ReorderingMenus: Reset All was saved canonically, but",
@@ -635,9 +711,9 @@ function MenuOrderManager:resetAllOrders()
         for failed_view in pairs(outcome.failed_views) do
             synced_views[failed_view] = nil
         end
-        return false, "saved_needs_regeneration"
+        return false, CommitPipeline.STATUS.NEEDS_REGENERATION, outcome
     end
-    return true
+    return true, nil, outcome
 end
 
 function MenuOrderManager:reloadFromDisk(view)
@@ -657,6 +733,7 @@ function MenuOrderManager:dropSessionState(view)
     sessions[view] = nil
     synced_views[view] = nil
     live_registrations[view] = nil
+    registry_dirty[view] = nil
     backups[view] = nil
     invalidate(view)
     return true
@@ -1419,13 +1496,11 @@ function MenuOrderManager:forgetStaleCustomizations(view)
     -- when no editor save follows (session end, crash, unrelated reads).
     -- Same funnel as every other save: canonical first (one rebase retry),
     -- then materialization of the changed views.
-    in_commit = true
-    local outcome = CommitPipeline.commitAndApply(txn, {
+    local outcome = commitWithGuard(txn, {
         get_session = function(v) return sessionFor(v) end,
         prepare = minimizeIntent,
         invalidate = invalidate,
     })
-    in_commit = false
     ensureTxn()
     if not outcome.committed then
         logger.err("ReorderingMenus: failed to persist stale-GC:", outcome.error)
@@ -1613,14 +1688,14 @@ end
 
 function MenuOrderManager:deleteCustomSubmenu(view, submenu_id)
     local order = getOrderTable(view)
-    local customs = order[CUSTOM_SUBMENUS_KEY]
-    if type(customs) ~= "table" or customs[submenu_id] == nil then
+    local section = ensureTxn():view(view)
+    -- Canonical custom-menu membership is authoritative even when the
+    -- container itself is hidden and therefore absent from the projection.
+    if type(section.custom_menus) ~= "table"
+            or section.custom_menus[submenu_id] == nil then
         return false, _("Only created submenus can be deleted.")
     end
-    local content = order[submenu_id]
-    if type(content) ~= "table" then
-        return false, _("Submenu not found.")
-    end
+    local content = type(order[submenu_id]) == "table" and order[submenu_id] or {}
     for __, item_id in ipairs(content) do
         if item_id ~= SEPARATOR_ID then
             return false, _("Move or hide this submenu's items before deleting it.")
@@ -1628,7 +1703,6 @@ function MenuOrderManager:deleteCustomSubmenu(view, submenu_id)
     end
     -- Hidden occupants are invisible in the projection but still belong here:
     -- deleting over their heads would orphan them against a nonexistent home.
-    local section = ensureTxn():view(view)
     for id, record in pairs(section.hidden or {}) do
         if type(record) == "table" and record.origin == submenu_id then
             return false, _("Move or hide this submenu's items before deleting it.")
@@ -1852,14 +1926,6 @@ function MenuOrderManager:prepareForPluginRemoval()
     return restored
 end
 
--- -------------------------------------------------------------------------
--- Reconciliation hooks
--- -------------------------------------------------------------------------
-
-function MenuOrderManager:reconcileMenuItems(_view, _menu_id, _item_ids)
-    return false
-end
-
 function MenuOrderManager:applyLiveReload(ui, _view)
     local sanitizer = function(tree)
         local UIScreens = require("reorderingmenus_ui_screens")
@@ -1874,7 +1940,11 @@ function MenuOrderManager:reconcileRegisteredItems(view, menu_items, providers)
     self:setLiveRegistrations(view, menu_items, providers)
     self:refreshRegistry(view)
     local s = sessions[view]
-
+    -- A refreshed registry can change the derived graph without changing
+    -- canonical intent (new/removed provider row, provider identity flip,
+    -- sorting-hint change). Force the normal sync classifier to compare the
+    -- last checkpoint against this new registry before a no-op save is
+    -- eligible for the fast path.
     -- Untouched provider state follows current provider defaults; no synthetic
     -- lifecycle pins are generated. Stamped user intent remains dormant while
     -- a provider is absent and reactivates when it returns.

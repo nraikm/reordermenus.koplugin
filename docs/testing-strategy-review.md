@@ -1,5 +1,10 @@
 # ReorderingMenus — Testing Strategy Review
 
+> **Historical audit snapshot.** Counts, failures, recommendations, and tier
+> defaults below record the state observed during that review. They are not
+> current release evidence. `run_tests.sh` is the authoritative tier
+> definition; the README documents current invocation and replay commands.
+
 **Ground truth for every number below:** I ran these suites on this machine (KOReader.app bundled luajit) while writing this review, not from the README.
 
 ---

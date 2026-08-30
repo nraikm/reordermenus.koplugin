@@ -1,4 +1,8 @@
--- # semantic_diff replacement plan for stageList (for the integration agent)
+# semantic_diff replacement plan for stageList (historical)
+
+> **Historical implementation plan.** Obsolete field names and line references
+> below are not the current persistence contract; see `docs/architecture.md`
+> and `docs/migration-policy.md`.
 
 Status: implemented, tested (`tests/test_semantic_ordering_unit.lua`,
 6287 assertions, plus legacy `tests/test_semantic_diff_unit.lua` 20/0 and

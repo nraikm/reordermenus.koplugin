@@ -37,6 +37,8 @@ local UIScreens = require("reorderingmenus_ui_screens")
 local IntentStore = require("reorderingmenus_intent_store")
 local NativeWriter = require("reorderingmenus_native_writer")
 local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local CommitPipeline = require("reorderingmenus_commit_pipeline")
+local Registry = require("reorderingmenus_registry")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)
@@ -231,6 +233,34 @@ do
         "F6: actual committed generation reported")
 end
 
+print("\n--- F6b: missing registry is an explicit regeneration failure ---")
+do
+    wipe_all()
+    local txn = IntentStore.openTransaction()
+    txn:setHidden("reader", "opds", {
+        provider = "stock", origin = "search",
+    })
+    txn:setHidden("filemanager", "opds", {
+        provider = "stock", origin = "search",
+    })
+    local reader_reg = Registry.buildFromData(
+        KoreaderAdapter.getDefaultOrder("reader"), {}, {})
+    local outcome = CommitPipeline.commitAndApply(txn, {
+        get_session = function(view)
+            if view == "reader" then return { reg = reader_reg } end
+            return nil
+        end,
+    })
+    assert_true(outcome.committed,
+        "F6b: canonical changes commit before derived regeneration")
+    assert_eq(outcome.status, CommitPipeline.STATUS.NEEDS_REGENERATION,
+        "F6b: missing registry yields regeneration status")
+    assert_true(outcome.failed_views.filemanager ~= nil,
+        "F6b: changed view without registry is named explicitly")
+    assert_true(outcome.failed_views.reader == nil,
+        "F6b: changed view with registry still materializes")
+end
+
 print("\n--- F7: Reset All atomic at the intent layer ---")
 do
     wipe_all()
@@ -256,7 +286,7 @@ do
         end
         return real_remove(path)
     end
-    local ok_reset, reset_err = MenuOrderManager:resetAllOrders()
+    local ok_reset, reset_err, reset_outcome = MenuOrderManager:resetAllOrders()
     armed = false
     os.remove = real_remove
 
@@ -265,6 +295,12 @@ do
         "F7: partial derived failure reported truthfully")
     assert_eq(reset_err, "saved_needs_regeneration",
         "F7: error names regeneration need")
+    assert_eq(reset_outcome.status, "saved_needs_regeneration",
+        "F7: Reset All preserves the pipeline's structured outcome")
+    assert_true(reset_outcome.committed,
+        "F7: structured outcome records the durable canonical commit")
+    assert_true(reset_outcome.failed_views.reader ~= nil,
+        "F7: structured outcome identifies the failed derived view")
     local reader_section = IntentStore.view("reader")
     local fm_section = IntentStore.view("filemanager")
     assert_eq(next(reader_section.hidden), nil,

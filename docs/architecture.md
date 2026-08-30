@@ -44,7 +44,7 @@ When KOReader or a third-party plugin updates:
 
 | Tier | File / Storage Location | Role & Authority | Mutability & Lifecycle |
 |---|---|---|---|
-| **Canonical Intent** | `settings/reorderingmenus_intent.lua` | **Authoritative source of truth**. Contains sparse user operations (moves, anchors, visibility toggles, created submenus, sequence eras). | Committed first on user action via atomic replacement. |
+| **Canonical Intent** | `settings/reorderingmenus_intent.lua` | **Authoritative source of truth**. Contains sparse user operations (moves, anchors, visibility toggles, created submenus, per-entry provider stamps, divider anchors). | Committed first on user action via atomic replacement. |
 | **Derived Native Overrides** | `settings/reader_menu_order.lua`<br>`settings/filemanager_menu_order.lua` | **Derived projection** consumed by KOReader's stock `MenuSorter`. Contains only menus that deviate from stock. | Generated from canonical intent + current registry. Regenerated if missing, corrupt, or lagging. |
 | **Reconciliation Metadata** | `settings/reorderingmenus_materialization.lua` | **Non-canonical cache & checkpoint**. Stores previous emission fingerprints and bound `intent_gen` to distinguish plugin emissions from hand edits. | Ephemeral checkpoint. Can be safely deleted; regenerated on next run. |
 | **Plugin Preferences** | `settings/settings.reader.lua` (`["reorderingmenus"]`) | Presentation toggles (e.g., `hidden_in_place`, hidden built-in presets). | Independent user UI preferences. |
@@ -65,7 +65,8 @@ $$\text{Graph} = \text{resolve}(\text{Registry}, \text{Intent})$$
    - Applies custom submenu definitions and parent overrides.
    - Places explicitly moved items into their destination menus.
    - Evaluates single-item anchors (`position_override`) relative to surviving neighbor items.
-   - Applies bulk sequence eras (`sequence_eras`) for sorted or staged lists.
+   - Applies bulk sequences from `order_override.entries`; every entry carries its own provider stamp.
+   - Applies divider placement only from anchored `separators` records.
    - Attaches uncustomized items to their default homes or hint destinations (implicit anchoring).
    - Isolates hidden items into `KOMenu:disabled` or menu-local hidden records.
 3. **Validator (`reorderingmenus_validator.lua`)**: Checks structural invariants before any commit or disk write.
@@ -85,7 +86,7 @@ The materializer and validator strictly enforce the following invariants:
    - If a plugin is uninstalled, its customized records become dormant **ghost records**. They do not contaminate or block new plugins that contribute the same ID.
    - Reinstalling the original plugin seamlessly restores the customized placement.
 5. **Custom Submenu Ownership**: User-created submenus are registered under `KOMenu:custom_submenus` with unique IDs (`custom_sub_<uuid>`). Deleting a custom submenu is permitted only when it is completely empty of visible and hidden items.
-6. **Raw vs Semantic Exclusivity**: If an external hand edit cannot be losslessly translated into semantic anchors, it is preserved as an isolated scoped override rather than corrupting canonical intent.
+6. **Raw vs Semantic Exclusivity**: If an external hand edit cannot be losslessly translated into semantic anchors, it is preserved as an isolated scoped override. A raw level owns that level exclusively: load and mutation paths remove contradictory bulk-order and divider records.
 
 ---
 

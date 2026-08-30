@@ -114,17 +114,19 @@ done
 
 # --- 5. no unexpected plugin-local dependencies -------------------------------
 # Every require("reorderingmenus_*") literal in the tracked tree must resolve
-# to a manifested runtime file. Catches a committed require of a module that
-# was never git-added — the exact "works in dev tree, missing from ZIP" bug.
+# to a TRACKED REQUIRED runtime file. Optional classification is not enough:
+# optional files may be absent, while a require literal is unconditional.
 LOCAL_DEPS="$(grep -rhoE 'require\("reorderingmenus_[a-z_0-9]+"\)' "$SCRATCH/head" \
     | sed -E 's|require\("([a-z_0-9]+)"\)|\1|' | LC_ALL=C sort -u)"
 for dep in $LOCAL_DEPS; do
     depfile="$dep.lua"
     known=0
-    for c in $REQUIRED_RUNTIME $OPTIONAL_DISTRIBUTABLE; do
+    for c in $REQUIRED_RUNTIME; do
         [ "$depfile" = "$c" ] && { known=1; break; }
     done
-    [ "$known" = "1" ] || fail "unexpected runtime dependency: require(\"$dep\") found, but $depfile is not a manifested runtime file (forgot git add?)"
+    [ "$known" = "1" ] || fail "runtime dependency require(\"$dep\") is not classified REQUIRED_RUNTIME"
+    git ls-files --error-unmatch "$depfile" >/dev/null 2>&1 || \
+        fail "runtime dependency $depfile is not tracked in HEAD"
 done
 
 # --- stage ONLY the shipping set from the HEAD extraction ---------------------
@@ -168,3 +170,31 @@ unzip -l "$OUT"
 echo "-------------------------------------------------------------------"
 echo "OK: built $OUT from $(git rev-parse HEAD)"
 echo "    required runtime: $(echo $REQUIRED_RUNTIME | wc -w | tr -d ' ') files, optional shipped: $(unzip -l "$OUT" | grep -c '\.\(png\|md\)$' || true)"
+
+if [ "${VERIFY:-0}" = "1" ]; then
+    echo "-------------------------------------------------------------------"
+    echo "Verifying the just-built archive in an isolated install..."
+    timeout_marker="$SCRATCH/release-smoke-timeout"
+    RM_RELEASE_ZIP="$OUT" RM_REQUIRE_ZIP=1 PLUGIN_DIR="$SCRIPT_DIR" \
+        "$SCRIPT_DIR/run_tests.sh" tests/test_release_install_smoke.lua &
+    smoke_pid=$!
+    (
+        sleep "${VERIFY_TIMEOUT_SECONDS:-60}"
+        if kill -0 "$smoke_pid" 2>/dev/null; then
+            touch "$timeout_marker"
+            kill -TERM "$smoke_pid" 2>/dev/null || true
+            sleep 2
+            kill -KILL "$smoke_pid" 2>/dev/null || true
+        fi
+    ) &
+    watchdog_pid=$!
+    set +e
+    wait "$smoke_pid"
+    smoke_rc=$?
+    set -e
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    [ ! -f "$timeout_marker" ] || fail "clean-install smoke timed out"
+    [ "$smoke_rc" -eq 0 ] || fail "clean-install smoke failed (exit $smoke_rc)"
+    echo "OK: clean-install smoke passed for $OUT"
+fi

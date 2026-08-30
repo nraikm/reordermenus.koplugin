@@ -229,10 +229,12 @@ elseif scen == "K7" then
         "native-only disabled imported as hidden intent")
 elseif scen == "K8" then
     local cm = sec.custom_menus.my_hand_level
+    local parent = sec.parent_override.my_hand_level
     check(cm ~= nil, "unknown level registered as a container")
-    check(cm and (cm.parent == "tools" or cm.parent == "setting"),
-        "container home among claimants (got " .. tostring(cm and cm.parent) .. ")")
-    check(cm and cm.parent ~= "my_hand_level",
+    check(parent and (parent.parent == "tools" or parent.parent == "setting"),
+        "container home among claimants (got "
+            .. tostring(parent and parent.parent) .. ")")
+    check(parent and parent.parent ~= "my_hand_level",
         "container never parented under itself")
     local raw = sec.raw_override.my_hand_level
     local oo = sec.order_override.my_hand_level
@@ -303,12 +305,14 @@ for _, scen in ipairs(scenarios) do
             koreader_root, test_file, scen)
         local pipe = io.popen(cmd)
         local out = pipe:read("*a") or ""
-        pipe:close()
+        local close_ok = pipe:close()
         local world = out:match("WORLD (.+)\n?")
-        if not world then
+        local semantic_failure = out:match("SEMANTIC%-FAIL") ~= nil
+        local child_ok = close_ok == true or close_ok == 0
+        if not world or semantic_failure or not child_ok then
             semantic_ok = false
             note(false, scen .. " trial " .. trial
-                .. " produced no WORLD line (crash or semantic failure)")
+                .. " child failed (exit/semantic/world contract)")
             for line in (out .. "\n"):gmatch("(.-)\n") do
                 if line:match("^SEMANTIC%-FAIL") then print("         " .. line) end
             end

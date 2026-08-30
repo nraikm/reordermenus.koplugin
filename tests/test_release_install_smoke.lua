@@ -17,8 +17,10 @@ Simulates a clean KOReader installation of the release ZIP:
       inside the extraction dir)
   S8  _meta.lua loads under the same restricted path configuration
 
-The ZIP path defaults to dist/reorderingmenus-*.zip (newest match); build
-one first with ./build_release.sh, or override with RM_RELEASE_ZIP.
+The ZIP path must be supplied through RM_RELEASE_ZIP. Release verification
+does this automatically with `VERIFY=1 ./build_release.sh`; refusing an
+implicit dist/ match prevents an old ignored archive from proving a newer
+checkout.
 --]]
 
 local function script_dir()
@@ -72,36 +74,21 @@ print("===============================================================")
 -- locate the release ZIP
 -- ---------------------------------------------------------------------------
 local zip_path = os.getenv("RM_RELEASE_ZIP")
-if not zip_path or zip_path == "" then
-    local dist = project_dir .. "/dist"
-    local best, best_mtime = nil, -1
-    if lfs.attributes(dist, "mode") == "directory" then
-        for entry in lfs.dir(dist) do
-            local full = dist .. "/" .. entry
-            if entry:match("%.zip$") and lfs.attributes(full, "mode") == "file" then
-                local m = lfs.attributes(full, "modification")
-                if m > best_mtime then best, best_mtime = full, m end
-            end
-        end
-    end
-    zip_path = best
-end
-T.assert_true(zip_path and lfs.attributes(zip_path, "mode") == "file",
-    "S1: release ZIP exists" ..
-    (zip_path and (" (" .. zip_path .. ")") or " (none found in dist/)"))
 if not (zip_path and lfs.attributes(zip_path, "mode") == "file") then
     -- No artifact yet: this is a normal state for a plain test battery run
     -- (building a release is a deliberate act). Skip loudly instead of
     -- failing the whole tier; set RM_REQUIRE_ZIP=1 to make absence fatal.
     if os.getenv("RM_REQUIRE_ZIP") == "1" then
+        T.assert_true(false, "S1: RM_RELEASE_ZIP names an existing archive")
         T.summary("release install smoke")
         return
     end
-    print("  [SKIP] build a release first: ./build_release.sh "
-        .. "(or point RM_RELEASE_ZIP at an existing zip)")
+    print("  [SKIP] verify a release with VERIFY=1 ./build_release.sh "
+        .. "or set RM_RELEASE_ZIP explicitly")
     print("=== release install smoke: 0 passed, 0 failed (skipped) ===")
     return
 end
+T.assert_true(true, "S1: release ZIP exists (" .. zip_path .. ")")
 
 -- ---------------------------------------------------------------------------
 -- extract into an empty temp directory
@@ -188,7 +175,7 @@ do
         -- require("reorderingmenus_menuorder_manager"). No settings exist
         -- in a fresh install -> nothing to restore, must return cleanly.
         local ok_call, restored = pcall(
-            adapter_or_err.prepareForPluginRemoval, adapter_or_err)
+            adapter_or_err.prepareForPluginRemoval)
         T.assert_true(ok_call,
             "S6: prepareForPluginRemoval lazy-require path executes"
             .. (ok_call and "" or (" (" .. tostring(restored) .. ")")))

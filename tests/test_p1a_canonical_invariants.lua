@@ -109,11 +109,14 @@ do print("V3/V4: sequences carry unique ids with their era stamps")
         { x1 = "stock" })
     local rec = txn:view(view).order_override.main
     assert_true(rec ~= nil and type(rec.entries) == "table", "record written")
-    assert_eq(#rec.entries, 3, "duplicate id dropped at the boundary")
+    assert_eq(#rec.entries, 2, "duplicate id and divider dropped from sequence")
     assert_eq(rec.entries[1].id, "x1", "first occurrence kept")
     assert_eq(rec.entries[1].provider, "stock", "era stamp rides the entry")
-    assert_true(MenuSchema.isSeparatorEntry(rec.entries[3]),
-        "separator stored as an inline token")
+    local separator
+    for _, candidate in pairs(txn:view(view).separators) do separator = candidate end
+    assert_true(separator and separator.parent == "main"
+            and separator.after == "x2",
+        "separator stored in the sole anchored authority")
     assert_true(txn:view(view).sequence_eras == nil,
         "no parallel era map can exist alongside entries")
     txn:discard()
