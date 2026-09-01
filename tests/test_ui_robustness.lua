@@ -50,9 +50,9 @@ do
 end
 
 local ReaderMenu = require("apps/reader/modules/readermenu")
-local MenuTitles = require("reorderingmenus_menu_titles")
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
+local MenuTitles = require("menu_titles")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
 local ReorderingMenus = require("main")
 local UIManager = require("ui/uimanager")
 

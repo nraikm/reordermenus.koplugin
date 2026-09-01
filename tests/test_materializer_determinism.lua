@@ -52,10 +52,10 @@ local function assert_true(cond, msg)
     else failed = failed + 1; print("  [FAIL] " .. tostring(msg)); io.stdout:flush() end
 end
 
-local Registry = require("reorderingmenus_registry")
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
-local MenuSchema = require("reorderingmenus_menu_schema")
+local Registry = require("registry")
+local Materializer = require("materializer")
+local Validator = require("validator")
+local MenuSchema = require("menu_schema")
 local util = require("util")   --KOReader's table utilities via package.path
 
 local SEPARATOR_ID = MenuSchema.SEPARATOR_ID
@@ -311,9 +311,9 @@ print("=== H1: cache-clear equivalence (manager-level cold/warm) ===")
 do
     -- Manager lens: a warmed projection then a forced-cold reload must
     -- produce identical order tables.
-    local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-    local IntentStore = require("reorderingmenus_intent_store")
-    local UIScreens = require("reorderingmenus_ui_screens")
+    local MenuOrderManager = require("menuorder_manager")
+    local IntentStore = require("intent_store")
+    local UIScreens = require("ui_screens")
 
     local fm_ui = { document = nil, menu = {
         registered_widgets = {},
@@ -375,15 +375,15 @@ do
     -- And once more through an entirely fresh module set (process-shape).
     -- ui_screens must be wiped too: a stale instance would reconcile into
     -- the OLD manager object, not the freshly required one.
-    for _, mod in ipairs({ "reorderingmenus_menuorder_manager",
-                           "reorderingmenus_intent_store",
-                           "reorderingmenus_native_writer",
-                           "reorderingmenus_commit_pipeline",
-                           "reorderingmenus_ui_screens" }) do
+    for _, mod in ipairs({ "menuorder_manager",
+                           "intent_store",
+                           "native_writer",
+                           "commit_pipeline",
+                           "ui_screens" }) do
         package.loaded[mod] = nil
     end
-    MenuOrderManager = require("reorderingmenus_menuorder_manager")
-    UIScreens = require("reorderingmenus_ui_screens")
+    MenuOrderManager = require("menuorder_manager")
+    UIScreens = require("ui_screens")
     UIScreens:reconcileRegisteredItems(plugin, "filemanager", false)
     local fresh_order = MenuOrderManager:loadOrder("filemanager")
     if not util.tableEquals(warm_order, fresh_order) then

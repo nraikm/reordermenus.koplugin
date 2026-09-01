@@ -13,8 +13,8 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
 
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local UIScreens = require("reorderingmenus_ui_screens")
+local KoreaderAdapter = require("koreader_adapter")
+local UIScreens = require("ui_screens")
 
 -- P1B (#11): no ui/plugin/insert_menu call. The old mechanism mutated the
 -- SHARED ui/elements/*_menu_order tables (process-singleton, no duplicate

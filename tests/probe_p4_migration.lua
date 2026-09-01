@@ -17,7 +17,7 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local IntentStore = require("reorderingmenus_intent_store")
+local IntentStore = require("intent_store")
 
 -- Exactly the P4 v0 payload.
 local v0 = {

@@ -2,7 +2,7 @@
 -- Regenerate via the state-machine suite; retire via XPASS review.
 return {
   seed = 23757,
-  signature = "OTHER|reorderingmenus_menuorder_manager.lua: a",
+  signature = "OTHER|menuorder_manager.lua: a",
   history = {
     { op = "apply_preset", args = { ["name"] = "default", } },
   },

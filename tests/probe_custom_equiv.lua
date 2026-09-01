@@ -20,8 +20,8 @@ local UIManager = require("ui/uimanager")
 local MenuSorter = require("ui/menusorter")
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
 local ReorderingMenus = require("main")
-local UIScreens = require("reorderingmenus_ui_screens")
-local Mgr = require("reorderingmenus_menuorder_manager")
+local UIScreens = require("ui_screens")
+local Mgr = require("menuorder_manager")
 
 local view = "filemanager"
 local mock_ui_fm = {

@@ -11,7 +11,7 @@
 --     sequence is left intact and its era stamps keep gating application.
 --   - Returns the list of forgotten ids per view for UI confirmation.
 
-local IntentStore = require("reorderingmenus_intent_store")
+local IntentStore = require("intent_store")
 
 local GhostGC = {}
 

@@ -32,15 +32,15 @@ Built-in layouts are code-defined intent fragments resolved against the
 running installation at apply time.
 --]]
 
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local AtomicWriter = require("reorderingmenus_atomic_writer")
-local DataLoader = require("reorderingmenus_data_loader")
-local Materializer = require("reorderingmenus_materializer")
-local UnicodeFold = require("reorderingmenus_unicode_fold")
-local PluginPrefs = require("reorderingmenus_plugin_prefs")
+local KoreaderAdapter = require("koreader_adapter")
+local AtomicWriter = require("atomic_writer")
+local DataLoader = require("data_loader")
+local Materializer = require("materializer")
+local UnicodeFold = require("unicode_fold")
+local PluginPrefs = require("plugin_prefs")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
-local MenuSchema = require("reorderingmenus_menu_schema")
+local MenuSchema = require("menu_schema")
 local util = require("util")
 local bit = require("bit")
 local _ = require("gettext")
@@ -1137,7 +1137,7 @@ end
 -- P1B: this is an ORDINARY OPERATIONAL PREFERENCE - which entries the user
 -- wants hidden from the preset picker - not layout intent. It therefore
 -- lives in the plugin's G_reader_settings namespace
--- (reorderingmenus_plugin_prefs), NOT in canonical state, NOT in a
+-- (plugin_prefs), NOT in canonical state, NOT in a
 -- preset-dir sidecar file. The legacy ".hidden_builtins.lua" file is
 -- imported once per process on first access, then removed.
 --

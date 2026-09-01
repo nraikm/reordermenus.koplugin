@@ -18,10 +18,10 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
-local UIScreens = require("reorderingmenus_ui_screens")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
+local UIScreens = require("ui_screens")
 
 local VIEW = "filemanager"
 local sd = DataStorage:getSettingsDir()

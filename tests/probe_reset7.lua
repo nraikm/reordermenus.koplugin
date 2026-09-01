@@ -18,9 +18,9 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
+local MenuOrderManager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
 
 local view = "reader"
 local sd = DataStorage:getSettingsDir()
@@ -37,7 +37,7 @@ MenuOrderManager:dropSessionState(view)
 
 -- hide + save WITHOUT any registry session: use a minimal reg through
 -- saveOrder? saveOrder needs a session. Use launch via ui_screens.
-local UIScreens = require("reorderingmenus_ui_screens")
+local UIScreens = require("ui_screens")
 local function launch()
     local ui = { menu = { registered_widgets = {} } }
     UIScreens:reconcileRegisteredItems({ ui = ui }, view, false)
@@ -53,6 +53,6 @@ local section = {
     position_override = {}, order_override = {}, sequence_eras = {},
     custom_menus = {}, separators = {}, raw_override = {}, tab_order = nil,
 }
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
+local Materializer = require("materializer")
+local Validator = require("validator")
 local graph = Materializer.resolve(MenuOrderManager and nil or nil, section)

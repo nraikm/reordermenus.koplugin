@@ -39,11 +39,11 @@ require("main")
 
 local _ = require("gettext")
 local UIManager = require("ui/uimanager")
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
 
 local T = RW.assert_counter()
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local KoreaderAdapter = require("koreader_adapter")
 local settings_dir = DataStorage:getSettingsDir()
 local view = "filemanager"
 local SELF_ID = "reordering_menus"
@@ -82,7 +82,7 @@ local function scenario(name, setup_fn)
     end
     local menu = fresh_launch()
     if os.getenv("R4_DEBUG") then
-        local IS = require("reorderingmenus_intent_store")
+        local IS = require("intent_store")
         local sec = MenuOrderManager:stagedView(view)
         local hidk = {}
         for id in pairs(sec.hidden or {}) do hidk[#hidk+1] = id .. "(ord=" ..
@@ -109,7 +109,7 @@ local function scenario(name, setup_fn)
         local body = f and f:read("*a"); if f then f:close() end
         local out = io.open("/tmp/r4_native.lua", "w")
         if out then out:write(body or "<nil>") out:close() end
-        local IS = require("reorderingmenus_intent_store")
+        local IS = require("intent_store")
         print("DBG-NATIVE-DUMPED canonical hidden setting?",
             tostring((IS.view(view).hidden or {}).setting ~= nil))
     end

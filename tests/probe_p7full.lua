@@ -17,14 +17,14 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
-local UIScreens = require("reorderingmenus_ui_screens")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
+local UIScreens = require("ui_screens")
 
 local sd = DataStorage:getSettingsDir()
 local VIEW = "filemanager"
-local AtomicWriter = require("reorderingmenus_atomic_writer")
+local AtomicWriter = require("atomic_writer")
 local lfs = require("libs/libkoreader-lfs")
 
 local function wipe()
@@ -101,7 +101,7 @@ wipe()
 local defaults = KoreaderAdapter_getDefaultOrder and nil
 local full = {}
 do
-    local d = require("reorderingmenus_koreader_adapter").getDefaultOrder(VIEW)
+    local d = require("koreader_adapter").getDefaultOrder(VIEW)
     for _, id in ipairs(d.search or {}) do
         if id ~= "----------------------------" then full[#full + 1] = id end
     end

@@ -21,7 +21,7 @@ Items whose provider disappeared are simply absent; their persisted intent
 survives in the intent store until they return.
 --]]
 
-local MenuSchema = require("reorderingmenus_menu_schema")
+local MenuSchema = require("menu_schema")
 local ok_util, util = pcall(require, "util")
 
 local function deepCopy(t)
@@ -42,12 +42,14 @@ Registry.RESERVED_KEYS = RESERVED_KEYS
 
 -- Pure constructor: build the registry from explicit inputs (tests inject
 -- these; production resolves them through koreader_adapter). Signature:
---   buildFromData(defaults, registrations, providers, collisions)
+--   buildFromData(defaults, registrations, providers, collisions,
+--                 default_providers)
 --     defaults       view -> ordered id list (stock layout)
 --     registrations  id -> { sorting_hint = ... } live contributions
 --     providers      id -> widget name (attribution)
 --     collisions     id -> { sorted widget names } (>1 entry = contested)
-function Registry.buildFromData(defaults, registrations, providers, collisions)
+function Registry.buildFromData(defaults, registrations, providers, collisions,
+        default_providers)
     local reg = {
         menus = {},
         tab_list = deepCopy(defaults[MenuSchema.MENU_BUTTONS_KEY] or {}),
@@ -101,13 +103,15 @@ function Registry.buildFromData(defaults, registrations, providers, collisions)
         local info = reg.menus[menu_id]
         for index, id in ipairs(info.list) do
             if type(id) == "string" and id ~= MenuSchema.SEPARATOR_ID then
-                addNode(id, "stock", menu_id, index, nil,
+                addNode(id, default_providers and default_providers[id]
+                        or "stock", menu_id, index, nil,
                     info.is_tab and "tab" or (reg.menus[id] and "submenu" or "item"))
             end
         end
     end
     for _, tab_id in ipairs(reg.tab_list) do
-        addNode(tab_id, "stock", MenuSchema.MENU_BUTTONS_KEY, nil, nil, "tab")
+        addNode(tab_id, default_providers and default_providers[tab_id]
+                or "stock", MenuSchema.MENU_BUTTONS_KEY, nil, nil, "tab")
     end
 
     -- Live contributions fill in anything the static defaults cannot know,

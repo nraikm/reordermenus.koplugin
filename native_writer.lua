@@ -23,14 +23,14 @@ process stops between them, generation and fingerprint recovery converges the
 pair on the next startup; no multi-file journal is required.
 --]]
 
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
-local AtomicWriter = require("reorderingmenus_atomic_writer")
-local DataLoader = require("reorderingmenus_data_loader")
-local IntentStore = require("reorderingmenus_intent_store")
-local SemanticDiff = require("reorderingmenus_semantic_diff")
-local MenuSchema = require("reorderingmenus_menu_schema")
+local KoreaderAdapter = require("koreader_adapter")
+local Materializer = require("materializer")
+local Validator = require("validator")
+local AtomicWriter = require("atomic_writer")
+local DataLoader = require("data_loader")
+local IntentStore = require("intent_store")
+local SemanticDiff = require("semantic_diff")
+local MenuSchema = require("menu_schema")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")

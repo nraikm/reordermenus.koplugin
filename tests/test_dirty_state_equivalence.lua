@@ -34,10 +34,10 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local NativeWriter = require("reorderingmenus_native_writer")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local KoreaderAdapter = require("koreader_adapter")
+local NativeWriter = require("native_writer")
 
 local passed, failed = 0, 0
 local function note(cond, msg)
@@ -220,7 +220,7 @@ do
     -- C4: provider appears while "editor open" (session alive)
     local stub = make_stub("churnplug_item", "tools")
     local ui = { menu = { registered_widgets = { stub } } }
-    local UIScreens = require("reorderingmenus_ui_screens")
+    local UIScreens = require("ui_screens")
     UIScreens:reconcileRegisteredItems({ ui = ui }, VIEW, false)
     note(IntentStore.view(VIEW).parent_override.opds ~= nil
         and IntentStore.view(VIEW).parent_override.opds.parent == "tools",

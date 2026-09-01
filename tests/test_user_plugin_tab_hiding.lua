@@ -103,8 +103,8 @@ local function make_mock_ui()
     }
 end
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
 
 local mock_ui_fm = make_mock_ui()
 
@@ -114,8 +114,8 @@ local function wipe_persisted_state()
     os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
     os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_materialization.lua")
     pcall(function()
-        require("reorderingmenus_intent_store").load(true)
-        require("reorderingmenus_native_writer")._resetCaches()
+        require("intent_store").load(true)
+        require("native_writer")._resetCaches()
     end)
     MenuOrderManager:dropSessionState(view)
 end
@@ -129,8 +129,8 @@ end
 
 -- Simulates a KOReader relaunch: every module-level cache is discarded.
 local function simulate_restart()
-    package.loaded["reorderingmenus_menuorder_manager"] = nil
-    package.loaded["reorderingmenus_ui_screens"] = nil
+    package.loaded["menuorder_manager"] = nil
+    package.loaded["ui_screens"] = nil
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
     collectgarbage("collect")
 end
@@ -147,8 +147,8 @@ end
 
 local function rebuild_after_restart(stubs)
     simulate_restart()
-    MenuOrderManager = require("reorderingmenus_menuorder_manager")
-    UIScreens = require("reorderingmenus_ui_screens")
+    MenuOrderManager = require("menuorder_manager")
+    UIScreens = require("ui_screens")
     drop_session_caches(MenuOrderManager)
     return new_menu(stubs)
 end

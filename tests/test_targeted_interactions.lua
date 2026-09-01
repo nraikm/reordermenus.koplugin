@@ -41,9 +41,9 @@ _ = require("gettext")
 require("main")
 
 local World = require("tests.lib.sm_world")
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local KoreaderAdapter = require("koreader_adapter")
 local util = require("util")
 
 local passed, failed = 0, 0
@@ -208,7 +208,7 @@ do
     note(Manager:saveOrder(VIEW), "W: save with " .. W_N .. " pinned items")
     local t_pin = os.clock() - t0
 
-    -- providers vanish -> all ghosts. Per REFERENCE_SEMANTICS.md D1,
+    -- providers vanish -> all ghosts. Per the provider-dormancy contract,
     -- provider-less ghosts RETAIN their projected slot in the model lists
     -- (stock MenuSorter drops them at render because no widget supplies the
     -- item); test_ghost_isolation G1 encodes the same behavior. So the
@@ -411,7 +411,7 @@ do
     -- Discard x2: abandon the staged transaction twice; second must be a
     -- no-op (manager creates a fresh one on next use - the discarded flag
     -- guards reuse per intent_store.lua).
-    local IntentStoreP = require("reorderingmenus_intent_store")
+    local IntentStoreP = require("intent_store")
     local before_discard = canonical_size()
     local txn_p = IntentStoreP.openTransaction()
     txn_p:discard()

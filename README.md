@@ -91,36 +91,20 @@ This unhides all items across both views, ensuring that stock KOReader and other
 
 ## Developer Documentation
 
-For architecture details, structural invariants, compatibility matrices, and developer workflows:
+For architecture details, compatibility boundaries, migrations, and testing:
 
 - [Developer Architecture Documentation](docs/architecture.md) — Explains the canonical sparse user intent model, materialization pipeline, validation, and persistence semantics.
 - [KOReader Compatibility Matrix](docs/compatibility-matrix.md) — Documents runtime defensive workarounds and their exact removal conditions.
 - [Migration & Version Policy](docs/migration-policy.md) — Details schema versioning and upgrade guarantees.
+- [Testing Guide](docs/testing.md) — Covers prerequisites, test tiers, targeted runs, randomized replay, regression fixtures, and release verification.
 
 ### Running Tests
 
-Run the test suite with the LuaJIT bundled with your KOReader installation:
+Run the quick suite with the LuaJIT bundled with your KOReader installation:
 
 ```bash
 ./run_tests.sh
 ```
 
-To run a specific test suite or test tier:
-```bash
-./run_tests.sh tests/test_ui_flows.lua
-TIER=ci ./run_tests.sh
-TIER=nightly FRESH_SEEDS=1 ./run_tests.sh
-SM_SEED_LIST=7919,15838 TIER=nightly ./run_tests.sh
-```
-
-`FRESH_SEEDS=1` prints the exact generated seed list for replay. Promoted
-regression fixtures run as separate deterministic suites.
-
-Build and verify the exact release archive with:
-
-```bash
-VERIFY=1 ./build_release.sh
-```
-
-Verification extracts the just-built ZIP into an isolated plugin directory
-and refuses fallback module resolution from the development checkout.
+See the [Testing Guide](docs/testing.md) for targeted suites, scaled tiers,
+seed replay, fixture handling, and release verification.

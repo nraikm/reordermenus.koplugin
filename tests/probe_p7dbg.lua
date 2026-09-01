@@ -18,10 +18,10 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
-local UIScreens = require("reorderingmenus_ui_screens")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
+local UIScreens = require("ui_screens")
 
 local sd = DataStorage:getSettingsDir()
 local VIEW = "filemanager"
@@ -42,7 +42,7 @@ IntentStore.load(true)
 print("EPOCH after initial load: " .. IntentStore.storeEpoch())
 
 -- plant the P7 payload
-local AtomicWriter = require("reorderingmenus_atomic_writer")
+local AtomicWriter = require("atomic_writer")
 AtomicWriter.writeTable(sd .. "/reorderingmenus_intent.lua", {
     version = 2,
     views = {

@@ -185,11 +185,11 @@ local lfs = require("libs/libkoreader-lfs")
 local util = require("util")
 local _ = require("gettext")
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
+local KoreaderAdapter = require("koreader_adapter")
 
 local VIEW = "filemanager"
 local OTHER = "reader"

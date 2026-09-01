@@ -37,7 +37,7 @@ local _ = require("gettext")
 require("main")
 
 local World = require("tests.lib.sm_world")
-local Manager = require("reorderingmenus_menuorder_manager")
+local Manager = require("menuorder_manager")
 
 local passed, failed = 0, 0
 local function ok(cond, msg)

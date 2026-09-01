@@ -15,7 +15,7 @@ pcall(os.remove, _sd .. "/reorderingmenus_intent.lua")
 pcall(os.remove, _sd .. "/reorderingmenus_materialization.lua")
 
 package.path = "/Users/nr/Development/ReorderingMenus/?.lua;" .. package.path
-local SD = require("reorderingmenus_semantic_diff")
+local SD = require("semantic_diff")
 
 -- Simulated: baseline empty (new custom menu), proposed {"go_to"}
 local kind, err = SD.classify_permutation({}, { "go_to" },

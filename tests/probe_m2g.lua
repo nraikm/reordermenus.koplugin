@@ -17,11 +17,11 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
-local UIScreens = require("reorderingmenus_ui_screens")
-local CommitPipeline = require("reorderingmenus_commit_pipeline")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
+local UIScreens = require("ui_screens")
+local CommitPipeline = require("commit_pipeline")
 
 -- wrap materializeView indirectly by watching clearRecord + writeView
 local origClear = NativeWriter.clearRecord

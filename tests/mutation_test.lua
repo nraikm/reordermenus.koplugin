@@ -78,7 +78,7 @@ local MUTANTS = {
     {
         id = "quarantine-corrupt",
         desc = "quarantine on corrupt canonical intent neutralized",
-        file = "reorderingmenus_intent_store.lua",
+        file = "intent_store.lua",
         find = 'if not parse_error and #destructive > 0 then\n        backup_path = writeBackupBytes(path, "corrupt", raw_text)',
         replace = "if not parse_error and #destructive > 0 then\n        backup_path = nil",
         killer = "test_corrupt_canonical_intent.lua",
@@ -86,7 +86,7 @@ local MUTANTS = {
     {
         id = "dormant-provider",
         desc = "dormant provider intent falsely materializes",
-        file = "reorderingmenus_materializer.lua",
+        file = "materializer.lua",
         find = "local node = reg.nodes[id]\n    local current_provider = node and node.provider or nil\n    if current_provider == nil then return false end",
         replace = "local node = reg.nodes[id]\n    local current_provider = node and node.provider or nil\n    if current_provider == nil then return true end",
         killer = "test_provider_identity.lua",
@@ -94,7 +94,7 @@ local MUTANTS = {
     {
         id = "noop-status",
         desc = "noop commit falsely reports saved",
-        file = "reorderingmenus_commit_pipeline.lua",
+        file = "commit_pipeline.lua",
         find = "if not needs_maintenance then\n            outcome.status = CommitPipeline.STATUS.UNCHANGED",
         replace = "if not needs_maintenance then\n            outcome.status = CommitPipeline.STATUS.SAVED",
         killer = "test_p0_commit_pipeline.lua",
@@ -102,7 +102,7 @@ local MUTANTS = {
     {
         id = "preset-name-validation",
         desc = "preset name traversal validation disabled",
-        file = "reorderingmenus_presets.lua",
+        file = "presets.lua",
         find = "function Presets.saveViewPreset(view, preset_name, intent_section)\n    local clean_name, name_err = cleanPresetName(preset_name)",
         replace = "function Presets.saveViewPreset(view, preset_name, intent_section)\n    local clean_name, name_err = preset_name, nil",
         killer = "test_p1b_preset_semantics.lua",
@@ -110,7 +110,7 @@ local MUTANTS = {
     {
         id = "spent-transaction-gate",
         desc = "discarded transactions expose mutable canonical references",
-        file = "reorderingmenus_intent_store.lua",
+        file = "intent_store.lua",
         find = "return util.tableDeepCopy(source or {})\n    end\n    if type(self.staged[view]) ~= \"table\" then",
         replace = "return source or {}\n    end\n    if type(self.staged[view]) ~= \"table\" then",
         killer = "test_transaction_contract.lua",
@@ -118,7 +118,7 @@ local MUTANTS = {
     {
         id = "raw-order-exclusivity",
         desc = "raw passthrough retains contradictory bulk authority",
-        file = "reorderingmenus_intent_store.lua",
+        file = "intent_store.lua",
         find = "if order_override[menu_id] ~= nil then\n            order_override[menu_id] = nil\n            changed = true",
         replace = "if order_override[menu_id] ~= nil then\n            local _ignored_raw_order = order_override[menu_id]\n            changed = true",
         killer = "test_schema_migration.lua",
@@ -126,7 +126,7 @@ local MUTANTS = {
     {
         id = "missing-registry-report",
         desc = "changed view without a registry is silently skipped",
-        file = "reorderingmenus_commit_pipeline.lua",
+        file = "commit_pipeline.lua",
         find = 'outcome.failed_views[view] = "no registry available"',
         replace = 'local _silently_skipped_view = view',
         killer = "test_p0_commit_pipeline.lua",

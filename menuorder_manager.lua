@@ -38,20 +38,20 @@ local logger = require("logger")
 local util = require("util")
 local _ = require("gettext")
 
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local MenuSchema = require("reorderingmenus_menu_schema")
-local Registry = require("reorderingmenus_registry")
-local IntentStore = require("reorderingmenus_intent_store")
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
-local NativeWriter = require("reorderingmenus_native_writer")
-local SemanticDiff = require("reorderingmenus_semantic_diff")
+local KoreaderAdapter = require("koreader_adapter")
+local MenuSchema = require("menu_schema")
+local Registry = require("registry")
+local IntentStore = require("intent_store")
+local Materializer = require("materializer")
+local Validator = require("validator")
+local NativeWriter = require("native_writer")
+local SemanticDiff = require("semantic_diff")
 local Random = require("random")
-local Presets = require("reorderingmenus_presets")
-local PluginPrefs = require("reorderingmenus_plugin_prefs")
-local GhostGC = require("reorderingmenus_ghost_gc")
-local CommitPipeline = require("reorderingmenus_commit_pipeline")
-local DataLoader = require("reorderingmenus_data_loader")
+local Presets = require("presets")
+local PluginPrefs = require("plugin_prefs")
+local GhostGC = require("ghost_gc")
+local CommitPipeline = require("commit_pipeline")
+local DataLoader = require("data_loader")
 
 local SEPARATOR_ID = MenuSchema.SEPARATOR_ID
 local MENU_BUTTONS_KEY = MenuSchema.MENU_BUTTONS_KEY
@@ -219,7 +219,6 @@ end
 -- -------------------------------------------------------------------------
 
 local function buildRegistry(view, ui)
-    local defaults = getDefaultOrder(view)
     local registrations, providers, collisions
     local injected = live_registrations[view]
     -- An injected table is authoritative even when EMPTY: an empty set
@@ -234,7 +233,17 @@ local function buildRegistry(view, ui)
         registrations, providers, collisions =
             KoreaderAdapter.collectLiveRegistrations(ui)
     end
-    return Registry.buildFromData(defaults, registrations, providers, collisions)
+    local defaults
+    local default_providers
+    if MenuOrderManager.default_orders[view] then
+        defaults = getDefaultOrder(view)
+    else
+        defaults = KoreaderAdapter.refreshLivePluginOrder(view,
+            registrations, providers)
+        default_providers = KoreaderAdapter.getExternalDefaultProviders(view)
+    end
+    return Registry.buildFromData(defaults, registrations, providers, collisions,
+        default_providers)
 end
 
 local function sessionFor(view, ui)
@@ -322,6 +331,7 @@ function MenuOrderManager:refreshRegistry(view, ui)
         synced_views[view] = nil
     end
     s.reg = refreshed
+    s.defaults_identity = defaultsIdentity(view)
     invalidate(view)
     return true
 end
@@ -1928,7 +1938,7 @@ end
 
 function MenuOrderManager:applyLiveReload(ui, _view)
     local sanitizer = function(tree)
-        local UIScreens = require("reorderingmenus_ui_screens")
+        local UIScreens = require("ui_screens")
         return UIScreens:sanitizeLiveMenuTree(tree)
     end
     return KoreaderAdapter.applyLiveReload(ui, sanitizer)

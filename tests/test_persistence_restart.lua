@@ -128,7 +128,7 @@ local mock_ui_fm = {
     registerModule = function(self, name, mod) self[name] = mod end,
 }
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local MenuOrderManager = require("menuorder_manager")
 -- Reset persisted + cached state BEFORE anything is built, so leftover
 -- files from previous runs cannot leak into this session.
 os.remove(DataStorage:getSettingsDir() .. "/" .. view .. "_menu_order.lua")
@@ -142,7 +142,7 @@ local fm_menu = FileManagerMenu:new{ ui = mock_ui_fm }
 mock_ui_fm.menu = fm_menu
 register_stubs(fm_menu)
 
-local UIScreens = require("reorderingmenus_ui_screens")
+local UIScreens = require("ui_screens")
 local ReorderingMenus = require("main")
 
 local plugin = ReorderingMenus:new{ ui = mock_ui_fm }
@@ -198,8 +198,8 @@ print("=== Simulated KOReader restart                              ===")
 print("===============================================================")
 
 -- Drop EVERY in-memory trace of the previous session:
-package.loaded["reorderingmenus_menuorder_manager"] = nil      -- manager module itself
-package.loaded["reorderingmenus_ui_screens"] = nil             -- UI layer binds to fresh manager
+package.loaded["menuorder_manager"] = nil      -- manager module itself
+package.loaded["ui_screens"] = nil             -- UI layer binds to fresh manager
 package.loaded["ui/elements/" .. view .. "_menu_order"] = nil -- cached defaults
 MenuOrderManager.orders[view] = nil            -- working copy
 MenuOrderManager.default_orders[view] = nil    -- defaults cache
@@ -207,8 +207,8 @@ MenuOrderManager.recent_moves[view] = {}       -- session move records
 collectgarbage("collect")
 
 -- Fresh manager instance, exactly like after relaunch.
-MenuOrderManager = require("reorderingmenus_menuorder_manager")
-UIScreens = require("reorderingmenus_ui_screens")
+MenuOrderManager = require("menuorder_manager")
+UIScreens = require("ui_screens")
 
 -- Brand-new FileManagerMenu; plugins re-register before the first build,
 -- mirroring KOReader's startup ordering.

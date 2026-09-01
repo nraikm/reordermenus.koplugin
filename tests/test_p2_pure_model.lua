@@ -28,11 +28,11 @@ local test_path = debug.getinfo(1, "S").source:sub(2)
 local project_dir = test_path:match("^(.*)/tests/[^/]+$") or os.getenv("PLUGIN_DIR") or "/Users/nr/Development/ReorderingMenus"
 package.path = project_dir .. "/?.lua;" .. package.path
 
-local MenuSchema = require("reorderingmenus_menu_schema")
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
-local MenuTitles = require("reorderingmenus_menu_titles")
-local Registry = require("reorderingmenus_registry")
+local MenuSchema = require("menu_schema")
+local Materializer = require("materializer")
+local Validator = require("validator")
+local MenuTitles = require("menu_titles")
+local Registry = require("registry")
 
 local SEP = MenuSchema.SEPARATOR_ID
 local BUTTONS = MenuSchema.MENU_BUTTONS_KEY

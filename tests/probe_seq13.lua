@@ -12,8 +12,8 @@ CanvasContext:init(Device)
 _ = require("gettext")
 require("main")
 local World = require("tests.lib.sm_world")
-local IntentStore = require("reorderingmenus_intent_store")
-local Manager = require("reorderingmenus_menuorder_manager")
+local IntentStore = require("intent_store")
+local Manager = require("menuorder_manager")
 
 -- Run steps 1-12 exactly as before (same biased stepper, same seed).
 local TAB_OPS = { "hide_tab", "reorder_tabs", "upstream_add_tab",

@@ -1,6 +1,6 @@
 --[[-- semantic_diff unit checks (pure, no KOReader env) --]]
 package.path = "/Users/nr/Development/ReorderingMenus/?.lua;" .. package.path
-local SD = require("reorderingmenus_semantic_diff")
+local SD = require("semantic_diff")
 
 local passed, failed = 0, 0
 local function assert_eq(a, e, msg)

@@ -17,7 +17,7 @@ do
         "reorderingmenus_state.lua" }) do pcall(os.remove, _sd .. "/" .. n) end
 end
 
-local Mgr = require("reorderingmenus_menuorder_manager")
+local Mgr = require("menuorder_manager")
 
 for _, view in ipairs({ "reader", "filemanager" }) do
     local ok, sub_id = Mgr:createSubmenu(view, "tools", "Bisect " .. view)

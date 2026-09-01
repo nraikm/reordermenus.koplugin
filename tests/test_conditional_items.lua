@@ -50,10 +50,10 @@ local function assert_eq(actual, expected, msg)
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local Registry = require("reorderingmenus_registry")
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
-local IntentStore = require("reorderingmenus_intent_store")
+local Registry = require("registry")
+local Materializer = require("materializer")
+local Validator = require("validator")
+local IntentStore = require("intent_store")
 local MenuSorter = require("ui/menusorter")
 
 -- Capability-parameterized defaults. `caps` is a set of booleans.

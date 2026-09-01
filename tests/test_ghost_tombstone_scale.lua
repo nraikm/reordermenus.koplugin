@@ -37,10 +37,10 @@ local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)
@@ -154,7 +154,7 @@ do
     MenuOrderManager:saveOrder(view)
 
     local sec = section()
-    -- KNOWN DUAL-RECORD (COORDINATION.md announcement 5, Finding 1): hide
+    -- Known dual-record case: hide
     -- does not retract the pre-hide placement record, so hidden rows ALSO
     -- carry a parent_override. Until production clears placement on hide,
     -- the moved half alone occupies parent_override and the hidden half
@@ -164,7 +164,7 @@ do
     assert_true(count_keys(sec.parent_override) >= ERAS / 2,
         "X1a: every moved era retained as a parent_override ghost")
 
-    -- Dormant-era inertness, as OBSERVED today (REFERENCE_SEMANTICS.md D1):
+    -- Provider-dormancy contract:
     -- moved ghosts DO occupy their preserved home in the emitted lists
     -- (real MenuSorter drops them at render time because no widget serves
     -- them); hidden ghosts must appear ONLY under KOMenu:disabled. If

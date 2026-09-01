@@ -16,7 +16,7 @@ local test_path = debug.getinfo(1, "S").source:sub(2)
 local project_dir = assert(test_path:match("^(.*)/tests/[^/]+$"), "cannot locate plugin directory")
 package.path = project_dir .. "/?.lua;" .. package.path
 
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local KoreaderAdapter = require("koreader_adapter")
 
 local SEP = "----------------------------"
 local MENUSORTER_PATH = os.getenv("KOREADER_DIR")

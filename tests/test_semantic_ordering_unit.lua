@@ -2,7 +2,7 @@
 test_semantic_ordering_unit.lua — PURE ordering-semantics suite.
 
 No KOReader env, no settings dir, no store: exercises ONLY the schema-
-independent semantic layer of reorderingmenus_semantic_diff.lua
+independent semantic layer of semantic_diff.lua
 
   detect_relocation / classify_permutation / apply_operation /
   orders_equivalent / canonical_records_equal / live_orders_equivalent /
@@ -18,7 +18,7 @@ Run: luajit tests/test_semantic_ordering_unit.lua   (any cwd)
 --]]
 
 package.path = "/Users/nr/Development/ReorderingMenus/?.lua;" .. package.path
-local SD = require("reorderingmenus_semantic_diff")
+local SD = require("semantic_diff")
 
 local passed, failed = 0, 0
 local failures = {}

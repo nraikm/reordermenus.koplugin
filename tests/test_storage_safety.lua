@@ -31,11 +31,11 @@ local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
-local Presets = require("reorderingmenus_presets")
-local DataLoader = require("reorderingmenus_data_loader")
+local MenuOrderManager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
+local Presets = require("presets")
+local DataLoader = require("data_loader")
 
 local lfs = require("libs/libkoreader-lfs")
 local view = "filemanager"
@@ -222,7 +222,7 @@ do
     IntentStore.load(true)
     assert_true(IntentStore.isProtected(), "S2b: protection derived")
     MenuOrderManager:dropSessionState(view)
-    local UIScreens = require("reorderingmenus_ui_screens")
+    local UIScreens = require("ui_screens")
     local open_ok, open_err = pcall(function()
         local ui = { menu = { registered_widgets = {} } }
         UIScreens:reconcileRegisteredItems({ ui = ui }, view, false)
@@ -422,7 +422,7 @@ do
     -- reconcileRegisteredItems -> sessionFor -> syncView): must complete,
     -- regenerate derived state, and never crash or misclassify external
     -- state.
-    local UIScreens = require("reorderingmenus_ui_screens")
+    local UIScreens = require("ui_screens")
     local ui = { menu = { registered_widgets = {} } }
     assert_true(UIScreens:reconcileRegisteredItems({ ui = ui }, view, false)
         ~= nil, "S6: startup reconciliation completes")

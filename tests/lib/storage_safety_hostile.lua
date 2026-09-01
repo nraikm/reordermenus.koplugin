@@ -7,7 +7,7 @@ local plugin_dir = os.getenv("PLUGIN_DIR") or "."
 dofile(koreader_dir .. "/setupkoenv.lua")
 package.path = plugin_dir .. "/?.lua;" .. package.path
 
-local DataLoader = require("reorderingmenus_data_loader")
+local DataLoader = require("data_loader")
 local case = arg and arg[1] or ""
 local path = "/tmp/rm_hostile_case.lua"
 local f = assert(io.open(path, "wb"))

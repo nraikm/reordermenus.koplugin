@@ -151,10 +151,10 @@ T.assert_true(chunk_ok and type(plugin_module) == "table",
     "S4: main.lua executes and returns the plugin widget table"
     .. (chunk_ok and "" or (" (" .. tostring(plugin_module) .. ")")))
 
-T.assert_true(type(package.loaded["reorderingmenus_menuorder_manager"]) == "table",
-    "S5: reorderingmenus_menuorder_manager resolved and cached")
-T.assert_true(type(package.loaded["reorderingmenus_ui_screens"]) == "table",
-    "S5: reorderingmenus_ui_screens resolved and cached")
+T.assert_true(type(package.loaded["menuorder_manager"]) == "table",
+    "S5: menuorder_manager resolved and cached")
+T.assert_true(type(package.loaded["ui_screens"]) == "table",
+    "S5: ui_screens resolved and cached")
 
 if type(plugin_module) == "table" then
     T.assert_eq(plugin_module.name, "reorderingmenus",
@@ -166,13 +166,13 @@ end
 -- ---------------------------------------------------------------------------
 do
     local ok_deferred, adapter_or_err =
-        pcall(require, "reorderingmenus_koreader_adapter")
+        pcall(require, "koreader_adapter")
     T.assert_true(ok_deferred and type(adapter_or_err) == "table",
         "S6: koreader_adapter loads under install layout")
     if ok_deferred and type(adapter_or_err) == "table"
             and adapter_or_err.prepareForPluginRemoval then
         -- call WITHOUT the Manager argument: exercises its internal lazy
-        -- require("reorderingmenus_menuorder_manager"). No settings exist
+        -- require("menuorder_manager"). No settings exist
         -- in a fresh install -> nothing to restore, must return cleanly.
         local ok_call, restored = pcall(
             adapter_or_err.prepareForPluginRemoval)
@@ -181,7 +181,7 @@ do
             .. (ok_call and "" or (" (" .. tostring(restored) .. ")")))
     end
 
-    local ok_mgr = pcall(require, "reorderingmenus_menuorder_manager")
+    local ok_mgr = pcall(require, "menuorder_manager")
     T.assert_true(ok_mgr, "S6: lazy menuorder_manager target resolves")
 end
 

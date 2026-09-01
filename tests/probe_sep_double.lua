@@ -12,9 +12,9 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local KoreaderAdapter = require("koreader_adapter")
 
 -- Build a native file whose help list carries a DOUBLED stock separator
 -- (search_menu, ----, ----, report_bug, ...). Simulate: this is what the

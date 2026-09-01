@@ -25,9 +25,9 @@ require("main")
 local FuzzLib = dofile(project_dir .. "/tests/lib/fuzz_lib.lua")
 FuzzLib.boot(project_dir)
 
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local Manager = require("reorderingmenus_menuorder_manager")
-local MenuSchema = require("reorderingmenus_menu_schema")
+local KoreaderAdapter = require("koreader_adapter")
+local Manager = require("menuorder_manager")
+local MenuSchema = require("menu_schema")
 local MenuSorter = require("ui/menusorter")
 local util = require("util")
 
@@ -349,7 +349,13 @@ do
     local g_dormant = Manager:loadOrder(VIEW)
     assert_true(type(g_dormant) == "table", "Order loads cleanly when plugin is disabled")
 
-    -- Re-enable plugin_alpha: state is restored
+    -- Re-enable plugin_alpha: a real plugin init re-applies its idempotent
+    -- menu-order hook after the disabled-provider cache was cleaned.
+    local order_after_enable = require("ui/elements/filemanager_menu_order")
+    if not table_find(order_after_enable["KOMenu:menu_buttons"], "custom_tab_alpha") then
+        table.insert(order_after_enable["KOMenu:menu_buttons"], 1, "custom_tab_alpha")
+    end
+    order_after_enable.custom_tab_alpha = { "alpha_item_1", "alpha_item_2" }
     Manager:setLiveRegistrations(VIEW, regs, provs, colls)
     Manager:refreshRegistry(VIEW)
     local g_restored = Manager:loadOrder(VIEW)

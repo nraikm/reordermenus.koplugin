@@ -16,13 +16,13 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
-local UIScreens = require("reorderingmenus_ui_screens")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
+local UIScreens = require("ui_screens")
 
 -- Patch CommitPipeline to log materializeView calls
-local CommitPipeline = require("reorderingmenus_commit_pipeline")
+local CommitPipeline = require("commit_pipeline")
 local origCommit = CommitPipeline.commitAndApply
 CommitPipeline.commitAndApply = function(txn, options)
     local outcome = origCommit(txn, options)

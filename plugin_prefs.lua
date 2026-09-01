@@ -78,7 +78,7 @@ function Prefs.importLegacyHiddenBuiltins(view, legacy_path, loader)
     if type(legacy_path) ~= "string" then return false end
     local lfs = require("libs/libkoreader-lfs")
     if lfs.attributes(legacy_path, "mode") ~= "file" then return false end
-    local DataLoader = require("reorderingmenus_data_loader")
+    local DataLoader = require("data_loader")
     local load_fn = type(loader) == "function" and loader or DataLoader.loadTable
     local data = load_fn(legacy_path)
     if type(data) ~= "table" then

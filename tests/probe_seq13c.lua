@@ -11,7 +11,7 @@ CanvasContext:init(Device)
 _ = require("gettext")
 require("main")
 local World = require("tests.lib.sm_world")
-local IntentStore = require("reorderingmenus_intent_store")
+local IntentStore = require("intent_store")
 
 local TAB_OPS = { "hide_tab", "reorder_tabs", "upstream_add_tab",
     "upstream_remove_tab", "save_order", "restart", "reset_view",

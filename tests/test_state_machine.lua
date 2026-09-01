@@ -46,9 +46,9 @@ local function assert_true(cond, msg)
     end
 end
 
-local Registry = require("reorderingmenus_registry")
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
+local Registry = require("registry")
+local Materializer = require("materializer")
+local Validator = require("validator")
 local MenuSorter = require("ui/menusorter")
 
 local SEPARATOR_ID = "----------------------------"

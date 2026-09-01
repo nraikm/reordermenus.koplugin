@@ -45,9 +45,9 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
 
-local AtomicWriter = require("reorderingmenus_atomic_writer")
-local DataLoader = require("reorderingmenus_data_loader")
-local MenuSchema = require("reorderingmenus_menu_schema")
+local AtomicWriter = require("atomic_writer")
+local DataLoader = require("data_loader")
+local MenuSchema = require("menu_schema")
 
 -- SCHEMA_VERSION is the on-disk format this build reads AND writes.
 -- History:

@@ -34,8 +34,8 @@ with zero reconciliation, and an explicitly customized item keeps its
 recorded intent while its provider's era still applies.
 --]]
 
-local MenuSchema = require("reorderingmenus_menu_schema")
-local Registry = require("reorderingmenus_registry")
+local MenuSchema = require("menu_schema")
+local Registry = require("registry")
 
 local Materializer = {}
 

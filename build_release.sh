@@ -113,12 +113,19 @@ for f in $REQUIRED_RUNTIME; do
 done
 
 # --- 5. no unexpected plugin-local dependencies -------------------------------
-# Every require("reorderingmenus_*") literal in the tracked tree must resolve
-# to a TRACKED REQUIRED runtime file. Optional classification is not enough:
-# optional files may be absent, while a require literal is unconditional.
-LOCAL_DEPS="$(grep -rhoE 'require\("reorderingmenus_[a-z_0-9]+"\)' "$SCRATCH/head" \
+# Normal basenames lose the old namespace prefix, so the manifest explicitly
+# lists KOReader's external bare-name modules. Every other bare-name require()
+# must resolve to a TRACKED REQUIRED runtime file. Optional classification is
+# not enough: optional files may be absent, while a require literal is
+# unconditional.
+LOCAL_DEPS="$(grep -rhoE 'require\("[a-z_0-9]+"\)' "$SCRATCH/head" \
     | sed -E 's|require\("([a-z_0-9]+)"\)|\1|' | LC_ALL=C sort -u)"
 for dep in $LOCAL_DEPS; do
+    external=0
+    for c in $EXTERNAL_BARE_MODULES; do
+        [ "$dep" = "$c" ] && { external=1; break; }
+    done
+    [ "$external" = "1" ] && continue
     depfile="$dep.lua"
     known=0
     for c in $REQUIRED_RUNTIME; do

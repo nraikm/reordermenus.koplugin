@@ -22,10 +22,10 @@ local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local Manager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
-local IntentStore = require("reorderingmenus_intent_store")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local Manager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
+local IntentStore = require("intent_store")
+local KoreaderAdapter = require("koreader_adapter")
 local util = require("util")
 
 local passed, failed = 0, 0
@@ -654,7 +654,7 @@ function()
             end
         end
     end
-    -- Divergence D1 (REFERENCE_SEMANTICS.md §5): a moved ghost keeps its
+    -- Provider-dormancy boundary: a moved ghost keeps its
     -- configured home in the projection so reinstall restores it; the
     -- contract under test is single-parent retention, not invisibility
     -- (test_ghost_isolation G1 pins the same expectation).

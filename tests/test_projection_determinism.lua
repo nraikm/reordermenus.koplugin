@@ -2,7 +2,7 @@
 test_projection_determinism.lua — PURE materializer determinism suite.
 
 No KOReader env, no settings dir, no store, no native persistence:
-exercises ONLY reorderingmenus_materializer.lua against hand-built
+exercises ONLY materializer.lua against hand-built
 registries and canonical v3 intent sections.
 
 Property invariant under test (semantic-statelessness P0 rule):
@@ -30,9 +30,9 @@ Run: luajit tests/test_projection_determinism.lua        (parent mode)
 
 package.path = "/Users/nr/Development/ReorderingMenus/?.lua;" .. package.path
 
-local MenuSchema = require("reorderingmenus_menu_schema")
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
+local MenuSchema = require("menu_schema")
+local Materializer = require("materializer")
+local Validator = require("validator")
 
 local SEP = MenuSchema.SEPARATOR_ID
 local BUTTONS = MenuSchema.MENU_BUTTONS_KEY

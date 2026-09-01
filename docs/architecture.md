@@ -18,16 +18,16 @@ Menus are materialized at runtime as a pure function of:
        Current live plugin contributions (+ sorting hints)
                          │
                          ▼
-                   BASE REGISTRY                      (reorderingmenus_registry.lua)
+                   BASE REGISTRY                      (registry.lua)
                          │
-      User Intent ───────┼───────────────────────────► MATERIALIZER (reorderingmenus_materializer.lua)
+      User Intent ───────┼───────────────────────────► MATERIALIZER (materializer.lua)
  (reorderingmenus_intent.lua)                          Pure resolve(registry, intent)
                          │
                          ▼
-              VALIDATED MENU GRAPH                    (reorderingmenus_validator.lua)
+              VALIDATED MENU GRAPH                    (validator.lua)
                          │
                          ▼
-          MINIMAL NATIVE OVERRIDES                    (reorderingmenus_native_writer.lua)
+          MINIMAL NATIVE OVERRIDES                    (native_writer.lua)
    (reader_menu_order.lua / filemanager_menu_order.lua)
                          │
                          ▼
@@ -49,6 +49,22 @@ When KOReader or a third-party plugin updates:
 | **Reconciliation Metadata** | `settings/reorderingmenus_materialization.lua` | **Non-canonical cache & checkpoint**. Stores previous emission fingerprints and bound `intent_gen` to distinguish plugin emissions from hand edits. | Ephemeral checkpoint. Can be safely deleted; regenerated on next run. |
 | **Plugin Preferences** | `settings/settings.reader.lua` (`["reorderingmenus"]`) | Presentation toggles (e.g., `hidden_in_place`, hidden built-in presets). | Independent user UI preferences. |
 
+Canonical intent is organized per view into these sparse collections:
+
+| Collection | Purpose |
+|---|---|
+| `hidden` | Hidden item or tab records, stamped with provider identity. |
+| `parent_override` | Explicit item and custom-container parent changes. |
+| `position_override` | Single-item placement anchors. |
+| `order_override` | Explicit item sequences for reordered menus. |
+| `custom_menus` | User-created submenu identities and titles. |
+| `separators` | Anchored divider placement. |
+| `raw_override` | Verbatim fallback for external native edits that cannot be represented semantically. |
+| `tab_order` | Explicit top-level tab order. |
+
+Display text is never used as persistent identity. Ordering and placement are
+keyed by stable item IDs and, where applicable, provider identity.
+
 ---
 
 ## 3. The Materialization Pipeline
@@ -60,8 +76,8 @@ $$\text{Graph} = \text{resolve}(\text{Registry}, \text{Intent})$$
 - No cached "previous graphs" or stateful seeds leak across runs.
 
 ### Pipeline Stages
-1. **Base Registry (`reorderingmenus_registry.lua`)**: Collects stock menu items and live plugin contributions via KOReader's `menu.registerToMainMenu` entries and sorting hints.
-2. **Materializer (`reorderingmenus_materializer.lua`)**:
+1. **Base Registry (`registry.lua`)**: Collects stock menu items and live plugin contributions via KOReader's `menu.registerToMainMenu` entries and sorting hints.
+2. **Materializer (`materializer.lua`)**:
    - Applies custom submenu definitions and parent overrides.
    - Places explicitly moved items into their destination menus.
    - Evaluates single-item anchors (`position_override`) relative to surviving neighbor items.
@@ -69,8 +85,8 @@ $$\text{Graph} = \text{resolve}(\text{Registry}, \text{Intent})$$
    - Applies divider placement only from anchored `separators` records.
    - Attaches uncustomized items to their default homes or hint destinations (implicit anchoring).
    - Isolates hidden items into `KOMenu:disabled` or menu-local hidden records.
-3. **Validator (`reorderingmenus_validator.lua`)**: Checks structural invariants before any commit or disk write.
-4. **Native Writer (`reorderingmenus_native_writer.lua`)**: Emits minimal native Lua tables only for menus that differ from stock defaults.
+3. **Validator (`validator.lua`)**: Checks structural invariants before any commit or disk write.
+4. **Native Writer (`native_writer.lua`)**: Emits minimal native Lua tables only for menus that differ from stock defaults.
 
 ---
 
@@ -87,6 +103,9 @@ The materializer and validator strictly enforce the following invariants:
    - Reinstalling the original plugin seamlessly restores the customized placement.
 5. **Custom Submenu Ownership**: User-created submenus are registered under `KOMenu:custom_submenus` with unique IDs (`custom_sub_<uuid>`). Deleting a custom submenu is permitted only when it is completely empty of visible and hidden items.
 6. **Raw vs Semantic Exclusivity**: If an external hand edit cannot be losslessly translated into semantic anchors, it is preserved as an isolated scoped override. A raw level owns that level exclusively: load and mutation paths remove contradictory bulk-order and divider records.
+7. **History-Free Resolution**: The current registry and canonical intent completely determine the graph. Previous materialized graphs do not participate in resolution.
+8. **Sparse Native Output**: A native menu level is emitted only when its resolved list differs from KOReader's current default derivation.
+9. **Provider Dormancy**: Records for an absent provider remain canonical but do not materialize. A different provider reusing the same ID does not inherit those records; the original provider regains them if it returns.
 
 ---
 
@@ -99,6 +118,11 @@ Persistence follows a strict **commit-first, derive-second** order:
    > **Note on Durability**: Persistence uses **atomic replacement** (file replacement via `os.rename`). It guarantees that readers never observe partially written or truncated files. It does not claim battery-pull fsync hardware durability.
 3. **Derived Native Output**: Minimal native override files (`reader_menu_order.lua`, `filemanager_menu_order.lua`) and sidecar metadata (`reorderingmenus_materialization.lua`) are written via atomic replacement.
 4. **Crash Recovery**: If the system terminates between canonical commit and native write, the next launch detects the generation mismatch via the sidecar's `intent_gen` and rematerializes the native files automatically.
+
+Malformed canonical intent is never silently replaced. The original bytes are
+quarantined, deterministic repairs are reported, and future schema versions
+remain write-protected until explicitly reset or imported. See the
+[Migration & Version Policy](migration-policy.md) for version-specific rules.
 
 ---
 

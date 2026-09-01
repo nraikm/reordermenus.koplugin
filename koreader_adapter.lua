@@ -16,11 +16,11 @@ KOReader internals:
 local DataStorage = require("datastorage")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
-local MenuSchema = require("reorderingmenus_menu_schema")
+local MenuSchema = require("menu_schema")
 local util = require("util")
-local DataLoader = require("reorderingmenus_data_loader")
+local DataLoader = require("data_loader")
 
-local AtomicWriter = require("reorderingmenus_atomic_writer")
+local AtomicWriter = require("atomic_writer")
 
 local KoreaderAdapter = {}
 local SEPARATOR_ID = MenuSchema.SEPARATOR_ID
@@ -43,6 +43,41 @@ local defaults_revision = {}
 -- Baselines must therefore come from an untouched copy captured at first
 -- load, or sparse emission would gradually treat its own output as stock.
 local pristine_defaults = {}
+-- Provider identities for menu placements contributed by external plugins.
+-- These are deliberately kept beside (rather than inside) KOReader's plain
+-- menu-order table: Registry needs to distinguish a plugin-owned default slot
+-- from a stock-owned one so dormant customizations cannot migrate between
+-- providers.
+local external_default_providers = {}
+
+local function pluginProviderStamp(provider)
+    local value = tostring(provider)
+    if value == "stock" or value:find("^plugin:") then return value end
+    return "plugin:" .. value
+end
+
+local function loadStockOrder(view)
+    local loaded
+    local ok, res = pcall(dofile,
+        string.format("frontend/ui/elements/%s_menu_order.lua", view))
+    if ok and type(res) == "table" then
+        loaded = util.tableDeepCopy(res)
+    else
+        local req_ok, req_res = pcall(require,
+            string.format("ui/elements/%s_menu_order", view))
+        if req_ok and type(req_res) == "table" then
+            loaded = util.tableDeepCopy(req_res)
+        end
+    end
+    if not loaded then
+        logger.warn("ReorderingMenus: cannot load default menu order for", view)
+        loaded = {
+            [MenuSchema.MENU_BUTTONS_KEY] = {},
+            [MenuSchema.DISABLED_KEY] = {},
+        }
+    end
+    return loaded
+end
 
 function KoreaderAdapter.getDefaultsRevision(view)
     if not defaults_revision[view] then
@@ -55,21 +90,7 @@ function KoreaderAdapter.getDefaultOrder(view, force_reload)
     if default_orders[view] and not force_reload then
         return util.tableDeepCopy(default_orders[view])
     end
-    local loaded
-    local ok, res = pcall(dofile, string.format("frontend/ui/elements/%s_menu_order.lua", view))
-    if ok and type(res) == "table" then
-        loaded = util.tableDeepCopy(res)
-    else
-        local req_ok, req_res = pcall(require, string.format("ui/elements/%s_menu_order", view))
-        if req_ok and type(req_res) == "table" then loaded = util.tableDeepCopy(req_res) end
-    end
-    if not loaded then
-        logger.warn("ReorderingMenus: cannot load default menu order for", view)
-        loaded = {
-            [MenuSchema.MENU_BUTTONS_KEY] = {},
-            [MenuSchema.DISABLED_KEY] = {},
-        }
-    end
+    local loaded = loadStockOrder(view)
 
     -- Merge plugin-contributed tabs and menu definitions from live module in package.loaded
     local live_mod = package.loaded[string.format("ui/elements/%s_menu_order", view)]
@@ -103,6 +124,119 @@ function KoreaderAdapter.getDefaultOrder(view, force_reload)
     default_orders[view] = util.tableDeepCopy(pristine_defaults[view])
     defaults_revision[view] = (defaults_revision[view] or 0) + 1
     return util.tableDeepCopy(default_orders[view])
+end
+
+-- Reconcile provider-backed menu-order mutations made after our first
+-- defaults snapshot. Bookshelf is the canonical example: its init() requires
+-- ui/elements/filemanager_menu_order, inserts bookshelf_tab into the shared
+-- KOMenu:menu_buttons array, and adds a bookshelf_tab list. Plugin load order
+-- is not an API, so this may happen before OR after Reordering Menus cached
+-- the stock module.
+--
+-- Never copy arbitrary unknown keys from package.loaded here. MenuSorter
+-- overlays user native files onto that same process-lifetime table, so it may
+-- also contain stale custom submenus or hand-authored keys. A root is adopted
+-- only when a currently registered widget supplies that root id and provider;
+-- descendant menu levels are followed only through likewise-live entries.
+function KoreaderAdapter.refreshLivePluginOrder(view, registrations, providers)
+    registrations = type(registrations) == "table" and registrations or {}
+    providers = type(providers) == "table" and providers or {}
+
+    local loaded = loadStockOrder(view)
+    local live_mod = package.loaded[string.format(
+        "ui/elements/%s_menu_order", view)]
+    local live_tabs = type(live_mod) == "table"
+        and live_mod[MenuSchema.MENU_BUTTONS_KEY] or nil
+    local loaded_tabs = loaded[MenuSchema.MENU_BUTTONS_KEY]
+    if type(loaded_tabs) ~= "table" then
+        loaded_tabs = {}
+        loaded[MenuSchema.MENU_BUTTONS_KEY] = loaded_tabs
+    end
+
+    local stock_ids = {}
+    for menu_id, list in pairs(loaded) do
+        if type(menu_id) == "string" then stock_ids[menu_id] = true end
+        if type(list) == "table" then
+            for _, id in ipairs(list) do
+                if type(id) == "string" and id ~= SEPARATOR_ID then
+                    stock_ids[id] = true
+                end
+            end
+        end
+    end
+
+    local adopted_providers = {}
+    local adopted_roots = {}
+    local seen_tabs = {}
+    for _, id in ipairs(loaded_tabs) do seen_tabs[id] = true end
+
+    if type(live_tabs) == "table" then
+        for live_index, tab_id in ipairs(live_tabs) do
+            local provider = type(tab_id) == "string" and providers[tab_id]
+            local is_live_root = provider ~= nil
+                and registrations[tab_id] ~= nil
+                and type(live_mod[tab_id]) == "table"
+                and not KoreaderAdapter.isInReservedNamespace(tab_id)
+            if is_live_root and not stock_ids[tab_id] and not seen_tabs[tab_id] then
+                local target = math.min(live_index, #loaded_tabs + 1)
+                table.insert(loaded_tabs, target, tab_id)
+                seen_tabs[tab_id] = true
+                adopted_roots[#adopted_roots + 1] = tab_id
+                adopted_providers[tab_id] = pluginProviderStamp(provider)
+            end
+        end
+    end
+
+    -- Copy only the reachable provider-backed menu tree. Conditional rows
+    -- absent from addToMainMenu are intentionally omitted until they become
+    -- live; otherwise a static plugin MENU_ORDER would create phantom rows.
+    local queue = util.tableDeepCopy(adopted_roots)
+    local visited = {}
+    local qindex = 1
+    while qindex <= #queue do
+        local menu_id = queue[qindex]
+        qindex = qindex + 1
+        if not visited[menu_id] then
+            visited[menu_id] = true
+            local source = live_mod[menu_id]
+            if type(source) == "table" then
+                local copied = {}
+                for _, id in ipairs(source) do
+                    if id == SEPARATOR_ID then
+                        copied[#copied + 1] = id
+                    elseif type(id) == "string"
+                            and not KoreaderAdapter.isInReservedNamespace(id)
+                            and (stock_ids[id]
+                                or (registrations[id] ~= nil and providers[id] ~= nil)) then
+                        copied[#copied + 1] = id
+                        if not stock_ids[id] then
+                            adopted_providers[id] =
+                                pluginProviderStamp(providers[id])
+                            if type(live_mod[id]) == "table" then
+                                queue[#queue + 1] = id
+                            end
+                        end
+                    end
+                end
+                loaded[menu_id] = copied
+            end
+        end
+    end
+
+    local changed = not util.tableEquals(default_orders[view] or {}, loaded)
+        or not util.tableEquals(external_default_providers[view] or {},
+            adopted_providers)
+    pristine_defaults[view] = util.tableDeepCopy(loaded)
+    default_orders[view] = util.tableDeepCopy(loaded)
+    external_default_providers[view] = adopted_providers
+    if changed or defaults_revision[view] == nil then
+        defaults_revision[view] = (defaults_revision[view] or 0) + 1
+    end
+    return util.tableDeepCopy(default_orders[view]), changed
+end
+
+function KoreaderAdapter.getExternalDefaultProviders(view)
+    return util.tableDeepCopy(external_default_providers[view] or {})
 end
 
 -- -------------------------------------------------------------------------
@@ -179,6 +313,10 @@ end
 function KoreaderAdapter.isStockResident(view, id)
     local defaults = KoreaderAdapter.getDefaultOrder(view)
     if id == "reordering_menus" then return false end
+    if external_default_providers[view]
+            and external_default_providers[view][id] then
+        return false
+    end
     for menu_id, list in pairs(defaults) do
         if menu_id ~= MenuSchema.MENU_BUTTONS_KEY
                 and menu_id ~= MenuSchema.DISABLED_KEY
@@ -194,7 +332,7 @@ end
 function KoreaderAdapter.invalidateNativeModuleCache()
     -- Reset package.loaded for menu orders to an unpolluted baseline (stock + plugin additions + test defaults)
     -- without MenuSorter mergeAndSort user pollution (e.g. disabled items, user custom submenus).
-    local M = package.loaded["reorderingmenus_menuorder_manager"]
+    local M = package.loaded["menuorder_manager"]
     for _, view in ipairs({ "reader", "filemanager" }) do
         local mod = string.format("ui/elements/%s_menu_order", view)
         if package.loaded[mod] ~= nil then
@@ -756,7 +894,7 @@ end
 -- other view half-restored at the intent layer (it is reported truthfully
 -- instead). MenuOrderManager is required lazily to avoid a load cycle.
 function KoreaderAdapter.prepareForPluginRemoval(Manager)
-    local M = Manager or require("reorderingmenus_menuorder_manager")
+    local M = Manager or require("menuorder_manager")
     return M:prepareForPluginRemoval()
 end
 
@@ -775,7 +913,12 @@ end
 --- that callback from broadcastEvent(Event:new("Restart")) to here).
 function KoreaderAdapter.requestRestart(message_text)
     local UIManager = require("ui/uimanager")
-    UIManager:askForRestart(message_text)
+    if UIManager.askForRestart then
+        UIManager:askForRestart(message_text)
+    else
+        local Event = require("ui/event")
+        UIManager:broadcastEvent(Event:new("Restart"))
+    end
     return true
 end
 

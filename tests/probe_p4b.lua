@@ -16,8 +16,8 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 
-local AtomicWriter = require("reorderingmenus_atomic_writer")
-local IntentStore = require("reorderingmenus_intent_store")
+local AtomicWriter = require("atomic_writer")
+local IntentStore = require("intent_store")
 
 local sd = DataStorage:getSettingsDir()
 os.remove(sd .. "/reorderingmenus_intent.lua")

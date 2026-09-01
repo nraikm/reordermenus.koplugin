@@ -54,11 +54,11 @@ local function assert_eq(actual, expected, msg)
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
-local IntentStore = require("reorderingmenus_intent_store")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local NativeWriter = require("reorderingmenus_native_writer")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
+local IntentStore = require("intent_store")
+local KoreaderAdapter = require("koreader_adapter")
+local NativeWriter = require("native_writer")
 
 local view = "filemanager"
 local other_view = "reader"
@@ -101,7 +101,7 @@ do
     -- Spy on the destination while the writer runs: sample its parseability
     -- by wrapping os.rename - everything before the rename must leave the
     -- previous valid file intact.
-    local AtomicWriter = require("reorderingmenus_atomic_writer")
+    local AtomicWriter = require("atomic_writer")
     local rename_calls = 0
     local real_rename = os.rename
     local saw_partial = false

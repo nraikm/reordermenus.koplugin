@@ -41,9 +41,9 @@ FuzzLib.VIEWS = VIEWS
 function FuzzLib.fresh_world(opts)
     opts = opts or {}
     local DataStorage = require("datastorage")
-    local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-    local IntentStore = require("reorderingmenus_intent_store")
-    local Manager = require("reorderingmenus_menuorder_manager")
+    local KoreaderAdapter = require("koreader_adapter")
+    local IntentStore = require("intent_store")
+    local Manager = require("menuorder_manager")
     local lfs = require("libs/libkoreader-lfs")
 
     local sd = DataStorage:getSettingsDir()

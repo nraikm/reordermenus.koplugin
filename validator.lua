@@ -15,7 +15,7 @@ The validator never mutates intent; it repairs the derived graph and
 reports what it had to fix.
 --]]
 
-local MenuSchema = require("reorderingmenus_menu_schema")
+local MenuSchema = require("menu_schema")
 
 local Validator = {}
 

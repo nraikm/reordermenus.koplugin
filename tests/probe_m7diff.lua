@@ -16,7 +16,7 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 
-local SemanticDiff = require("reorderingmenus_semantic_diff")
+local SemanticDiff = require("semantic_diff")
 
 local defaults = dofile("/Applications/KOReader.app/Contents/koreader/frontend/ui/elements/filemanager_menu_order.lua")
 local function without_seps(list)

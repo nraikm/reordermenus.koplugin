@@ -30,11 +30,11 @@ dofile("/Applications/KOReader.app/Contents/koreader/setupkoenv.lua")
 local FuzzLib = dofile(project .. "/tests/lib/fuzz_lib.lua")
 FuzzLib.boot(project)
 
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local Registry = require("reorderingmenus_registry")
-local Materializer = require("reorderingmenus_materializer")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local KoreaderAdapter = require("koreader_adapter")
+local Registry = require("registry")
+local Materializer = require("materializer")
 local util = require("util")
 
 local passed, failed = 0, 0
@@ -297,7 +297,7 @@ do
     if ok_save then
         local list = Manager.listPresets and Manager:listPresets(VIEW) or nil
         _ = list
-        local Presets = require("reorderingmenus_presets")
+        local Presets = require("presets")
         local found = false
         for _, p in ipairs(Presets.listUserPresets(VIEW)) do
             if p.name:find("^na") then found = true end

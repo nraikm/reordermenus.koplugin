@@ -46,11 +46,11 @@ local function assert_eq(actual, expected, msg)
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
-local IntentStore = require("reorderingmenus_intent_store")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local NativeWriter = require("reorderingmenus_native_writer")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
+local IntentStore = require("intent_store")
+local KoreaderAdapter = require("koreader_adapter")
+local NativeWriter = require("native_writer")
 
 local view = "filemanager"
 local settings_dir = DataStorage:getSettingsDir()
@@ -120,7 +120,7 @@ do
     local good_content = read_file(ORDER_FILE)
     local good_sidecar = read_file(SIDECAR_FILE)
 
-    local AtomicWriter = require("reorderingmenus_atomic_writer")
+    local AtomicWriter = require("atomic_writer")
     local real_rename = os.rename
     local temp_seen = {}
     os.rename = function(a, b)
@@ -183,19 +183,19 @@ do
     if require("libs/libkoreader-lfs").attributes(INTENT_FILE, "mode") == "file" then
         disk_intent = dofile(INTENT_FILE)
     end
-    local mem_intent = require("reorderingmenus_intent_store").load()
+    local mem_intent = require("intent_store").load()
     assert_eq(read_file(INTENT_FILE), intent_baseline,
         "IO3: persisted intent unchanged by the failed pipeline")
     -- Staged records survive in-session (they were never committed); a
     -- restart discards them.
     MenuOrderManager:dropSessionState(view)
-    local mem2 = require("reorderingmenus_intent_store").load()
+    local mem2 = require("intent_store").load()
     assert_eq(MenuOrderManager:getParentMenu(view, "opds"), "search",
         "IO3: uncommitted staging discarded like a process restart")
 
     -- Direct contract: Transaction:commit rolls back the in-memory swap
     -- when the durable persist fails.
-    local IS = require("reorderingmenus_intent_store")
+    local IS = require("intent_store")
     local before = util.tableDeepCopy(IS.load().views)
     local probe_before = read_file(INTENT_FILE)
     util.writeToFile = function(...)

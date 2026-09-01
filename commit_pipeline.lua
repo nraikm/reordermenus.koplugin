@@ -28,12 +28,12 @@ loop over the transaction's own changed views.
 
 local logger = require("logger")
 
-local IntentStore = require("reorderingmenus_intent_store")
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
-local NativeWriter = require("reorderingmenus_native_writer")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local MenuSchema = require("reorderingmenus_menu_schema")
+local IntentStore = require("intent_store")
+local Materializer = require("materializer")
+local Validator = require("validator")
+local NativeWriter = require("native_writer")
+local KoreaderAdapter = require("koreader_adapter")
+local MenuSchema = require("menu_schema")
 
 local CommitPipeline = {}
 
@@ -303,7 +303,7 @@ function CommitPipeline.commitAndApply(txn, options)
                 reg = options.sessions[view]
                     and options.sessions[view].reg or nil
             else
-                local Registry = require("reorderingmenus_registry")
+                local Registry = require("registry")
                 local defaults = KoreaderAdapter.getDefaultOrder(view)
                 if defaults then
                     local regs, provs, colls = KoreaderAdapter.collectLiveRegistrations(nil)

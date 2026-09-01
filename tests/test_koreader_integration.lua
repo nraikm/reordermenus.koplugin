@@ -51,10 +51,10 @@ end
 
 local ReaderMenu = require("apps/reader/modules/readermenu")
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local MenuOrderManager = require("menuorder_manager")
 local MenuSorter = require("ui/menusorter")
-local UIScreens = require("reorderingmenus_ui_screens")
-local IntentStore = require("reorderingmenus_intent_store")
+local UIScreens = require("ui_screens")
+local IntentStore = require("intent_store")
 local ReorderingMenus = require("main")
 
 local passed = 0

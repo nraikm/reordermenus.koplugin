@@ -14,9 +14,9 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
-local Manager = require("reorderingmenus_menuorder_manager")
+local Manager = require("menuorder_manager")
 local World = require("tests.lib.sm_world")
-local IntentStore = require("reorderingmenus_intent_store")
+local IntentStore = require("intent_store")
 
 -- Drive a real world to step 47, then hand-run steps 48+.
 local SEED, PRE, POST = 1466206, 47, 14

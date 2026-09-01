@@ -38,7 +38,7 @@ end
 
 local PRELUDE = [[
 require("main")
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
+local MenuOrderManager = require("menuorder_manager")
 local view = "filemanager"
 local function emit(k, v) print("RM_RESULT\t" .. k .. "\t" .. tostring(v)) end
 ]]
@@ -54,7 +54,7 @@ MenuOrderManager:setLiveRegistrations(view,
     { fuzzplugin_item = "fuzzplugin" })
 local order = MenuOrderManager:loadOrder(view)
 local ok_save = MenuOrderManager:saveOrder(view)
-local IntentStore = require("reorderingmenus_intent_store")
+local IntentStore = require("intent_store")
 local s = IntentStore.load()
 s.views.filemanager.hidden["read_timer"] =
     { provider = "stock", origin = "tools", ordinal = 1 }
@@ -86,7 +86,7 @@ emit("p2_read_timer_hidden",
 -- makes reinstall restore the slot - but stock can only render ids some
 -- widget contributes.)
 MenuOrderManager:setLiveRegistrations(view, {}, {})
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local KoreaderAdapter = require("koreader_adapter")
 local merged = KoreaderAdapter.getDefaultOrder(view)
 local native = KoreaderAdapter.readNativeOrder(view)
 for k, v in pairs(native or {}) do merged[k] = v end

@@ -10,8 +10,8 @@ local Device = require("device")
 CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
 
 local view, other = "filemanager", "reader"
 local function clean()

@@ -18,8 +18,8 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
 
 local view = "filemanager"
 print("defaults taps:", table.concat(Manager:getDefaultOrder(view).taps_and_gestures or {}, ","))

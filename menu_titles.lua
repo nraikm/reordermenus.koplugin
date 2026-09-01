@@ -6,7 +6,7 @@ to user-friendly, localized display names and icons.
 local _ = require("gettext")
 local util = require("util")
 local Utf8Proc = require("ffi/utf8proc")
-local MenuSchema = require("reorderingmenus_menu_schema")
+local MenuSchema = require("menu_schema")
 
 local MenuTitles = {}
 

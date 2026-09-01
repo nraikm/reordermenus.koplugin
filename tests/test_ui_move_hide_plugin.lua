@@ -24,8 +24,8 @@ CanvasContext:init(Device)
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
 local ReorderingMenus = require("main")
 
 local passed, failed = 0, 0

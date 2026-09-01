@@ -47,12 +47,12 @@ local function assert_eq(actual, expected, msg)
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local Materializer = require("reorderingmenus_materializer")
-local Validator = require("reorderingmenus_validator")
-local Registry = require("reorderingmenus_registry")
-local IntentStore = require("reorderingmenus_intent_store")
-local UIScreens = require("reorderingmenus_ui_screens")
+local MenuOrderManager = require("menuorder_manager")
+local Materializer = require("materializer")
+local Validator = require("validator")
+local Registry = require("registry")
+local IntentStore = require("intent_store")
+local UIScreens = require("ui_screens")
 
 local view = "filemanager"
 local settings_dir = DataStorage:getSettingsDir()

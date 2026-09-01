@@ -58,9 +58,9 @@ local function drop_manager_caches()
     -- Simulates a KOReader restart: a fresh module pair reloads the persisted
     -- files (orders, defaults, plugin state) instead of session caches.
     -- ui_screens must be dropped alongside so both bind the same new instance.
-    package.loaded["reorderingmenus_menuorder_manager"] = nil
-    package.loaded["reorderingmenus_ui_screens"] = nil
-    MenuOrderManager = require("reorderingmenus_menuorder_manager")
+    package.loaded["menuorder_manager"] = nil
+    package.loaded["ui_screens"] = nil
+    MenuOrderManager = require("menuorder_manager")
 end
 
 local function wipe_state()
@@ -109,7 +109,7 @@ local function anchor_stub(view, stub)
     local mock_ui = {
         menu = { registered_widgets = { stub } },
     }
-    local UIScreens = require("reorderingmenus_ui_screens")
+    local UIScreens = require("ui_screens")
     UIScreens:reconcileRegisteredItems({ ui = mock_ui }, view, true)
 end
 

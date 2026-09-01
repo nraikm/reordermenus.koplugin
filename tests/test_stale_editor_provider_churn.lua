@@ -38,10 +38,10 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
-local UIScreens = require("reorderingmenus_ui_screens")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
+local UIScreens = require("ui_screens")
 
 local passed, failed = 0, 0
 local function note(cond, msg)
@@ -59,7 +59,7 @@ local OTHER = "reader"
 
 -- TEMP-DEBUG: trace non-anchor parent_override writes for churn_x
 do
-  local store = require("reorderingmenus_intent_store")
+  local store = require("intent_store")
   local env = store
   for k, v in pairs(env) do
     if k == "openTransaction" then
@@ -181,7 +181,7 @@ do
     -- no NEW explicit move record may appear for churn_x
     -- Schema v3: registration bookkeeping persists as a TYPED lifecycle
     -- pin (anchor="anchor"), never as a boolean marker or a bare record.
-    local MenuSchema = require("reorderingmenus_menu_schema")
+    local MenuSchema = require("menu_schema")
     local rec = IntentStore.view(VIEW).parent_override.churn_x
     note(rec == nil or MenuSchema.isLifecyclePin(rec),
         "D1b: stale save wrote no explicit move record for the dead row")

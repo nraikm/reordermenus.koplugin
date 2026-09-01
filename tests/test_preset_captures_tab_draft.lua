@@ -32,10 +32,10 @@ local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
-local Presets = require("reorderingmenus_presets")
-local IntentStore = require("reorderingmenus_intent_store")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
+local Presets = require("presets")
+local IntentStore = require("intent_store")
 local util = require("util")
 
 local passed, failed = 0, 0
@@ -61,7 +61,7 @@ local function wipe_all()
 end
 local function restart()
     IntentStore.load(true)
-    require("reorderingmenus_native_writer")._resetCaches()
+    require("native_writer")._resetCaches()
     MenuOrderManager:dropSessionState(view)
     MenuOrderManager:dropSessionState("reader")
 end

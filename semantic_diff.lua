@@ -29,7 +29,7 @@ guarantees that anything representable as a smaller action IS returned as the
 smaller action.
 --]]
 
-local MenuSchema = require("reorderingmenus_menu_schema")
+local MenuSchema = require("menu_schema")
 
 local SemanticDiff = {}
 

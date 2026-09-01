@@ -29,7 +29,7 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local IntentStore = require("reorderingmenus_intent_store")
+local IntentStore = require("intent_store")
 local dump = require("dump")
 
 local passed, failed = 0, 0

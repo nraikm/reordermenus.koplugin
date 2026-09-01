@@ -30,16 +30,16 @@ local UIManager = require("ui/uimanager")
 local util = require("util")
 local _ = require("gettext")
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local MenuTitles = require("reorderingmenus_menu_titles")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
-local CommitPipeline = require("reorderingmenus_commit_pipeline")
-local Presets = require("reorderingmenus_presets")
-local UICompat = require("reorderingmenus_ui_compat")
-local UIEditorModel = require("reorderingmenus_ui_editor_model")
-local UIEditorRegistry = require("reorderingmenus_ui_editor_registry")
-local UnicodeFold = require("reorderingmenus_unicode_fold")
+local MenuOrderManager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local MenuTitles = require("menu_titles")
+local KoreaderAdapter = require("koreader_adapter")
+local CommitPipeline = require("commit_pipeline")
+local Presets = require("presets")
+local UICompat = require("ui_compat")
+local UIEditorModel = require("ui_editor_model")
+local UIEditorRegistry = require("ui_editor_registry")
+local UnicodeFold = require("unicode_fold")
 
 -- KOReader's own bidi/direction helpers (frontend/ui/bidi.lua): used to keep
 -- directional glyphs correct under RTL/mirrored UI layouts.
@@ -265,17 +265,16 @@ end
 
 function UIScreens:promptRestart(msg)
     local message_text = msg or _("Menu order changes have been saved. Would you like to restart KOReader now for all changes to take full effect?")
-    -- Prefer the adapter's native UIManager:askForRestart when supported;
-    -- keep legacy broadcast ConfirmBox fallback for older builds.
-    if KoreaderAdapter.canRestart and KoreaderAdapter.canRestart() then
-        KoreaderAdapter.requestRestart(message_text)
-        return
-    end
     UIManager:show(ConfirmBox:new{
         text = message_text,
         ok_text = _("Restart now"),
         ok_callback = function()
-            UIManager:broadcastEvent(Event:new("Restart"))
+            if KoreaderAdapter.requestRestart then
+                KoreaderAdapter.requestRestart()
+            else
+                local Event = require("ui/event")
+                UIManager:broadcastEvent(Event:new("Restart"))
+            end
         end,
         cancel_text = _("Restart later"),
     })
@@ -810,6 +809,99 @@ end
 -- manager operations + saveAndApply only.
 -- =========================================================================
 
+-- KOReader's static menu-order files include conditional top-level tabs.
+-- The File Manager's `plus_menu`, for example, is only added to the actual
+-- menu on non-touch devices; touch devices expose the same action as the
+-- separate + button in the file-browser chrome.  Editing the static list
+-- directly therefore produces phantom editor rows which cannot appear in the
+-- live tab bar.
+--
+-- Once KOReader has built the menu, tab_item_table is the authoritative live
+-- top-level set.  Return nil before that first build so direct/test callers
+-- keep the conservative (show everything) behaviour.
+function UIScreens:_getRenderedTopLevelTabs(plugin)
+    local active_plugin = plugin or self.plugin
+    local ui = active_plugin and active_plugin.ui
+    local menu = ui and ui.menu
+    local rendered = menu and menu.tab_item_table
+    if type(rendered) ~= "table" or #rendered == 0 then return nil end
+
+    local ids = {}
+    for _, tab in ipairs(rendered) do
+        if type(tab) == "table" and type(tab.id) == "string" then
+            ids[tab.id] = true
+        end
+    end
+    if next(ids) == nil then return nil end
+    return ids
+end
+
+function UIScreens:_getEditorTabIds(plugin, view)
+    local rendered = self:_getRenderedTopLevelTabs(plugin)
+    local tabs, seen = {}, {}
+    local function add(tab_id)
+        if seen[tab_id] then return end
+        -- Hidden tabs must remain in the editor so they can always be
+        -- restored, even though they are intentionally absent from the live
+        -- rendered set.  All other rows must correspond to a rendered tab.
+        if rendered == nil or rendered[tab_id]
+                or MenuOrderManager:isItemHidden(view, tab_id) then
+            seen[tab_id] = true
+            tabs[#tabs + 1] = tab_id
+        end
+    end
+    for _, tab_id in ipairs(MenuOrderManager:getTabs(view)) do add(tab_id) end
+    for _, tab_id in ipairs(MenuOrderManager:getAllKnownTabs(view)) do add(tab_id) end
+    return tabs
+end
+
+function UIScreens:_mergeEditorTabOrder(view, source_items)
+    local desired = {}
+    local managed = {}
+    for _, sort_item in ipairs(source_items or {}) do
+        local tab_id = sort_item.tab_id
+        if tab_id then
+            managed[tab_id] = true
+            if not MenuOrderManager:isItemHidden(view, tab_id) then
+                desired[#desired + 1] = tab_id
+            end
+        end
+    end
+
+    local merged = {}
+    local desired_index = 1
+    for _, tab_id in ipairs(MenuOrderManager:getTabs(view)) do
+        if managed[tab_id] then
+            local replacement = desired[desired_index]
+            if replacement then
+                merged[#merged + 1] = replacement
+                desired_index = desired_index + 1
+            end
+        else
+            merged[#merged + 1] = tab_id
+        end
+    end
+    while desired_index <= #desired do
+        merged[#merged + 1] = desired[desired_index]
+        desired_index = desired_index + 1
+    end
+    return merged
+end
+
+function UIScreens:_getManagedTabsFromCurrentProjection(view, source_items)
+    local managed = {}
+    for _, sort_item in ipairs(source_items or {}) do
+        if sort_item.tab_id then managed[sort_item.tab_id] = true end
+    end
+    local current = {}
+    for _, tab_id in ipairs(MenuOrderManager:getTabs(view)) do
+        if managed[tab_id] and not MenuOrderManager:isItemHidden(view, tab_id) then
+            current[#current + 1] = tab_id
+        end
+    end
+    return current
+end
+
 function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
     if plugin then self.plugin = plugin end
     view = view or self:getCurrentView(plugin)
@@ -906,15 +998,8 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
 
     local function buildSortItems()
         local items = {}
-        local seen = {}
-        for _, tab_id in ipairs(MenuOrderManager:getTabs(view)) do
-            seen[tab_id] = true
+        for _, tab_id in ipairs(self:_getEditorTabIds(plugin, view)) do
             table.insert(items, makeTabItem(tab_id))
-        end
-        for _, tab_id in ipairs(MenuOrderManager:getAllKnownTabs(view)) do
-            if not seen[tab_id] then
-                table.insert(items, makeTabItem(tab_id))
-            end
         end
         return items
     end
@@ -935,11 +1020,21 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
         end
         return new_tabs
     end
+    -- Merge the editor's rendered-tab ordering back into the complete
+    -- projection. Conditional tabs filtered from this device's editor retain
+    -- their slots and intent, so saving on a touch device cannot remove the
+    -- non-touch File Manager plus tab (or an analogous future KOReader tab).
+    local function fullTabOrderFrom(source_items)
+        return self:_mergeEditorTabOrder(view, source_items)
+    end
+    local function managedTabsFromCurrentProjection(source_items)
+        return self:_getManagedTabsFromCurrentProjection(view, source_items)
+    end
     local function tabs_have_unsaved_changes()
         if not sort_widget or type(sort_widget.item_table) ~= "table" then return false end
         if not id_lists_match(
                 visibleTabsOf(sort_widget.item_table),
-                MenuOrderManager:getTabs(view)) then
+                managedTabsFromCurrentProjection(sort_widget.item_table)) then
             return true
         end
         return not id_lists_match(
@@ -947,7 +1042,7 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
     end
     local function save_tab_model()
         local source_items = (sort_widget and sort_widget.item_table) or sort_items
-        MenuOrderManager:reorderTabs(view, visibleTabsOf(source_items))
+        MenuOrderManager:reorderTabs(view, fullTabOrderFrom(source_items))
         if not self:saveAndApply(plugin, view) then return false end
         if sort_widget then
             sort_widget.marked = 0
@@ -965,7 +1060,8 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
         if not (sort_widget and type(sort_widget.item_table) == "table") then
             return false
         end
-        MenuOrderManager:reorderTabs(view, visibleTabsOf(sort_widget.item_table))
+        MenuOrderManager:reorderTabs(view,
+            fullTabOrderFrom(sort_widget.item_table))
         return true
     end
     local function refreshSortItems()
@@ -2773,7 +2869,7 @@ end
 -- P1B #7: applying a preset is `result = applyPreset(...)` -> present ->
 -- refresh the editor model if needed. The UI performs NO reconciliation,
 -- NO second save, NO extra native write, NO extra reload. Per Agent B's
--- landed backend (COORDINATION.md 2026-08-25), the full-view loadPreset
+-- landed backend, the full-view loadPreset
 -- funnel already commits + materializes, so the historical
 -- reconcileRegisteredItems(plugin, view, true) call after it is REMOVED
 -- (it duplicated committed work). Submenu presets remain

@@ -40,8 +40,8 @@ require("main")
 
 local World = require("tests.lib.sm_world")
 local Shrinker = require("tests.lib.shrinker")
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
 
 local passed, failed = 0, 0
 local function note(cond, msg)

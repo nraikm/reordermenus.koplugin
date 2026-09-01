@@ -46,11 +46,11 @@ local UIManager = require("ui/uimanager")
 local _ = require("gettext")
 require("main")
 
-local MenuOrderManager = require("reorderingmenus_menuorder_manager")
-local UIScreens = require("reorderingmenus_ui_screens")
-local IntentStore = require("reorderingmenus_intent_store")
-local NativeWriter = require("reorderingmenus_native_writer")
-local Presets = require("reorderingmenus_presets")
+local MenuOrderManager = require("menuorder_manager")
+local UIScreens = require("ui_screens")
+local IntentStore = require("intent_store")
+local NativeWriter = require("native_writer")
+local Presets = require("presets")
 
 local view = "filemanager"
 local sd = DataStorage:getSettingsDir()
@@ -105,7 +105,7 @@ local function close_all_windows()
         if w and w.onClose then w:onClose() else UIManager:close(w) end
     end
     UIScreens.plugin = nil
-    local editors = require("reorderingmenus_ui_screens")
+    local editors = require("ui_screens")
     _ = editors
 end
 

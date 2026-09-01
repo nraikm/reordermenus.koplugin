@@ -26,7 +26,7 @@ for i, entry in ipairs(fx.history) do
         print("traceback follows:")
         local ok, err = pcall(function()
             -- direct call path: Manager:savePreset like the op does
-            local Manager = require("reorderingmenus_menuorder_manager")
+            local Manager = require("menuorder_manager")
             Manager:savePreset(w.view, "probe_preset_1")
         end)
         if not ok then print(err) end

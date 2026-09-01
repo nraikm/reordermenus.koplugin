@@ -11,9 +11,9 @@ local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 _ = require("gettext")
 require("main")
-local Manager = require("reorderingmenus_menuorder_manager")
-local IntentStore = require("reorderingmenus_intent_store")
-local KoreaderAdapter = require("reorderingmenus_koreader_adapter")
+local Manager = require("menuorder_manager")
+local IntentStore = require("intent_store")
+local KoreaderAdapter = require("koreader_adapter")
 local util = require("util")
 
 local VIEW = "reader"
