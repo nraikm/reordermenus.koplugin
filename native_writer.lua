@@ -169,6 +169,7 @@ local STATUS = {
     REGENERATED_REGISTRY_DRIFT  = "regenerated_registry_drift",
     REGENERATED_STALE           = "regenerated_stale",
     REGENERATED_WRITER_UPGRADE  = "regenerated_writer_upgrade",
+    REGENERATED_SUSPENDED       = "regenerated_suspended",
     CONVERGED_SPARSE            = "converged_sparse",
     IMPORTED_LEGACY             = "imported_legacy",
     IMPORTED_EXTERNAL           = "imported_external",
@@ -273,6 +274,13 @@ local function loadSidecar()
                     end
                 end
             end
+            -- Suspension marker (set by suspend-for-disable, cleared by the
+            -- resume regeneration). Non-boolean values are corrupt metadata:
+            -- drop the record and let the next sync regenerate from intent.
+            if not bad and record.suspended ~= nil
+                    and type(record.suspended) ~= "boolean" then
+                bad = true
+            end
         end
         if bad then
             data.views[view_name] = nil
@@ -356,6 +364,30 @@ function NativeWriter.clearRecord(view)
     views[view] = nil
     local ok, err = saveSidecar()
     if not ok then views[view] = previous end
+    return ok, err
+end
+
+-- Suspend-for-disable marker. Called when the plugin is being disabled
+-- (stopPlugin): the native override file has just been withdrawn so stock
+-- KOReader falls back to its defaults, while canonical intent is preserved
+-- for a later re-enable. The flag tells the next startup sync that the
+-- file's absence is OURS - not a deliberate user revert - so the world is
+-- regenerated from intent instead of wiping it (see syncView).
+--
+-- No-op (true) when there is nothing withdrawn: no record, or a record
+-- describing an already-absent file. Only marks when on-disk content was
+-- actually removed, keeping empty-emission baselines untouched.
+function NativeWriter.markSuspended(view)
+    local record = loadSidecar().views[view]
+    if not record then return true end
+    local has_content = type(record.structure) == "table"
+        and next(record.structure) ~= nil
+    if not has_content and not KoreaderAdapter.nativeFileExists(view) then
+        return true
+    end
+    record.suspended = true
+    local ok, err = saveSidecar()
+    if not ok then record.suspended = nil end
     return ok, err
 end
 
@@ -866,6 +898,16 @@ function NativeWriter.syncView(view, reg, txn)
 
     if not native and not KoreaderAdapter.nativeFileExists(view) then
         if entry then
+            -- Suspend-for-disable resume: WE withdrew this file (stopPlugin)
+            -- while keeping canonical intent for a later re-enable. The
+            -- absence must regenerate from intent - never wipe it as a user
+            -- revert would. The regeneration checkpoints a fresh record,
+            -- which clears the flag. Checked before every other
+            -- missing-file classification.
+            if entry.suspended then
+                return regenerateForStartup(view, reg, txn,
+                    STATUS.REGENERATED_SUSPENDED)
+            end
             -- Distinguish "the user deleted our file" from "we ourselves did
             -- not write one": when the last materialization was EMPTY (the
             -- derived layout equalled stock, so the sparse writer correctly

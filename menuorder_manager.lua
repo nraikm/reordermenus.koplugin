@@ -1896,6 +1896,45 @@ function MenuOrderManager:copyLayout(from_view, to_view)
     return true
 end
 
+-- Suspend-for-disable (KOReader PluginLoader.stopPlugin hook).
+--
+-- Disabling the plugin must return KOReader's menus to stock: stock
+-- MenuSorter reads the native override files on every build, so withdrawing
+-- them restores default order immediately - even before the prompted
+-- restart. Canonical intent is deliberately PRESERVED, so re-enabling
+-- regenerates the customized layout from it (the sidecar's suspended marker
+-- distinguishes our withdrawal from a deliberate user revert, which would
+-- wipe intent instead; see NativeWriter.syncView).
+--
+-- Deliberately session-preserving: dropping sessions here would re-run the
+-- startup sync in-process and regenerate the files we just withdrew.
+-- Best-effort per view; returns a per-view summary. Never raises.
+function MenuOrderManager:suspendForDisable()
+    local summary = {}
+    for _, view in ipairs(MenuSchema.VIEWS) do
+        local removed, remove_err = KoreaderAdapter.removeNativeOrder(view)
+        local marked, mark_err = true, nil
+        if removed then
+            marked, mark_err = NativeWriter.markSuspended(view)
+        end
+        summary[view] = {
+            removed = removed,
+            remove_error = remove_err,
+            suspended = marked,
+            suspend_error = mark_err,
+        }
+        if not removed then
+            logger.warn("ReorderingMenus: suspend could not withdraw",
+                view, "native order:", remove_err)
+        elseif not marked then
+            logger.warn("ReorderingMenus: suspend could not mark",
+                view, "sidecar:", mark_err)
+        end
+    end
+    KoreaderAdapter.invalidateNativeModuleCache()
+    return summary
+end
+
 -- Restore hidden structural tab containers across all views in ONE semantic operation.
 -- Unhides hazardous containers, commits once, and returns restored ids + status.
 function MenuOrderManager:prepareForPluginRemoval()

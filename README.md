@@ -68,7 +68,13 @@ Applying a preset updates item sequences while keeping your existing visibility 
 
 ## Important Safety & Plugin Removal Note
 
-If you have hidden any top-level menus or tabs and plan to **disable or uninstall** Reordering Menus, use the removal preparation tool first:
+**Disabling** Reordering Menus (via the plugin manager) automatically
+returns Book view and File Manager menus to stock KOReader order on the
+next menu build. Your custom layout is kept safely aside, so
+**re-enabling** restores it exactly as it was.
+
+**Uninstalling** (deleting the plugin folder) runs no plugin code, so use
+the removal preparation tool first if you hid any top-level menus or tabs:
 
 ```text
 Tools → More tools → Reorder menus → Hamburger → Advanced… → Prepare for plugin removal…

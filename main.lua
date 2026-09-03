@@ -54,6 +54,25 @@ function ReorderingMenus:onReaderReady()
     UIScreens:reconcileRegisteredItems(self, "reader", true)
 end
 
+-- KOReader calls stopPlugin when the user disables the plugin in the plugin
+-- manager (before the prompted restart). Withdraw our derived native
+-- overrides so menus fall back to stock, while keeping canonical intent so
+-- re-enabling restores the customized layout. Must never break the disable
+-- flow: fully guarded, best-effort, no UI.
+function ReorderingMenus:stopPlugin()
+    local ok, err = pcall(function()
+        local Manager = require("menuorder_manager")
+        if type(Manager.suspendForDisable) == "function" then
+            Manager:suspendForDisable()
+        end
+    end)
+    if not ok then
+        local logger = require("logger")
+        logger.warn("ReorderingMenus: suspend-for-disable failed:", err)
+    end
+    return true
+end
+
 -- P1B (#5): no onShowFileManager handler. KOReader never emits a
 -- ShowFileManager event anywhere in its frontend (verified against the
 -- bundled source); FileManager plugins are registered synchronously during
