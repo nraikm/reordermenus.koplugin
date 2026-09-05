@@ -43,6 +43,7 @@ local logger = require("logger")
 local MenuSchema = require("menu_schema")
 local util = require("util")
 local bit = require("bit")
+local Placement = require("placement")
 local _ = require("gettext")
 
 -- Positional translation helper (translators can reorder %1/%2/...).
@@ -745,6 +746,21 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
             result.custom_menus[id] = util.tableDeepCopy(custom)
         end
     end
+    -- Centralized safe migration (single authority with editor + resolve):
+    -- legacy presets may carry tab_nesting / unknown_parent / stale parents.
+    -- Drop unsupported placements deterministically; the preset file on disk
+    -- is untouched so user data stays recoverable. No-op when reg absent
+    -- (legacy callers keep old behavior).
+    if reg ~= nil then
+        local ok_san, report = pcall(function()
+            return Placement.sanitizeSection(reg, result)
+        end)
+        if ok_san and report and (#report.dropped_parents > 0
+                or #report.stripped_sequences > 0 or report.tab_order_filtered) then
+            logger.warn("ReorderingMenus: view preset migrated unsupported placements:",
+                "dropped=" .. table.concat(report.dropped_parents, ","))
+        end
+    end
 end
 
 -- -------------------------------------------------------------------------
@@ -1097,6 +1113,9 @@ function Presets.loadSubmenuPreset(view, menu_id, preset_ref, reg, txn, staged_i
         end
     end
 
+    if reg ~= nil then
+        pcall(function() return Placement.sanitizeSection(reg, txn:view(view)) end)
+    end
     return true
 end
 

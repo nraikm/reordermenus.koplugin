@@ -260,6 +260,68 @@ local function hideUnreachableContainers(ctx)
     end
 end
 
+local function removeNestedTabs(ctx)
+    -- Defense in depth for unsupported tab_nesting placements: a top-level
+    -- tab id must never appear as a row inside an ordinary menu list. Such
+    -- a duplicate (tab in bar + nested placeholder with nil text and no
+    -- sub_item_table) crashes the host menu when opened. Materializer
+    -- already ignores tab_nesting overrides at resolve time; this repair
+    -- keeps even hand-built graphs render-safe and deterministic.
+    local tab_set = {}
+    if ctx.reg and type(ctx.reg.tab_list) == "table" then
+        for _, t in ipairs(ctx.reg.tab_list) do tab_set[t] = true end
+    end
+    if ctx.reg and ctx.reg.menus then
+        for id, info in pairs(ctx.reg.menus) do
+            if type(info) == "table" and info.is_tab == true then
+                tab_set[id] = true
+            end
+        end
+    end
+    if next(tab_set) == nil then return end
+    -- Tabs themselves are levels, not rows: never strip the bar.
+    for _, menu_id in ipairs(sortedKeys(ctx.lists)) do
+        local list = ctx.lists[menu_id]
+        if type(list) == "table" then
+            local cleaned = {}
+            for _, id in ipairs(list) do
+                if id ~= SEPARATOR_ID and tab_set[id] then
+                    table.insert(ctx.warnings, string.format(
+                        "tab %s cannot live inside %s; kept in tab bar", id, menu_id))
+                else
+                    table.insert(cleaned, id)
+                end
+            end
+            ctx.lists[menu_id] = cleaned
+        end
+    end
+    -- The bar itself may only name live tabs (legacy tab_order shapes may
+    -- list ordinary submenu ids that can never render as tabs).
+    if type(ctx.tabs) == "table" then
+        local kept = {}
+        for _, id in ipairs(ctx.tabs) do
+            if tab_set[id] then
+                table.insert(kept, id)
+            else
+                table.insert(ctx.warnings, string.format(
+                    "non-tab %s cannot occupy the tab bar; dropped", tostring(id)))
+            end
+        end
+        -- Never emit an empty bar: stock MenuSorter indexes [1] during orphan
+        -- fallback. Restore the live bar order when filtering emptied it.
+        if #kept == 0 and #ctx.tabs > 0 and ctx.reg and type(ctx.reg.tab_list) == "table" then
+            for _, id in ipairs(ctx.reg.tab_list) do
+                if not ctx.hidden[id] then
+                    table.insert(kept, id)
+                end
+            end
+        end
+        -- Reassign in place so ctx.graph.tabs (aliased) observes the repair.
+        for i = #ctx.tabs, 1, -1 do ctx.tabs[i] = nil end
+        for i, id in ipairs(kept) do ctx.tabs[i] = id end
+    end
+end
+
 local function rebuildOwnership(ctx)
     ctx.owner = {}
     for _, menu_id in ipairs(sortedKeys(ctx.lists)) do
@@ -432,6 +494,7 @@ function Validator.validate(graph, reg, intent)
     repairDuplicateOwnership(ctx)
     breakCycles(ctx)
     removeHiddenRows(ctx)
+    removeNestedTabs(ctx)
     hideUnreachableContainers(ctx)
     rebuildOwnership(ctx)
     restoreProtectedItems(ctx)

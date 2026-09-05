@@ -52,6 +52,8 @@ local PluginPrefs = require("plugin_prefs")
 local GhostGC = require("ghost_gc")
 local CommitPipeline = require("commit_pipeline")
 local DataLoader = require("data_loader")
+local Placement = require("placement")
+local Visibility = require("visibility")
 
 local SEPARATOR_ID = MenuSchema.SEPARATOR_ID
 local MENU_BUTTONS_KEY = MenuSchema.MENU_BUTTONS_KEY
@@ -870,8 +872,76 @@ function MenuOrderManager:isItemHidden(view, item_id)
     return Materializer.hiddenApplies(sessionFor(view).reg, section, item_id)
 end
 
+--- Explicit vs inherited visibility (single authority for the UI).
+--- Returns { state, ancestor?, path?, ... } where state is one of
+--- visibility.STATES: visible | explicitly_hidden | hidden_by_ancestor |
+--- unplaced | provider_absent. Never raises: unknown ids report
+--- provider_absent/unplaced rather than erroring.
+function MenuOrderManager:getVisibilityStatus(view, item_id)
+    local s = sessionFor(view)
+    local txn = ensureTxn()
+    local section = txn:view(view)
+    local graph = Materializer.resolve(s.reg, section)
+    local _, validated = Validator.validate(graph, s.reg, section)
+    local ok, st = pcall(function()
+        return Visibility.status(s.reg, section, graph, validated, item_id)
+    end)
+    if ok and type(st) == "table" and st.state then return st end
+    return { state = Visibility.STATES.UNPLACED, id = item_id }
+end
+
+--- Deliberate reveal-path for an item hidden by an ancestor: unhides ONLY
+--- the ancestors on that item's path (nearest first), leaving unrelated
+--- hidden content untouched. Returns true when something staged, false when
+--- there was no hidden ancestor to reveal. Callers still commit via
+--- saveOrder; this stages into the open transaction like any other verb.
+function MenuOrderManager:revealHiddenPath(view, item_id)
+    local st = self:getVisibilityStatus(view, item_id)
+    if not st or st.state ~= Visibility.STATES.HIDDEN_BY_ANCESTOR then
+        return false
+    end
+    local txn = ensureTxn()
+    local staged_any = false
+    -- Path is nearest-first ending at the bar; unhide every explicitly
+    -- hidden ancestor on it. Deterministic order keeps intent bytes stable.
+    local path = type(st.path) == "table" and st.path or {}
+    local ordered = {}
+    for _, anc in ipairs(path) do
+        if anc ~= MENU_BUTTONS_KEY then ordered[#ordered + 1] = anc end
+    end
+    table.sort(ordered, function(a, b) return tostring(a) < tostring(b) end)
+    for _, anc in ipairs(ordered) do
+        if txn:getHidden(view, anc) ~= nil then
+            txn:setHidden(view, anc, nil)
+            staged_any = true
+        end
+    end
+    -- The blocker itself may have been pruned as unreachable without an
+    -- explicit record (stale intermediate container). Nothing more to clear
+    -- there; the child's own explicit record is already gone (otherwise the
+    -- status would be explicitly_hidden). Report staged work truthfully.
+    if staged_any then invalidate(view) end
+    return staged_any
+end
+
 function MenuOrderManager:getDisabledItems(view)
     return util.tableDeepCopy(getOrderTable(view)[DISABLED_KEY] or {})
+end
+
+--- Explicitly hidden ids only (applicable hidden records), excluding
+--- cascade/unplaced/provider-absent rows that merely sit in disabled.
+function MenuOrderManager:getExplicitHiddenIds(view)
+    local txn = ensureTxn()
+    local section = txn:view(view)
+    local reg = sessionFor(view).reg
+    local out = {}
+    for id in pairs(section.hidden or {}) do
+        if Materializer.hiddenApplies(reg, section, id) then
+            out[#out + 1] = id
+        end
+    end
+    table.sort(out, function(a, b) return tostring(a) < tostring(b) end)
+    return out
 end
 
 function MenuOrderManager:getHiddenItemParent(view, item_id)
@@ -916,6 +986,35 @@ function MenuOrderManager:canMoveItemToMenu(view, item_id, from_menu_id, to_menu
     end
     if from_menu_id == to_menu_id then
         return false, _("The item is already in this menu.")
+    end
+    -- Centralized placement/capability gate (single authority with preset
+    -- ingestion and resolve-time migration): top-level tabs cannot be nested
+    -- inside ordinary submenus and non-tabs cannot occupy the tab bar.
+    do
+        local s = sessionFor(view)
+        local txn = ensureTxn()
+        local section = txn and txn:view(view) or nil
+        local ok_place, reason = Placement.canPlace(s and s.reg, section, item_id, to_menu_id)
+        if not ok_place then
+            if reason == Placement.REASONS.TAB_NESTING then
+                return false, _("Tabs stay in the tab bar and cannot be moved into a submenu. Move individual items instead.")
+            elseif reason == Placement.REASONS.NON_TAB_IN_BAR then
+                return false, _("Only tabs can live in the tab bar. Reorder tabs from the top-level editor.")
+            elseif reason == Placement.REASONS.UNKNOWN_PARENT then
+                return false, _("The destination menu is unavailable.")
+            elseif reason == Placement.REASONS.SELF then
+                return false, _("A submenu cannot be moved into itself.")
+            else
+                return false, _("This item cannot be moved to that menu.")
+            end
+        end
+        -- The bar itself is not a regular menu list: tabs are reordered via
+        -- reorderTabs, never via cross-menu moves. Reject tab-bar sources
+        -- here so editor and preset paths agree (presets sanitize the same
+        -- shape at ingest).
+        if from_menu_id == MENU_BUTTONS_KEY or to_menu_id == MENU_BUTTONS_KEY then
+            return false, _("Tabs stay in the tab bar and cannot be moved into a submenu. Move individual items instead.")
+        end
     end
 
     local found_in_source = false
@@ -1266,15 +1365,57 @@ function MenuOrderManager:setItemHidden(view, item_id, is_hidden, current_menu_i
     else
         local hidden_record = txn:getHidden(view, item_id)
         txn:setHidden(view, item_id, nil)
-        -- No placement bookkeeping is needed while hidden (the row is
-        -- invisible either way), so on unhide the recorded home becomes an
-        -- explicit placement when no other home resolves.
-        if Materializer.effectiveParent(s.reg, txn:view(view), item_id) == nil
-                and hidden_record and hidden_record.origin then
-            txn:setParentOverride(view, item_id, {
-                provider = providerStamp(s.reg, item_id),
-                parent = hidden_record.origin,
-            })
+        -- Unhide removes the explicit suppression record idempotently.
+        -- When the item still has no VALID home (nil or an unsupported /
+        -- vanished container from a legacy preset), migrate deterministically
+        -- to a renderable home instead of leaving it unplaced-disabled with
+        -- a misleading "Shown" report. Preference: recorded origin when it
+        -- is a supported placement, else the provider default / hint home,
+        -- else the first live tab. Invalid overrides are dropped so a later
+        -- save/rebuild/restart cannot resurrect the stale suppression.
+        do
+            local section = txn:view(view)
+            local home = Materializer.effectiveParent(s.reg, section, item_id)
+            local home_valid = home ~= nil
+                and Placement.canPlace(s.reg, section, item_id, home)
+            if not home_valid then
+                local candidate = hidden_record and hidden_record.origin or nil
+                local candidate_valid = type(candidate) == "string"
+                    and Placement.canPlace(s.reg, section, item_id, candidate)
+                if candidate_valid then
+                    txn:setParentOverride(view, item_id, {
+                        provider = providerStamp(s.reg, item_id),
+                        parent = candidate,
+                    })
+                else
+                    -- Drop the stale override outright so defaults flow
+                    -- through; an invalid parent must never pin an unhidden
+                    -- row into unplaced-disabled.
+                    if section.parent_override and section.parent_override[item_id] ~= nil then
+                        txn:setParentOverride(view, item_id, nil)
+                    end
+                    local fallback = Registry.getDefaultParent(s.reg, item_id)
+                    if type(fallback) == "string"
+                            and Placement.canPlace(s.reg, section, item_id, fallback) then
+                        -- Defaults apply without a record; nothing to stage.
+                    else
+                        -- Last resort: park under the first live tab so the
+                        -- restored row is reachable. Tabs themselves live in
+                        -- the bar and need no parking.
+                        if not Placement.isTab(s.reg, item_id) then
+                            local tabs = s.reg and s.reg.tab_list or {}
+                            local park = tabs[1]
+                            if type(park) == "string"
+                                    and Placement.canPlace(s.reg, section, item_id, park) then
+                                txn:setParentOverride(view, item_id, {
+                                    provider = providerStamp(s.reg, item_id),
+                                    parent = park,
+                                })
+                            end
+                        end
+                    end
+                end
+            end
         end
     end
 
@@ -2203,6 +2344,22 @@ function MenuOrderManager:loadPreset(view, preset)
             return false, _("Preset not found.")
         end
         Presets.applyUserIntentPreset(view, txn, preset_intent, s.reg)
+        -- Centralized safe migration for legacy presets carrying stale
+        -- parents, tab_nesting, or invalid containers: drop unsupported
+        -- placements deterministically (tab stays in bar). The preset file
+        -- on disk is untouched, so user data stays recoverable.
+        do
+            local ok_san, report = pcall(function()
+                return Placement.sanitizeSection(s.reg, txn:view(view))
+            end)
+            if ok_san and report and (#report.dropped_parents > 0
+                    or #report.stripped_sequences > 0 or report.tab_order_filtered) then
+                logger.warn("ReorderingMenus: preset for", view,
+                    "migrated unsupported placements:",
+                    "dropped parents=" .. table.concat(report.dropped_parents, ","),
+                    "stripped sequences=" .. table.concat(report.stripped_sequences, ","))
+            end
+        end
     end
 
     MenuOrderManager.recent_moves[view] = {}

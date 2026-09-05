@@ -322,6 +322,32 @@ do
     MenuOrderManager:saveOrder(view)
 end
 
+-- -------------------------------------------------------------------------
+print("\n--- Inherited invisibility is truthful (no misleading restore) ---")
+do
+    -- Hide a whole submenu level, then unhide a child alone: the child must
+    -- report hidden_by_ancestor (not visible) until its path is revealed.
+    MenuOrderManager:setItemHidden(view, "more_tools", true, "tools")
+    MenuOrderManager:setItemHidden(view, ITEM_A, true, "more_tools")
+    MenuOrderManager:saveOrder(view)
+    MenuOrderManager:setItemHidden(view, ITEM_A, false, "more_tools")
+    MenuOrderManager:saveOrder(view)
+    local st = MenuOrderManager:getVisibilityStatus(view, ITEM_A)
+    assert_true(type(st) == "table" and st.state == "hidden_by_ancestor",
+        "inherited invisibility reports hidden_by_ancestor (got "
+        .. tostring(st and st.state) .. ")")
+    assert_true(MenuOrderManager:isItemHidden(view, ITEM_A) == false,
+        "explicit flag cleared while effectively hidden")
+    assert_true(MenuOrderManager:revealHiddenPath(view, ITEM_A),
+        "deliberate reveal-path stages ancestors only")
+    MenuOrderManager:saveOrder(view)
+    local st2 = MenuOrderManager:getVisibilityStatus(view, ITEM_A)
+    assert_true(st2.state == "visible", "revealed child reports visible")
+    MenuOrderManager:setItemHidden(view, ITEM_A, false, "more_tools")
+    MenuOrderManager:setItemHidden(view, "more_tools", false, "tools")
+    MenuOrderManager:saveOrder(view)
+end
+
 wipe_state()
 close_all_windows()
 

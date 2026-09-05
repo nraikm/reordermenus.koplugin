@@ -120,6 +120,15 @@ local function defaultParent(reg, id)
 end
 
 -- Where does this id live once intent is applied? Exposed for queries.
+-- Centralized placement safety: an explicit parent that violates the
+-- tab/container capability rules (Placement.canPlace) is IGNORED here and
+-- falls back to defaults. This is the resolve-time safe migration for legacy
+-- presets / hand edits that moved a top-level tab into an ordinary submenu
+-- (or any other unsupported placement): the tab stays in the bar with its
+-- children intact instead of duplicating into a nil-text placeholder that
+-- crashes the host menu when opened. Ingest paths (presets / imports) drop
+-- such records from intent as well; this fallback keeps even unsanitized
+-- worlds render-safe.
 function Materializer.effectiveParent(reg, intent, id)
     local node = reg.nodes[id]
     local is_custom = type(intent.custom_menus) == "table"
@@ -135,9 +144,39 @@ function Materializer.effectiveParent(reg, intent, id)
         end
     end
     if applies then
-        return record.parent
+        local ok_place, reason = true, nil
+        local place_ok, Placement = pcall(require, "placement")
+        if place_ok and Placement and Placement.canPlace then
+            ok_place, reason = Placement.canPlace(reg, intent, id, record.parent)
+        end
+        if ok_place then
+            return record.parent
+        end
+        -- Unsupported STRUCTURAL placements (tab_nesting / non_tab_in_bar /
+        -- self / malformed) fall back to defaults so a tab never duplicates
+        -- into a nested placeholder. Vanished containers (unknown_parent)
+        -- stay dormant: the stale parent is returned verbatim so the row
+        -- cascades to disabled and reappears when its home returns
+        -- (upstream-removal dormancy, locked by promoted fixtures).
+        if reason == "unknown_parent" then
+            return record.parent
+        end
+        -- Otherwise fall through to defaults (safe migration).
     end
-    return defaultParent(reg, id)
+    local fallback = defaultParent(reg, id)
+    if fallback ~= nil then return fallback end
+    -- Orphaned customs have no default home; park deterministically under the
+    -- first valid container so user-created submenus never vanish into
+    -- unplaced-disabled. Leaves without defaults stay unplaced (truthful
+    -- unplaced status) rather than being parked arbitrarily.
+    if is_custom then
+        local place_ok, Placement = pcall(require, "placement")
+        if place_ok and Placement and Placement.firstValidContainer then
+            local park = Placement.firstValidContainer(reg, intent, id)
+            if type(park) == "string" then return park end
+        end
+    end
+    return nil
 end
 
 -- -------------------------------------------------------------------------
@@ -554,10 +593,26 @@ function Materializer.resolve(reg, intent)
         end
     end
 
-    -- Top-level tabs.
+    -- Top-level tabs. Only live tabs may occupy the bar: legacy presets
+    -- may list ordinary submenu ids in tab_order, which can never render as
+    -- tabs. Filter to Placement.isTab so such rows never become phantom tabs.
     local tabs = {}
     local tab_seen = {}
     local base_tabs = intent.tab_order or reg.tab_list
+    do
+        local place_ok, Placement = pcall(require, "placement")
+        local filtered = base_tabs
+        if place_ok and Placement and Placement.filterTabBar then
+            filtered = Placement.filterTabBar(reg, base_tabs)
+            -- When the stored bar names nothing usable (all-filtered legacy
+            -- shape), fall back to the live bar rather than emitting an empty
+            -- bar that stock MenuSorter cannot render (it indexes [1]).
+            if #filtered == 0 and #base_tabs > 0 then
+                filtered = Placement.filterTabBar(reg, reg.tab_list or {})
+            end
+        end
+        base_tabs = filtered
+    end
     for _, tab_id in ipairs(base_tabs) do
         if not hidden[tab_id] and not tab_seen[tab_id] then
             table.insert(tabs, tab_id)

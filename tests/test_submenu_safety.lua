@@ -320,6 +320,41 @@ do
         "S1: customization survives the submenu->leaf change")
 end
 
+print("\n--- T1: top-level tabs cannot be nested (placement gate) ---")
+do
+    wipe_state()
+    launch()
+    local tabs = MenuOrderManager:getTabs(view)
+    local tab_id = tabs[1]
+    assert_true(tab_id ~= nil, "T1: a live tab exists")
+    local can, _ = MenuOrderManager:canMoveItemToMenu(view, tab_id,
+        "KOMenu:menu_buttons", "more_tools")
+    assert_eq(can, false, "T1: tab-into-submenu rejected by editor gate")
+    assert_eq(MenuOrderManager:moveItemToMenu(view, tab_id,
+        "KOMenu:menu_buttons", "more_tools"), false,
+        "T1: tab-into-submenu refused at data layer")
+    -- Direct intent with a nested tab stays render-safe via migration.
+    local IntentStore = require("intent_store")
+    local txn = IntentStore.openTransaction()
+    txn:setParentOverride(view, tab_id, { provider = nil, parent = "more_tools" })
+    local Materializer = require("materializer")
+    local Validator = require("validator")
+    local Registry = require("registry")
+    local s = { reg = Registry.buildFromData(
+        MenuOrderManager:getDefaultOrder(view), {}, {}) }
+    -- Effective parent falls back to the bar (safe migration, no duplicate).
+    local home = Materializer.effectiveParent(s.reg, txn:view(view), tab_id)
+    assert_true(home ~= "more_tools",
+        "T1: nested-tab override ignored at resolve time")
+    local graph = Materializer.resolve(s.reg, txn:view(view))
+    local _, repaired = Validator.validate(graph, s.reg, txn:view(view))
+    local nested = false
+    for _, id in ipairs(repaired.lists["more_tools"] or {}) do
+        if id == tab_id then nested = true end
+    end
+    assert_eq(nested, false, "T1: validator keeps tabs out of submenu lists")
+end
+
 wipe_state()
 
 print(string.format("\n=== %d passed, %d failed ===", passed, failed))

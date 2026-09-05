@@ -1873,8 +1873,33 @@ _("Submenu “%1” deleted."), submenu_title))
                 return false -- hidden => unchecked
             end,
             callback = function()
-                -- Tapping checkbox shows the item again
+                -- Tapping checkbox shows the item again. Truthful restoration:
+                -- when the row stays effectively hidden inside a hidden
+                -- ancestor (or has no valid home), keep it in the hidden
+                -- section and explain the dependency instead of reporting a
+                -- misleading success.
                 MenuOrderManager:setItemHidden(view, this_id, false, menu_id)
+                local ok_st, st = pcall(function()
+                    return MenuOrderManager:getVisibilityStatus(view, this_id)
+                end)
+                local state = (ok_st and st and st.state) or nil
+                if state == "hidden_by_ancestor" and st.ancestor then
+                    local anc_title = self:getDisplayTitle(view, st.ancestor, live_items_by_id)
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("“%1” is no longer hidden by itself, but it is still inside hidden “%2” and stays invisible until that path is shown. Use Hidden items to reveal its containing path."),
+                            self:getDisplayTitle(view, this_id, live_items_by_id), anc_title),
+                    })
+                    -- Keep the row hidden so the editor model matches the
+                    -- projection; the explicit flag is already cleared.
+                    if refresh_func then refresh_func() end
+                    return
+                elseif state ~= nil and state ~= "visible" and state ~= "explicitly_hidden" then
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("“%1” could not be shown yet (%2)."),
+                            self:getDisplayTitle(view, this_id, live_items_by_id), tostring(state)),
+                    })
+                    return
+                end
                 if move_row_within_editor then
                     move_row_within_editor(entry, false)
                 end
@@ -1891,6 +1916,19 @@ _("Shown “%1”."),
                     ok_text = _("Show"),
                     ok_callback = function()
                         MenuOrderManager:setItemHidden(view, this_id, false, menu_id)
+                        local ok_st, st = pcall(function()
+                            return MenuOrderManager:getVisibilityStatus(view, this_id)
+                        end)
+                        local state = (ok_st and st and st.state) or nil
+                        if state == "hidden_by_ancestor" and st.ancestor then
+                            local anc_title = self:getDisplayTitle(view, st.ancestor, live_items_by_id)
+                            UIManager:show(InfoMessage:new{
+                                text = T(_("“%1” is no longer hidden by itself, but it is still inside hidden “%2” and stays invisible until that path is shown."),
+                                    self:getDisplayTitle(view, this_id, live_items_by_id), anc_title),
+                            })
+                            if refresh_func then refresh_func() end
+                            return
+                        end
                         if move_row_within_editor then
                             move_row_within_editor(entry, false)
                         end
@@ -2928,17 +2966,102 @@ function UIScreens:showHiddenItemsManager(plugin, view, on_close_callback)
         local title = self:getDisplayTitle(view, item_id)
         local desc = MenuTitles:getDescription(item_id)
         local label = desc and T(_("%1 (%2)"), title, desc) or title
-
-        table.insert(items, {
-            text = label,
-            help_text = _("Tap to show this item again. It stays where it is placed."),
-            callback = function()
-                MenuOrderManager:setItemHidden(view, item_id, false)
-                if not self:saveAndApply(plugin, view) then return end
-                self:showNotice(T(_("Shown “%1”."), title))
-                refresh()
-            end,
-        })
+        -- Explicit vs inherited invisibility: a child inside a hidden parent
+        -- stays in disabled after its own flag is cleared. Make the
+        -- dependency explicit and offer a deliberate reveal-path that unhides
+        -- ONLY the ancestors on that path (never unrelated hidden content).
+        local st_ok, st = pcall(function()
+            return MenuOrderManager:getVisibilityStatus(view, item_id)
+        end)
+        local state = (st_ok and st and st.state) or nil
+        local ancestor_title = nil
+        if state == "hidden_by_ancestor" and st.ancestor
+                and st.ancestor ~= "KOMenu:menu_buttons" then
+            ancestor_title = self:getDisplayTitle(view, st.ancestor)
+        end
+        if state == "hidden_by_ancestor" and ancestor_title then
+            local path_label = T(_("%1 (inside hidden %2)"), label, ancestor_title)
+            table.insert(items, {
+                text = path_label,
+                help_text = T(_("“%1” is inside hidden “%2”. Show it alone (it stays hidden until its path is revealed) or reveal its containing path."),
+                    title, ancestor_title),
+                callback = function()
+                    UIManager:show(ConfirmBox:new{
+                        text = T(_("“%1” is inside hidden “%2” and will stay hidden until its containing path is shown.\n\nReveal the containing path as well? Only the menus on this item's path are shown; other hidden items stay hidden."),
+                            title, ancestor_title),
+                        ok_text = _("Show path"),
+                        ok_callback = function()
+                            MenuOrderManager:setItemHidden(view, item_id, false)
+                            MenuOrderManager:revealHiddenPath(view, item_id)
+                            if not self:saveAndApply(plugin, view) then return end
+                            self:showNotice(T(_("Shown “%1” with its containing path."), title))
+                            refresh()
+                        end,
+                        cancel_text = _("Show item only"),
+                        cancel_callback = function()
+                            MenuOrderManager:setItemHidden(view, item_id, false)
+                            if not self:saveAndApply(plugin, view) then return end
+                            -- Truthful: the explicit flag is gone but the row
+                            -- stays effectively hidden until its path is shown.
+                            UIManager:show(InfoMessage:new{
+                                text = T(_("“%1” is no longer hidden by itself, but it is still inside hidden “%2” and stays invisible until that path is shown."),
+                                    title, ancestor_title),
+                            })
+                            refresh()
+                        end,
+                    })
+                end,
+            })
+        elseif state == "unplaced" then
+            table.insert(items, {
+                text = T(_("%1 (no valid location)"), label),
+                help_text = _("This item has no valid menu to live in. Showing it restores it to its default location."),
+                callback = function()
+                    MenuOrderManager:setItemHidden(view, item_id, false)
+                    if not self:saveAndApply(plugin, view) then return end
+                    self:showNotice(T(_("Shown “%1”."), title))
+                    refresh()
+                end,
+            })
+        elseif state == "provider_absent" then
+            table.insert(items, {
+                text = T(_("%1 (unavailable)"), label),
+                help_text = _("Its provider is not installed right now. It will return when the provider does."),
+                callback = function()
+                    self:showNotice(T(_("“%1” is unavailable until its provider returns."), title))
+                end,
+            })
+        else
+            table.insert(items, {
+                text = label,
+                help_text = _("Tap to show this item again. It stays where it is placed."),
+                callback = function()
+                    MenuOrderManager:setItemHidden(view, item_id, false)
+                    if not self:saveAndApply(plugin, view) then return end
+                    -- Post-save truth check: saveAndApply succeeded but the
+                    -- row may still be effectively hidden (ancestor). Do not
+                    -- report a misleading successful restoration.
+                    local ok2, st2 = pcall(function()
+                        return MenuOrderManager:getVisibilityStatus(view, item_id)
+                    end)
+                    local state2 = (ok2 and st2 and st2.state) or nil
+                    if state2 == "hidden_by_ancestor" and st2.ancestor then
+                        local anc_title = self:getDisplayTitle(view, st2.ancestor)
+                        UIManager:show(InfoMessage:new{
+                            text = T(_("“%1” is no longer hidden by itself, but it is still inside hidden “%2” and stays invisible until that path is shown."),
+                                title, anc_title),
+                        })
+                    elseif state2 ~= nil and state2 ~= "visible" and state2 ~= "explicitly_hidden" then
+                        UIManager:show(InfoMessage:new{
+                            text = T(_("“%1” could not be shown yet (%2)."), title, tostring(state2)),
+                        })
+                    else
+                        self:showNotice(T(_("Shown “%1”."), title))
+                    end
+                    refresh()
+                end,
+            })
+        end
     end
 
     local dialog
@@ -3077,10 +3200,24 @@ function UIScreens:showSearchResults(plugin, view, query, on_close_callback)
             callback = function()
                 if match.is_hidden then
                     -- Hidden items keep their stable id; showing is
-                    -- id-keyed and keeps the current placement.
+                    -- id-keyed and keeps the current placement. Truthful
+                    -- restoration: an item inside a hidden ancestor stays
+                    -- invisible until its path is revealed.
                     MenuOrderManager:setItemHidden(view, item_id, false)
                     if not self:saveAndApply(plugin, view) then return end
-                    self:showNotice(T(_("Shown “%1”."), title))
+                    local ok_st, st = pcall(function()
+                        return MenuOrderManager:getVisibilityStatus(view, item_id)
+                    end)
+                    local state = (ok_st and st and st.state) or nil
+                    if state == "hidden_by_ancestor" and st.ancestor then
+                        local anc_title = self:getDisplayTitle(view, st.ancestor)
+                        UIManager:show(InfoMessage:new{
+                            text = T(_("“%1” is no longer hidden by itself, but it is still inside hidden “%2” and stays invisible until that path is shown."),
+                                title, anc_title),
+                        })
+                    else
+                        self:showNotice(T(_("Shown “%1”."), title))
+                    end
                     self:showSearchResults(plugin, view, query, on_close_callback)
                 else
                     -- Position resolved from the stable id at action time;

@@ -31,6 +31,7 @@ local DataLoader = require("data_loader")
 local IntentStore = require("intent_store")
 local SemanticDiff = require("semantic_diff")
 local MenuSchema = require("menu_schema")
+local Placement = require("placement")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
@@ -783,10 +784,22 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
                 end
                 -- Membership reconciliation against the whole file: ids listed
                 -- under a non-default parent become explicit moves.
+                -- Centralized placement gate: unsupported claims (tab_nesting
+                -- etc.) are never recorded — the tab stays in the bar. This
+                -- keeps dense legacy files that nested a tab from producing
+                -- a crashing duplicate on import.
                 if not same_layout then
                     for _, id in ipairs(seq) do
                         local node = reg.nodes[id]
-                        if node and node.default_parent
+                        local claim_parent = menu_id
+                        local section_now = txn:view(view)
+                        local ok_claim, claim_reason = Placement.canPlace(reg, section_now, id, claim_parent)
+                        if not ok_claim and claim_reason ~= Placement.REASONS.UNKNOWN_PARENT then
+                            -- Unsupported STRUCTURAL claim (tab_nesting etc.):
+                            -- skip silently; the resolve-time fallback +
+                            -- validator keep the world render-safe. Vanished
+                            -- containers stay recordable (dormancy).
+                        elseif node and node.default_parent
                                 and node.default_parent ~= menu_id
                                 and not disabled[id] then
                             txn:setParentOverride(view, id, {
@@ -814,6 +827,23 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
             origin = findIdLocation(native, id) or (node and node.default_parent),
         })
         imported = imported + 1
+    end
+
+    -- Tabs: the bar may only name live tabs. Filter legacy dense bars that
+    -- list ordinary submenu ids as tabs (unrenderable as tabs).
+    do
+        local section = txn:view(view)
+        if type(section.tab_order) == "table" then
+            local filtered = Placement.filterTabBar(reg, section.tab_order)
+            if #filtered ~= #section.tab_order then
+                if #filtered == 0 then
+                    section.tab_order = nil
+                else
+                    section.tab_order = filtered
+                end
+            end
+        end
+        pcall(function() return Placement.sanitizeSection(reg, section) end)
     end
 
     return imported
@@ -1488,15 +1518,27 @@ end
                 "order; keeping", chosen)
         end
         if not disabled_ids[id] and chosen ~= id then
-            local current = Materializer.effectiveParent(reg, txn:view(view), id)
-            if current ~= chosen then
-                txn:setParentOverride(view, id, {
-                    provider = node and node.provider or nil,
-                    parent = chosen,
-                })
+            local section_now = txn:view(view)
+            -- Centralized placement gate: never record an unsupported
+            -- STRUCTURAL claim (tab_nesting etc.). Vanished containers stay
+            -- recordable (dormancy); the resolve fallback + validator keep
+            -- the world render-safe; the hand edit stays on disk.
+            local ok_claim, claim_reason = Placement.canPlace(reg, section_now, id, chosen)
+            if not ok_claim and claim_reason ~= Placement.REASONS.UNKNOWN_PARENT then
+                logger.warn("ReorderingMenus: ignoring unsupported membership claim",
+                    id, "->", chosen)
+            else
+                local current = Materializer.effectiveParent(reg, section_now, id)
+                if current ~= chosen then
+                    txn:setParentOverride(view, id, {
+                        provider = node and node.provider or nil,
+                        parent = chosen,
+                    })
+                end
             end
         end
     end
+    pcall(function() return Placement.sanitizeSection(reg, txn:view(view)) end)
 
     return imported > 0, STATUS.IMPORTED_EXTERNAL
 end

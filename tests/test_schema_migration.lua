@@ -274,6 +274,38 @@ do
         "M7: normalization is idempotent after restart")
 end
 
+print("\n--- M8: legacy tab-nesting placement migrates safely ---")
+do
+    wipe(); launch()
+    local tabs = MenuOrderManager:getTabs(view)
+    local tab_id = tabs[1]
+    assert_true(tab_id ~= nil, "M8: live tab exists")
+    -- Plant a legacy-style intent file with a tab nested in a submenu
+    -- (the shape an old preset produced). Load must not quarantine, and the
+    -- projection must keep the tab in the bar (no nested duplicate, no crash).
+    -- Force a durable file first (a no-op save writes nothing).
+    MenuOrderManager:moveItemToMenu(view, "opds", "search", "tools")
+    MenuOrderManager:saveOrder(view)
+    local data = read_intent()
+    local section = data.views[view]
+    section.parent_override[tab_id] = { provider = nil, parent = "more_tools" }
+    section.order_override["more_tools"] = { entries = { { id = tab_id } } }
+    local f = assert(io.open(INTENT_FILE, "w"))
+    f:write("return " .. dump(data, nil, true)); f:close()
+    IntentStore.load(true)
+    local order = MenuOrderManager:loadOrder(view)
+    local in_bar = false
+    for _, t in ipairs(order["KOMenu:menu_buttons"] or {}) do
+        if t == tab_id then in_bar = true end
+    end
+    assert_true(in_bar, "M8: nested tab migrates back to the bar")
+    local nested = false
+    for _, id in ipairs(order["more_tools"] or {}) do
+        if id == tab_id then nested = true end
+    end
+    assert_eq(nested, false, "M8: tab not nested after migration")
+end
+
 wipe()
 print(string.format("\n=== %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
