@@ -43,12 +43,12 @@ Open the editor from the main menu:
 Tools → More tools → Reorder menus
 ```
 
-- **Reorder**: Drag entries up or down to change their order.
+- **Reorder**: Drag entries up or down to change their order. The title shows an “Unsaved changes” marker until you save.
 - **Hide / Show**: Tap the checkbox next to any entry to hide or restore it.
-- **Open a Submenu**: Tap a submenu row to select it, then tap it again (or choose **Edit submenu contents** in the hold dialog) to enter its editor.
-- **Submenu Actions & Reset**: Tap the hamburger menu icon (top-left) to sort A–Z / Z–A, manage presets, create custom submenus, or reset the menu.
+- **Open a Submenu**: Tap the arrow at the row's trailing edge to enter its editor directly (it flips sides in right-to-left layouts). Tapping an already-selected submenu row, or choosing **Edit submenu contents** in the hold dialog, works too. Nested editors title themselves with their path, e.g. `Book view › Tools › More tools`.
+- **Submenu Actions & Reset**: Tap the hamburger menu icon (top-left) for **Search…**, **Hidden items (count)**, **Sort…**, presets, custom submenus, **Reset…**, and **Advanced…**.
 - **Save Changes**: Tap the checkmark icon in the bottom-right corner to save your changes.
-- **Discard Changes**: Tap the title-bar `X` to prompt Save / Discard / Cancel, or use the bottom exit icon to leave without saving unsaved drag changes.
+- **Discard Changes**: Every exit — the title-bar `X`, the bottom exit icon, or the Back key — asks Save / Discard / Cancel when there are unsaved changes. Clean editors close immediately.
 
 ---
 

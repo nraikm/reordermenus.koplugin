@@ -94,10 +94,12 @@ local function restart()
 end
 local function stack_size() return #UIManager._window_stack end
 local function close_all_windows()
+    -- Cleanup uses programmatic close (silent coherent discard, never prompts).
+    -- User-exit prompting is asserted explicitly per route above.
     while stack_size() > 0 do
         local entry = UIManager._window_stack[stack_size()]
         local w = entry and (entry.widget or entry)
-        if w and w.onClose then w:onClose() else UIManager:close(w) end
+        UIManager:close(w)
     end
 end
 local function find_editor()

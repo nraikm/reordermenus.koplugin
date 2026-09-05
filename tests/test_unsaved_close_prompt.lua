@@ -1,10 +1,10 @@
 --[[--
-Regression tests for the unsaved-changes prompt on the editor title-bar X.
+Regression tests for the unsaved-changes prompt on every editor exit.
 
-Clicking the X of a Reorder menus editor must detect unsaved edits and ask
-whether to save or discard them (or cancel and keep editing). The bottom
-buttons keep their original behaviour: the check icon saves and closes, the
-exit icon closes directly - neither may ever spawn the prompt.
+Every user exit (title-bar X, footer exit icon, Back key) must detect
+unsaved edits and ask whether to save or discard them (or cancel and keep
+editing). The footer check icon saves and closes without an extra prompt
+(the save itself makes the editor clean).
 
 Covered dirty sources: staged reordering/sort/separator model changes, and
 visibility toggles, which mutate the working order immediately but are only
@@ -116,10 +116,11 @@ UIScreens:reconcileRegisteredItems({ ui = mock_ui_fm }, view, true)
 local function stack_size() return #UIManager._window_stack end
 
 local function close_all_windows()
+    -- Cleanup uses programmatic close (silent coherent discard, never prompts).
     while stack_size() > 0 do
         local entry = UIManager._window_stack[stack_size()]
         local w = entry and (entry.widget or entry)
-        if w and w.onClose then w:onClose() else UIManager:close(w) end
+        UIManager:close(w)
     end
 end
 
@@ -275,15 +276,18 @@ do
 end
 
 -- -------------------------------------------------------------------------
-print("\n--- Bottom buttons keep working without prompting ---")
+print("\n--- All exits prompt alike; check saves without a second prompt ---")
 do
     local baseline = saved_more_tools()
     local editor = open_item_editor()
     swap_first_two(editor)
     editor.footer_cancel.callback()
-    assert_true(find_editor() == nil, "bottom exit icon closes directly")
-    assert_true(find_prompt() == nil, "bottom exit icon never prompts")
-    assert_eq(saved_more_tools(), baseline, "bottom exit icon discards staged edits as before")
+    local prompt = find_prompt()
+    assert_true(prompt ~= nil, "bottom exit icon asks what to do (same as X)")
+    assert_true(find_editor() ~= nil, "editor stays open while asking")
+    dismiss_prompt(prompt, "discard")
+    assert_true(find_editor() == nil, "Discard via footer exit closes the editor")
+    assert_eq(saved_more_tools(), baseline, "footer Discard reverted the edit")
 
     editor = open_item_editor()
     swap_first_two(editor)

@@ -270,20 +270,54 @@ local ok, err = pcall(function()
     end
     assert_true(widget_menu ~= nil, "Hamburger menu dialog opened")
     local presets_callback
-    local named_reset_found = false
-    local selected_reset_found = false
+    local search_found = false
+    local hidden_found = false
+    local sort_found = false
+    local reset_found = false
     for _, row in ipairs(widget_menu.buttontable.buttons) do
         for _, button in ipairs(row) do
             if button.text == "Presets…" then
                 presets_callback = button.callback
-            elseif button.text == "Reset Book view" or button.text == "Reset Book menu" then
-                named_reset_found = true
-            elseif button.text:find("Reset “" .. selected_menu_title, 1, true) or button.text:find("Reset " .. selected_menu_title, 1, true) then
-                selected_reset_found = true
+            elseif button.text == "Search…" then
+                search_found = true
+            elseif button.text and button.text:find("Hidden items", 1, true) then
+                hidden_found = true
+            elseif button.text == "Sort…" then
+                sort_found = true
+            elseif button.text == "Reset…" then
+                reset_found = true
             end
         end
     end
     assert_true(presets_callback ~= nil, "Hamburger menu exposes preset management")
+    assert_true(search_found, "Hamburger exposes Search directly")
+    assert_true(hidden_found, "Hamburger exposes Hidden items with count")
+    assert_true(sort_found, "Sort A-Z/Z-A live under Sort…")
+    assert_true(reset_found, "Resets live under Reset…")
+    -- Reset… submenu names its scopes clearly.
+    local reset_callback
+    for _, row in ipairs(widget_menu.buttontable.buttons) do
+        for _, button in ipairs(row) do
+            if button.text == "Reset…" then reset_callback = button.callback end
+        end
+    end
+    assert_true(reset_callback ~= nil, "Reset… entry opens a submenu")
+    reset_callback()
+    local reset_menu = getTopButtonDialog()
+    local named_reset_found = false
+    local selected_reset_found = false
+    if reset_menu then
+        for _, row in ipairs(reset_menu.buttontable.buttons) do
+            for _, button in ipairs(row) do
+                if button.text == "Reset Book view" or button.text == "Reset Book menu" then
+                    named_reset_found = true
+                elseif button.text:find(selected_menu_title, 1, true) then
+                    selected_reset_found = true
+                end
+            end
+        end
+        UIManager:close(reset_menu)
+    end
     assert_true(named_reset_found, "Top-level reset names the current view")
     assert_true(selected_reset_found, "Marked top-level submenu gets its own reset action")
     presets_callback()
@@ -337,32 +371,81 @@ local ok, err = pcall(function()
     end
     assert_true(btn_widget ~= nil, "SortWidget menu dialog opened")
 
-    local submenu_reset_found = false
-    local selected_submenu_reset_found = false
     local submenu_presets_callback
-    local sort_a_index
-    local sort_z_index
-    local button_index = 0
+    local sort_found = false
+    local reset_found = false
+    local search_found = false
+    local hidden_found = false
     for _, row in ipairs(btn_widget.buttontable.buttons) do
         for _, button in ipairs(row) do
-            button_index = button_index + 1
-            if button.text:find("Reset “Tools”", 1, true) or button.text == "Reset Tools menu" then
-                submenu_reset_found = true
-            elseif button.text == "Presets for Tools…" then
+            if button.text == "Presets for Tools…" then
                 submenu_presets_callback = button.callback
-            elseif selected_submenu_title and (button.text:find("Reset “" .. selected_submenu_title, 1, true) or button.text:find("Reset " .. selected_submenu_title, 1, true)) then
-                selected_submenu_reset_found = true
-            elseif button.text == "Sort A to Z" then
-                sort_a_index = button_index
-            elseif button.text == "Sort Z to A" then
-                sort_z_index = button_index
+            elseif button.text == "Sort…" then
+                sort_found = true
+            elseif button.text == "Reset…" then
+                reset_found = true
+            elseif button.text == "Search…" then
+                search_found = true
+            elseif button.text and button.text:find("Hidden items", 1, true) then
+                hidden_found = true
             end
         end
     end
+    assert_true(search_found, "Submenu hamburger exposes Search directly")
+    assert_true(hidden_found, "Submenu hamburger exposes Hidden items with count")
+    assert_true(sort_found, "Sort A-Z/Z-A live under Sort…")
+    assert_true(reset_found, "Resets live under Reset…")
+    assert_true(submenu_presets_callback ~= nil, "Submenu hamburger exposes presets for the current menu")
+    -- Sort… submenu holds both directions together.
+    local sort_callback
+    for _, row in ipairs(btn_widget.buttontable.buttons) do
+        for _, button in ipairs(row) do
+            if button.text == "Sort…" then sort_callback = button.callback end
+        end
+    end
+    assert_true(sort_callback ~= nil, "Sort… entry opens a submenu")
+    sort_callback()
+    local sort_menu = getTopButtonDialog()
+    local sort_a_index
+    local sort_z_index
+    local button_index = 0
+    if sort_menu then
+        for _, row in ipairs(sort_menu.buttontable.buttons) do
+            for _, button in ipairs(row) do
+                button_index = button_index + 1
+                if button.text == "Sort A to Z" then sort_a_index = button_index
+                elseif button.text == "Sort Z to A" then sort_z_index = button_index end
+            end
+        end
+        UIManager:close(sort_menu)
+    end
+    assert_true(sort_a_index ~= nil and sort_z_index ~= nil, "Sort… holds both directions")
+    assert_eq(sort_z_index, sort_a_index + 1, "Sort actions remain next to each other")
+    -- Reset… submenu names its scopes clearly.
+    local reset_callback
+    for _, row in ipairs(btn_widget.buttontable.buttons) do
+        for _, button in ipairs(row) do
+            if button.text == "Reset…" then reset_callback = button.callback end
+        end
+    end
+    assert_true(reset_callback ~= nil, "Reset… entry opens a submenu")
+    reset_callback()
+    local reset_menu = getTopButtonDialog()
+    local submenu_reset_found = false
+    local selected_submenu_reset_found = false
+    if reset_menu then
+        for _, row in ipairs(reset_menu.buttontable.buttons) do
+            for _, button in ipairs(row) do
+                if button.text:find("Tools", 1, true) then submenu_reset_found = true end
+                if selected_submenu_title and button.text:find(selected_submenu_title, 1, true) then
+                    selected_submenu_reset_found = true
+                end
+            end
+        end
+        UIManager:close(reset_menu)
+    end
     assert_true(submenu_reset_found, "Submenu reset names the current menu")
     assert_true(selected_submenu_reset_found, "Marked nested submenu gets its own reset action")
-    assert_true(submenu_presets_callback ~= nil, "Submenu hamburger exposes presets for the current menu")
-    assert_eq(sort_z_index, sort_a_index + 1, "Sort actions remain next to each other")
 
     -- Simulate tapping "Add separator at bottom" (button 1)
     local initial_count = #sort_widget.item_table
@@ -476,9 +559,12 @@ local ok, err = pcall(function()
 
     moved_item_index = findSortItem(source_widget, moved_item_id)
     source_widget.marked = moved_item_index
-    source_widget:onShowWidgetMenu()
+    -- Moving lives in the row's hold actions (long-press), not the hamburger.
+    local _, moved_row = findSortItem(source_widget, moved_item_id)
+    assert_true(moved_row ~= nil and moved_row.hold_callback ~= nil, "Move action is available in row actions")
+    moved_row.hold_callback(moved_row, function() source_widget:_populateItems() end)
     local source_actions = getTopButtonDialog()
-    local move_button = findButton(source_actions, "Move item to another menu…")
+    local move_button = findButton(source_actions, "Move to another menu…")
     assert_true(move_button ~= nil, "Move action is available for the selected item")
     move_button.callback()
     local chooser = getMoveChooser()
@@ -532,9 +618,11 @@ local ok, err = pcall(function()
     local more_tools_index = findSortItem(submenu_source, "more_tools")
     assert_true(more_tools_index ~= nil, "More tools starts in Tools")
     submenu_source.marked = more_tools_index
-    submenu_source:onShowWidgetMenu()
+    local _, more_tools_row = findSortItem(submenu_source, "more_tools")
+    assert_true(more_tools_row ~= nil and more_tools_row.hold_callback ~= nil, "Submenu row exposes hold actions")
+    more_tools_row.hold_callback(more_tools_row, function() submenu_source:_populateItems() end)
     local submenu_actions = getTopButtonDialog()
-    local submenu_move = findButton(submenu_actions, "Move item to another menu…")
+    local submenu_move = findButton(submenu_actions, "Move to another menu…")
     assert_true(submenu_move ~= nil, "Move action is available for the submenu")
     submenu_move.callback()
     local submenu_chooser = getMoveChooser()
@@ -582,9 +670,11 @@ local ok, err = pcall(function()
     local battery_index = findSortItem(more_tools_widget, "battery_statistics")
     assert_true(battery_index ~= nil, "Battery Statistics is available in More tools")
     more_tools_widget.marked = battery_index
-    more_tools_widget:onShowWidgetMenu()
+    local _, battery_row = findSortItem(more_tools_widget, "battery_statistics")
+    assert_true(battery_row ~= nil and battery_row.hold_callback ~= nil, "Battery row exposes hold actions")
+    battery_row.hold_callback(battery_row, function() more_tools_widget:_populateItems() end)
     local battery_actions = getTopButtonDialog()
-    local battery_move = findButton(battery_actions, "Move item to another menu…")
+    local battery_move = findButton(battery_actions, "Move to another menu…")
     assert_true(battery_move ~= nil, "Battery Statistics exposes the move action")
     battery_move.callback()
     local battery_chooser = getMoveChooser()

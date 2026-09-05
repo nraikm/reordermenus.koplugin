@@ -148,7 +148,7 @@ local function close_all_windows()
     while stack_size() > 0 do
         local entry = UIManager._window_stack[stack_size()]
         local w = entry and (entry.widget or entry)
-        if w and w.onClose then w:onClose() else UIManager:close(w) end
+        UIManager:close(w)
     end
 end
 
@@ -441,28 +441,34 @@ do
     close_all_windows()
 end
 
-print("\n--- C4/C5/C6: silent routes discard coherently (no prompt) ---")
+print("\n--- C4/C5/C6: all user exits prompt; programmatic stays silent ---")
 do
     -- Baseline arrangement to compare against.
     local canonical_more_tools = saved_list("more_tools")
     local canonical_tools = saved_list("tools")
 
-    -- C4: Back key on a DIRTY editor = silent full discard.
+    -- C4: Back key on a DIRTY editor prompts like the title-bar X.
     local ed = open_item_editor()
     make_editor_dirty(ed)
     ed:onCancelOrClose()
-    assert_true(find_editor() == nil, "C4: Back closes the dirty editor")
-    assert_true(find_prompt() == nil, "C4: Back never prompts")
+    local p4 = find_prompt()
+    assert_true(p4 ~= nil, "C4: Back prompts on a dirty editor")
+    assert_true(find_editor() ~= nil, "C4: editor stays open while asking")
+    dismiss_prompt(p4, "discard")
+    assert_true(find_editor() == nil, "C4: Discard closes the dirty editor")
     assert_eq(saved_list("more_tools"), canonical_more_tools,
-        "C4: Back discarded the drag")
+        "C4: Back Discard reverted the drag")
 
-    -- C5: footer exit icon on a DIRTY editor = silent full discard.
+    -- C5: footer exit icon on a DIRTY editor prompts like the title-bar X.
     local ed5 = open_item_editor()
     make_editor_dirty(ed5)
     ed5.footer_cancel.callback()
-    assert_true(find_editor() == nil, "C5: footer exit closed the editor")
+    local p5 = find_prompt()
+    assert_true(p5 ~= nil, "C5: footer exit prompts on a dirty editor")
+    dismiss_prompt(p5, "discard")
+    assert_true(find_editor() == nil, "C5: Discard closes the editor")
     assert_eq(saved_list("more_tools"), canonical_more_tools,
-        "C5: footer exit discarded the drag")
+        "C5: footer Discard reverted the drag")
 
     -- C6: PROGRAMMATIC close (UIManager:close -> CloseWidget event) must be
     -- equivalent too: full discard AND sync-registry unregistration.
@@ -1033,15 +1039,17 @@ do
     assert_eq(MenuOrderManager:isItemHidden(view, "cons_alpha"), false,
         "H2b: abandoned hide absent after unrelated save + restart")
 
-    -- H3: Back-key silent close discards a staged move coherently.
+    -- H3: Back key prompts on a staged move; Discard reverts coherently.
     reset_editor_heuristics()
     local ed3 = open_item_editor()
     MenuOrderManager:moveItemToMenu(view, "cons_alpha", "more_tools", "tools")
     ed3:onCancelOrClose()
-    assert_true(find_editor() == nil, "H3: Back closed the move-staged editor")
-    assert_true(find_prompt() == nil, "H3: Back never prompted")
+    local p3 = find_prompt()
+    assert_true(p3 ~= nil, "H3: Back prompts on a move-staged editor")
+    dismiss_prompt(p3, "discard")
+    assert_true(find_editor() == nil, "H3: Discard closed the editor")
     assert_eq(MenuOrderManager:getParentMenu(view, "cons_alpha"), "more_tools",
-        "H3: silent close discarded the staged move")
+        "H3: Discard reverted the staged move")
     restart()
     assert_eq(MenuOrderManager:getParentMenu(view, "cons_alpha"), "more_tools",
         "H3: disk agrees after reload (no mixed state)")
@@ -1081,24 +1089,30 @@ do
     end
     local baseline_tabs = tabs_csv()
 
-    -- Footer exit icon: silent full discard of the staged tab drag.
+    -- Footer exit icon prompts on a staged tab drag; Discard reverts.
     UIScreens:showTabReorderDialog({ ui = mock_ui_fm }, view)
     local tabdlg = find_editor()
     assert_true(tabdlg ~= nil, "H5: tab dialog opened")
     swap_first_two(tabdlg)
     tabdlg.footer_cancel.callback()
-    assert_true(find_editor() == nil, "H5: footer exit closed the tab dialog")
+    local p5a = find_prompt()
+    assert_true(p5a ~= nil, "H5: footer exit prompts on a dirty tab dialog")
+    dismiss_prompt(p5a, "discard")
+    assert_true(find_editor() == nil, "H5: Discard closed the tab dialog")
     assert_eq(tabs_csv(), baseline_tabs,
-        "H5: footer exit discarded the staged tab drag")
+        "H5: footer Discard reverted the staged tab drag")
 
     -- Back key: identical outcome.
     UIScreens:showTabReorderDialog({ ui = mock_ui_fm }, view)
     tabdlg = find_editor()
     swap_first_two(tabdlg)
     tabdlg:onCancelOrClose()
-    assert_true(find_editor() == nil, "H5: Back closed the tab dialog")
+    local p5b = find_prompt()
+    assert_true(p5b ~= nil, "H5: Back prompts on a dirty tab dialog")
+    dismiss_prompt(p5b, "discard")
+    assert_true(find_editor() == nil, "H5: Discard closed the tab dialog")
     assert_eq(tabs_csv(), baseline_tabs,
-        "H5: Back discarded the staged tab drag")
+        "H5: Back Discard reverted the staged tab drag")
 
     -- An abandoned tab drag must not ride a later unrelated save.
     UIScreens:showTabReorderDialog({ ui = mock_ui_fm }, view)

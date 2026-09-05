@@ -168,7 +168,7 @@ local function close_all_windows()
     while #(UIManager._window_stack or {}) > 0 do
         local entry = UIManager._window_stack[#UIManager._window_stack]
         local w = entry and (entry.widget or entry)
-        if w and w.onClose then w:onClose() else UIManager:close(w) end
+        UIManager:close(w)
     end
 end
 

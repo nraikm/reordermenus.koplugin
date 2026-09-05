@@ -152,7 +152,7 @@ local function close_top_widgets_until(n)
     while #UIManager._window_stack > n do
         local entry = UIManager._window_stack[#UIManager._window_stack]
         local w = entry and (entry.widget or entry)
-        if w and w.onClose then w:onClose() else UIManager:close(w) end
+        UIManager:close(w)
     end
 end
 
@@ -402,7 +402,7 @@ do
 
     local created_row
     for _, row in ipairs(editor.item_table) do
-        if row.is_submenu and row.text == "[+] Reading Extras" then created_row = row break end
+        if row.is_submenu and row.text:find("Reading Extras", 1, true) then created_row = row break end
     end
     assert_true(created_row ~= nil, "editor gains the created submenu row with its title")
     assert_eq(#editor.item_table, rows_before + 1, "exactly one row was added")
@@ -453,7 +453,7 @@ do
     assert_true(anchor_saved ~= nil and created_saved ~= nil, "both entries persist")
     local below_anchor
     for _, row in ipairs(editor.item_table) do
-        if row.is_submenu and row.text == "[+] Calibre Tools" then below_anchor = row break end
+        if row.is_submenu and row.text:find("Calibre Tools", 1, true) then below_anchor = row break end
     end
     assert_true(below_anchor ~= nil, "second submenu created below the selection")
     local below_anchor_saved
@@ -497,7 +497,7 @@ do
         if row.item_id == below_anchor.item_id then restored_label = row.text end
     end
     assert_true(type(restored_label) == "string"
-            and restored_label == "[+] Calibre Tools",
+            and restored_label:find("Calibre Tools", 1, true) ~= nil,
         "restored row label keeps the given name: " .. tostring(restored_label))
 
     close_top_widgets_until(0)
@@ -637,8 +637,8 @@ do
     local editor = open_editor("navi")
     local custom_row = find_row(editor, nav_group_id)
     assert_true(custom_row ~= nil, "created submenu row shown in parent editor")
-    assert_true(custom_row.text:find("[+] Nav Group", 1, true) ~= nil,
-        "created submenu displays its registered title with [+] marker")
+    assert_true(custom_row.text:find("Nav Group", 1, true) ~= nil,
+        "created submenu displays its registered title (edge arrow is a separate widget)")
     local stock_row = find_row(editor, "plain_stock_submenu")
     assert_true(stock_row ~= nil, "stock submenu row present for contrast")
 
@@ -725,7 +725,7 @@ do
     local editor = open_editor("tools")
     local row = find_row(editor, hello_id)
     assert_true(row ~= nil, "created submenu still listed after preset load")
-    assert_eq(row.text, "[+] hello",
+    assert_true(row.text:find("hello", 1, true) ~= nil,
         "row label uses the given name after preset load: " .. tostring(row.text))
     close_top_widgets_until(0)
 

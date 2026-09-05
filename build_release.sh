@@ -36,7 +36,7 @@ command -v zip >/dev/null  || { echo "FAIL: zip not found" >&2;  exit 2; }
 # shellcheck source=packaging/release-manifest.conf
 source "$MANIFEST"
 
-PLUGIN_NAME="ReorderingMenus.koplugin"
+PLUGIN_NAME="reorderingmenus.koplugin"
 VERSION="$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --short=12 HEAD)"
 
 fail() { echo "BUILD FAILED: $*" >&2; exit 1; }

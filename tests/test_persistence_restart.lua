@@ -188,7 +188,7 @@ do
     while #UIManager._window_stack > 0 do
         local entry = UIManager._window_stack[#UIManager._window_stack]
         local w = entry and (entry.widget or entry)
-        if w and w.onClose then w:onClose() else UIManager:close(w) end
+        UIManager:close(w)
     end
 end
 
@@ -276,7 +276,7 @@ assert_true(found_fresh, "post-restart Tools editor lists the new plugin item")
 while #UIManager._window_stack > 0 do
     local entry = UIManager._window_stack[#UIManager._window_stack]
     local w = entry and (entry.widget or entry)
-    if w and w.onClose then w:onClose() else UIManager:close(w) end
+    UIManager:close(w)
 end
 
 -- And moving an item still works cleanly in the fresh session.

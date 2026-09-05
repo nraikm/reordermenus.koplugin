@@ -3,7 +3,7 @@ Release install smoke test (Area R1).
 
 Simulates a clean KOReader installation of the release ZIP:
 
-  S1  the ZIP exists and contains exactly ReorderingMenus.koplugin/*
+  S1  the ZIP exists and contains exactly reorderingmenus.koplugin/*
   S2  it extracts into an EMPTY directory with no dev-checkout leakage
   S3  package.path is configured EXACTLY like KOReader does for plugins
       (plugin root PREPENDED, frontend paths only — never the dev checkout;
@@ -120,9 +120,9 @@ local unzip_ok = os.execute(
     'unzip -q -o "' .. zip_path .. '" -d "' .. extract_dir .. '"')
 T.assert_true(unzip_ok == 0 or unzip_ok == true, "S2: unzip succeeded")
 
-local plugin_root = extract_dir .. "/ReorderingMenus.koplugin"
+local plugin_root = extract_dir .. "/reorderingmenus.koplugin"
 T.assert_true(lfs.attributes(plugin_root, "mode") == "directory",
-    "S2: archive root is ReorderingMenus.koplugin/")
+    "S2: archive root is reorderingmenus.koplugin/")
 T.assert_true(lfs.attributes(plugin_root .. "/main.lua", "mode") == "file",
     "S2: main.lua present at plugin root")
 

@@ -142,12 +142,11 @@ local function top_widget_of(predicate)
 end
 
 local function close_all_windows()
+    -- Cleanup uses programmatic close (silent coherent discard, never prompts).
     while #UIManager._window_stack > 0 do
         local entry = UIManager._window_stack[#UIManager._window_stack]
         local w = entry and (entry.widget or entry)
-        if w and w.onClose then
-            pcall(w.onClose, w)
-        elseif w then
+        if w then
             UIManager:close(w)
         else
             break
