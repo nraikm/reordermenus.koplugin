@@ -17,7 +17,7 @@ local function dump(tag)
     local order = w:projection("reader")
     io.stderr:write(tag .. ": search_settings=[" ..
         table.concat(order.search_settings or {}, ",") .. "]\n")
-    local IntentStore = require("intent_store")
+    local IntentStore = require("lib.intent_store")
     local sec = IntentStore.view("reader")
     local oo = sec.order_override and sec.order_override.search_settings
     io.stderr:write(tag .. ": order_override=" ..

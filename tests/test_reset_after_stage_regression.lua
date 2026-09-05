@@ -33,8 +33,8 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
 local util = require("util")
 
 local passed, failed = 0, 0

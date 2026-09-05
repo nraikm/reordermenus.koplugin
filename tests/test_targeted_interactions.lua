@@ -41,9 +41,9 @@ _ = require("gettext")
 require("main")
 
 local World = require("tests.lib.sm_world")
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local KoreaderAdapter = require("koreader_adapter")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local KoreaderAdapter = require("lib.koreader_adapter")
 local util = require("util")
 
 local passed, failed = 0, 0
@@ -411,7 +411,7 @@ do
     -- Discard x2: abandon the staged transaction twice; second must be a
     -- no-op (manager creates a fresh one on next use - the discarded flag
     -- guards reuse per intent_store.lua).
-    local IntentStoreP = require("intent_store")
+    local IntentStoreP = require("lib.intent_store")
     local before_discard = canonical_size()
     local txn_p = IntentStoreP.openTransaction()
     txn_p:discard()

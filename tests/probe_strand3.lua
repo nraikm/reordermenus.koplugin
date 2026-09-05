@@ -14,9 +14,9 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local KoreaderAdapter = require("koreader_adapter")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local KoreaderAdapter = require("lib.koreader_adapter")
 
 local view = "filemanager"
 local function fp(menu)
@@ -26,7 +26,7 @@ end
 local function restart()
     Manager:dropSessionState(view)
     IntentStore.load(true)
-    require("native_writer")._resetCaches()
+    require("lib.native_writer")._resetCaches()
 end
 
 print("baseline:", fp("setting"))

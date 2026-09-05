@@ -52,10 +52,10 @@ local function assert_true(cond, msg)
     else failed = failed + 1; print("  [FAIL] " .. tostring(msg)); io.stdout:flush() end
 end
 
-local Registry = require("registry")
-local Materializer = require("materializer")
-local Validator = require("validator")
-local MenuSchema = require("menu_schema")
+local Registry = require("lib.registry")
+local Materializer = require("lib.materializer")
+local Validator = require("lib.validator")
+local MenuSchema = require("lib.menu_schema")
 local util = require("util")   --KOReader's table utilities via package.path
 
 local SEPARATOR_ID = MenuSchema.SEPARATOR_ID
@@ -311,9 +311,9 @@ print("=== H1: cache-clear equivalence (manager-level cold/warm) ===")
 do
     -- Manager lens: a warmed projection then a forced-cold reload must
     -- produce identical order tables.
-    local MenuOrderManager = require("menuorder_manager")
-    local IntentStore = require("intent_store")
-    local UIScreens = require("ui_screens")
+    local MenuOrderManager = require("lib.menuorder_manager")
+    local IntentStore = require("lib.intent_store")
+    local UIScreens = require("lib.ui_screens")
 
     local fm_ui = { document = nil, menu = {
         registered_widgets = {},
@@ -382,8 +382,8 @@ do
                            "ui_screens" }) do
         package.loaded[mod] = nil
     end
-    MenuOrderManager = require("menuorder_manager")
-    UIScreens = require("ui_screens")
+    MenuOrderManager = require("lib.menuorder_manager")
+    UIScreens = require("lib.ui_screens")
     UIScreens:reconcileRegisteredItems(plugin, "filemanager", false)
     local fresh_order = MenuOrderManager:loadOrder("filemanager")
     if not util.tableEquals(warm_order, fresh_order) then

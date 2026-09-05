@@ -52,12 +52,12 @@ end
 
 local ReaderMenu = require("apps/reader/modules/readermenu")
 local MenuSorter = require("ui/menusorter")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
 local ReorderingMenus = require("main")
 local UIManager = require("ui/uimanager")
-local MenuSchema = require("menu_schema")
-local IntentStore = require("intent_store")
+local MenuSchema = require("lib.menu_schema")
+local IntentStore = require("lib.intent_store")
 
 local passed = 0
 local failed = 0

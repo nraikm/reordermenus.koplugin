@@ -39,7 +39,7 @@ local Device = require("device")
 local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 
-local KoreaderAdapter = require("koreader_adapter")
+local KoreaderAdapter = require("lib.koreader_adapter")
 KoreaderAdapter.installMenuSorterGuards() -- production stack, exactly like main.lua
 local MenuSorter = require("ui/menusorter")
 

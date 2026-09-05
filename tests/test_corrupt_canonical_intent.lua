@@ -35,7 +35,7 @@ local _ = require("gettext")
 
 require("main")
 
-local IntentStore = require("intent_store")
+local IntentStore = require("lib.intent_store")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)

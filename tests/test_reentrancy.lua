@@ -32,11 +32,11 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
-local UIScreens = require("ui_screens")
-local CommitPipeline = require("commit_pipeline")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
+local UIScreens = require("lib.ui_screens")
+local CommitPipeline = require("lib.commit_pipeline")
 
 local passed, failed = 0, 0
 local function note(cond, msg)
@@ -124,7 +124,7 @@ end
 -- the writer triggers a save again (simulating a rebuild-during-save loop).
 do
     wipe_all()
-    local KoreaderAdapter = require("koreader_adapter")
+    local KoreaderAdapter = require("lib.koreader_adapter")
     local real_write = KoreaderAdapter.writeNativeOrder
     local depth = 0
     local reentrant_calls = 0
@@ -205,7 +205,7 @@ do
         local MenuSorter = require("ui/menusorter")
         local order = Manager:loadOrder(VIEW)
         local items = { ["KOMenu:menu_buttons"] = {} }
-        local reg = require("registry").buildFromData(
+        local reg = require("lib.registry").buildFromData(
             Manager.default_orders[VIEW] or Manager:getDefaultOrder(VIEW),
             {}, {})
         for id in pairs(reg.nodes) do
@@ -250,7 +250,7 @@ end
 -- move-healing records.
 do
     wipe_all()
-    local KoreaderAdapter = require("koreader_adapter")
+    local KoreaderAdapter = require("lib.koreader_adapter")
     local stub = make_stub("reent_t", "tools")
     local ui = { menu = {
         registered_widgets = { stub },

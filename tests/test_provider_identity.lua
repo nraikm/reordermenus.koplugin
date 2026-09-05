@@ -52,10 +52,10 @@ local function assert_eq(actual, expected, msg)
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local IntentStore = require("intent_store")
-local KoreaderAdapter = require("koreader_adapter")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local IntentStore = require("lib.intent_store")
+local KoreaderAdapter = require("lib.koreader_adapter")
 
 local view = "filemanager"
 local settings_dir = DataStorage:getSettingsDir()
@@ -313,8 +313,8 @@ do
                 iv.order_override.more_tools[2], iv.order_override.more_tools[3] }, ",")
             or "none", "\n")
         -- decisive: fresh resolve with canonical intent + live registry
-        local RegistryD = require("registry")
-        local MaterializerD = require("materializer")
+        local RegistryD = require("lib.registry")
+        local MaterializerD = require("lib.materializer")
         local regD = RegistryD.build(view, mock_ui_fm)
         local node = regD.nodes.era_item
         io.write("T7DEBUG node_prov=", tostring(node and node.provider), "\n")
@@ -322,7 +322,7 @@ do
             UIScreens:_collectRegisteredMenuItems({ ui = mock_ui_fm })
         io.write("T7DEBUG uiscreen_prov=", tostring(provs2.era_item),
             " item=", tostring(items2.era_item ~= nil), "\n")
-        local MenuOMD = require("menuorder_manager")
+        local MenuOMD = require("lib.menuorder_manager")
         _ = MenuOMD
         local nkeys = 0
         for k, wdgt in pairs(mock_ui_fm.menu.registered_widgets) do

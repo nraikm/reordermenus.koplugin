@@ -33,10 +33,10 @@ require("main")
 
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
 local UIManager = require("ui/uimanager")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local UIEditorRegistry = require("ui_editor_registry")
-local IntentStore = require("intent_store")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local UIEditorRegistry = require("lib.ui_editor_registry")
+local IntentStore = require("lib.intent_store")
 local util = require("util")
 
 local passed, failed = 0, 0

@@ -30,9 +30,9 @@ Run: luajit tests/test_projection_determinism.lua        (parent mode)
 
 package.path = "/Users/nr/Development/ReorderingMenus/?.lua;" .. package.path
 
-local MenuSchema = require("menu_schema")
-local Materializer = require("materializer")
-local Validator = require("validator")
+local MenuSchema = require("lib.menu_schema")
+local Materializer = require("lib.materializer")
+local Validator = require("lib.validator")
 
 local SEP = MenuSchema.SEPARATOR_ID
 local BUTTONS = MenuSchema.MENU_BUTTONS_KEY

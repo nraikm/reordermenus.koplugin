@@ -53,11 +53,11 @@ local Device = require("device")
 CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
-local UIScreens = require("ui_screens")
-local KoreaderAdapter = require("koreader_adapter")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
+local UIScreens = require("lib.ui_screens")
+local KoreaderAdapter = require("lib.koreader_adapter")
 
 local VIEW = "filemanager"
 local sd = DataStorage:getSettingsDir()
@@ -88,7 +88,7 @@ end
 -- Make the sidecar claim `structure` as our last (older-generation) emission,
 -- so the next startup diffs the hand-written file against a known baseline.
 local function seed_baseline(structure)
-    local AtomicWriter = require("atomic_writer")
+    local AtomicWriter = require("lib.atomic_writer")
     local sidecar_path = sd .. "/reorderingmenus_materialization.lua"
     local f = io.open(sidecar_path, "r")
     local body = f and f:read("*a") or ""

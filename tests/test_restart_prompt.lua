@@ -20,8 +20,8 @@ CanvasContext:init(Device)
 
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
-local UIScreens = require("ui_screens")
-local KoreaderAdapter = require("koreader_adapter")
+local UIScreens = require("lib.ui_screens")
+local KoreaderAdapter = require("lib.koreader_adapter")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)

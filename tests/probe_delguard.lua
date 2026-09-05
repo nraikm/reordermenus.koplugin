@@ -16,7 +16,7 @@ local _sd = DataStorage:getSettingsDir()
 pcall(os.remove, _sd .. "/reorderingmenus_intent.lua")
 pcall(os.remove, _sd .. "/reorderingmenus_materialization.lua")
 
-local Mgr = require("menuorder_manager")
+local Mgr = require("lib.menuorder_manager")
 require("main") -- like the suite does
 
 local view = "reader"

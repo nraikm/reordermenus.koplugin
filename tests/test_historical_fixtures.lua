@@ -54,12 +54,12 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
-local UIScreens = require("ui_screens")
-local KoreaderAdapter = require("koreader_adapter")
-local AtomicWriter = require("atomic_writer")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
+local UIScreens = require("lib.ui_screens")
+local KoreaderAdapter = require("lib.koreader_adapter")
+local AtomicWriter = require("lib.atomic_writer")
 
 local passed, failed = 0, 0
 local function note(cond, msg)
@@ -249,12 +249,12 @@ do
     assert(not IntentStore.hasPersistedState(),
         "P3 setup: canonical intent must not pre-exist")
 
-    package.loaded["intent_store"] = nil
-    package.loaded["menuorder_manager"] = nil
-    package.loaded["ui_screens"] = nil
-    IntentStore = require("intent_store")
-    Manager = require("menuorder_manager")
-    UIScreens = require("ui_screens")
+    package.loaded["lib.intent_store"] = nil
+    package.loaded["lib.menuorder_manager"] = nil
+    package.loaded["lib.ui_screens"] = nil
+    IntentStore = require("lib.intent_store")
+    Manager = require("lib.menuorder_manager")
+    UIScreens = require("lib.ui_screens")
     NativeWriter._resetCaches(); launch()
 
     note(Manager:isItemHidden(VIEW, "plugin_management"),

@@ -39,11 +39,11 @@ CanvasContext:init(Device)
 require("gettext")
 require("main")
 
-local IntentStore = require("intent_store")
-local MenuSchema = require("menu_schema")
-local NativeWriter = require("native_writer")
-local UIScreens = require("ui_screens")
-local MenuOrderManager = require("menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local MenuSchema = require("lib.menu_schema")
+local NativeWriter = require("lib.native_writer")
+local UIScreens = require("lib.ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
 local util = require("util")
 
 local passed, failed = 0, 0

@@ -55,7 +55,7 @@ end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
 local MenuSorter = require("ui/menusorter")
-local KoreaderAdapter = require("koreader_adapter")
+local KoreaderAdapter = require("lib.koreader_adapter")
 local _ = require("gettext")
 
 print("===============================================================")

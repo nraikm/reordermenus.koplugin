@@ -108,16 +108,18 @@ git archive HEAD | tar -x -C "$SCRATCH/head"
 for f in $REQUIRED_RUNTIME; do
     base="${f%.lua}"
     case "$base" in main|_meta) continue ;; esac   # loader-contract names
-    grep -rqF "require(\"$base\")" "$SCRATCH/head" || \
-        fail "module '$base' never referenced by any tracked require() — stale require string or wrong manifest entry?"
+    req="${base//\//.}"   # lib/<name>.lua is required as lib.<name>
+    grep -rqF "require(\"$req\")" "$SCRATCH/head" || \
+        fail "module '$req' never referenced by any tracked require() — stale require string or wrong manifest entry?"
 done
 
 # --- 5. no unexpected plugin-local dependencies -------------------------------
-# Normal basenames lose the old namespace prefix, so the manifest explicitly
-# lists KOReader's external bare-name modules. Every other bare-name require()
-# must resolve to a TRACKED REQUIRED runtime file. Optional classification is
-# not enough: optional files may be absent, while a require literal is
-# unconditional.
+# Plugin-local modules live under lib/ and use dotted lib.* requires
+# (validated by check #4 above). The manifest explicitly lists KOReader's
+# external bare-name modules plus the root loader-contract name. Every other
+# bare-name require() must resolve to a TRACKED REQUIRED runtime file.
+# Optional classification is not enough: optional files may be absent, while
+# a require literal is unconditional.
 LOCAL_DEPS="$(grep -rhoE 'require\("[a-z_0-9]+"\)' "$SCRATCH/head" \
     | sed -E 's|require\("([a-z_0-9]+)"\)|\1|' | LC_ALL=C sort -u)"
 for dep in $LOCAL_DEPS; do
@@ -139,6 +141,7 @@ done
 # --- stage ONLY the shipping set from the HEAD extraction ---------------------
 for f in $REQUIRED_RUNTIME; do
     [ -f "$SCRATCH/head/$f" ] || fail "required runtime file missing from HEAD archive: $f"
+    mkdir -p "$STAGE/$PLUGIN_NAME/$(dirname "$f")"
     cp -p "$SCRATCH/head/$f" "$STAGE/$PLUGIN_NAME/$f"
 done
 for f in $OPTIONAL_DISTRIBUTABLE; do

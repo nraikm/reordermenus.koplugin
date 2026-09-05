@@ -51,8 +51,8 @@ do
     end
 end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
 local ReorderingMenus = require("main")
 local UIManager = require("ui/uimanager")
 

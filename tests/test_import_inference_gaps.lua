@@ -35,11 +35,11 @@ local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local Manager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
-local KoreaderAdapter = require("koreader_adapter")
+local Manager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
+local KoreaderAdapter = require("lib.koreader_adapter")
 local dump = require("dump")
 
 local VIEWS = { "reader", "filemanager" }

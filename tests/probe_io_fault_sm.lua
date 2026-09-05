@@ -23,8 +23,8 @@ local _ = require("gettext")
 require("main")
 
 local World = require("tests.lib.sm_world")
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
 local dump = require("dump")
 
 local function fp(value)

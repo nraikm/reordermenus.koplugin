@@ -7,7 +7,7 @@ end
 local function write(p, c)
     local f = assert(io.open(p, "wb")); f:write(c); f:close()
 end
-local mpath = project_dir .. "/materializer.lua"
+local mpath = project_dir .. "/lib/materializer.lua"
 local orig = read(mpath)
 -- Replace the whole modified loop with the original single-line body.
 local start_marker = [[    local lists = {}]]

@@ -54,8 +54,8 @@ local function assert_eq(actual, expected, msg)
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
 
 wipe_state = nil
 do

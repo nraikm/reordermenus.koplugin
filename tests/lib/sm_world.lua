@@ -35,17 +35,17 @@ Invariant battery (checked after every op unless noted):
                       (checked on save ops)
 --]]
 
-local MenuSchema = require("menu_schema")
-local Registry = require("registry")
-local Materializer = require("materializer")
-local Validator = require("validator")
+local MenuSchema = require("lib.menu_schema")
+local Registry = require("lib.registry")
+local Materializer = require("lib.materializer")
+local Validator = require("lib.validator")
 local MenuSorter = require("ui/menusorter")
-local KoreaderAdapter = require("koreader_adapter")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
+local KoreaderAdapter = require("lib.koreader_adapter")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
 local dump = require("dump")
 
-local Manager = require("menuorder_manager")
+local Manager = require("lib.menuorder_manager")
 
 local SEPARATOR_ID = "----------------------------"
 local RESERVED = {

@@ -40,10 +40,10 @@ G_reader_settings = LuaSettings:open(DataStorage:getSettingsDir()
     .. "/settings.reader.lua")
 _ = G_defaults
 
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local KoreaderAdapter = require("koreader_adapter")
-local Registry = require("registry")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local KoreaderAdapter = require("lib.koreader_adapter")
+local Registry = require("lib.registry")
 local util = require("util")
 
 local passed, failed = 0, 0

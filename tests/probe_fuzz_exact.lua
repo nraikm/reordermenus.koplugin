@@ -13,7 +13,7 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
-local Manager = require("menuorder_manager")
+local Manager = require("lib.menuorder_manager")
 local World = require("tests.lib.sm_world")
 
 local SEED = tonumber(arg and arg[1]) or 1466206

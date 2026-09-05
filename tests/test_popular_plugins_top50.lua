@@ -55,9 +55,9 @@ local project_dir = assert(test_path:match("^(.*)/tests/[^/]+$"),
 local FuzzLib = dofile(project_dir .. "/tests/lib/fuzz_lib.lua")
 FuzzLib.boot(project_dir)
 
-local KoreaderAdapter = require("koreader_adapter")
-local Manager = require("menuorder_manager")
-local MenuSchema = require("menu_schema")
+local KoreaderAdapter = require("lib.koreader_adapter")
+local Manager = require("lib.menuorder_manager")
+local MenuSchema = require("lib.menu_schema")
 local util = require("util")
 
 KoreaderAdapter.installSortingHintGuard()

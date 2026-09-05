@@ -46,14 +46,14 @@ local lfs = require("libs/libkoreader-lfs")
 local util = require("util")
 local _ = require("gettext")
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
-local Materializer = require("materializer")
-local Registry = require("registry")
-local Validator = require("validator")
-local Presets = require("presets")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
+local Materializer = require("lib.materializer")
+local Registry = require("lib.registry")
+local Validator = require("lib.validator")
+local Presets = require("lib.presets")
 
 local sd = DataStorage:getSettingsDir()
 local ORDER_FILES = {
@@ -447,7 +447,7 @@ for _, v in ipairs(VIEWS) do
     -- Schema v3: canonical may legitimately hold TYPED LIFECYCLE PINS
     -- (first-contact anchoring rewritten by the fresh-session reconcile
     -- above). "Fully collected" now means: no EXPLICIT USER intent remains.
-    local MenuSchema = require("menu_schema")
+    local MenuSchema = require("lib.menu_schema")
     assert_true(not MenuSchema.sectionHasUserIntent(IntentStore.view(v)),
         label .. ": canonical intent fully collected")
     -- Schema v3 removed meta.ui_state entirely (hidden anchors were UI
@@ -486,14 +486,14 @@ assert_eq(gh_records, 0, "no hidden tombstones survived the reset")
 MenuOrderManager:resetOrder(fm)
 
 -- (6) restart equivalence + preset still applicable afterwards.
-package.loaded["menuorder_manager"] = nil
-package.loaded["ui_screens"] = nil
-package.loaded["intent_store"] = nil
-package.loaded["native_writer"] = nil
-MenuOrderManager = require("menuorder_manager")
-UIScreens = require("ui_screens")
-IntentStore = require("intent_store")
-NativeWriter = require("native_writer")
+package.loaded["lib.menuorder_manager"] = nil
+package.loaded["lib.ui_screens"] = nil
+package.loaded["lib.intent_store"] = nil
+package.loaded["lib.native_writer"] = nil
+MenuOrderManager = require("lib.menuorder_manager")
+UIScreens = require("lib.ui_screens")
+IntentStore = require("lib.intent_store")
+NativeWriter = require("lib.native_writer")
 -- Re-inject the upstream v2 world into the FRESH manager instance (module
 -- state died with the reload; the injected defaults are part of the world).
 for _, v in ipairs(VIEWS) do

@@ -33,10 +33,10 @@ CanvasContext:init(Device)
 require("gettext")
 require("main")
 
-local IntentStore = require("intent_store")
-local MenuSchema = require("menu_schema")
-local AtomicWriter = require("atomic_writer")
-local NativeWriter = require("native_writer")
+local IntentStore = require("lib.intent_store")
+local MenuSchema = require("lib.menu_schema")
+local AtomicWriter = require("lib.atomic_writer")
+local NativeWriter = require("lib.native_writer")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)

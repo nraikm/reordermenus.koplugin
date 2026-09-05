@@ -38,7 +38,7 @@ CanvasContext:init(Device)
 
 require("main") -- sorting-hint guard, exactly like a launch
 
-local IntentStore = require("intent_store")
+local IntentStore = require("lib.intent_store")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)
@@ -134,7 +134,7 @@ do
 
     -- The funnel path for the same race: one bounded rebase, then either
     -- success carrying BOTH edits or a truthful failure - never loss.
-    local CommitPipeline = require("commit_pipeline")
+    local CommitPipeline = require("lib.commit_pipeline")
     local rebased_txn = IntentStore.openTransaction()
     rebased_txn:setPositionOverride("reader", "gate_rebased",
         { after = false, provider = "stock" })

@@ -60,8 +60,8 @@ end
 
 local ReaderMenu = require("apps/reader/modules/readermenu")
 local MenuSorter = require("ui/menusorter")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
 local ReorderingMenus = require("main")
 local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
@@ -70,9 +70,9 @@ local _ = require("gettext")
 local N_ = require("gettext").ngettext
 local T = require("ffi/util").template
 
-local UnicodeFold = require("unicode_fold")
-local UIEditorModel = require("ui_editor_model")
-local UIEditorRegistry = require("ui_editor_registry")
+local UnicodeFold = require("lib.unicode_fold")
+local UIEditorModel = require("lib.ui_editor_model")
+local UIEditorRegistry = require("lib.ui_editor_registry")
 
 local passed = 0
 local failed = 0

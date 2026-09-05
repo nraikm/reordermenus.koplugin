@@ -23,11 +23,11 @@ require("main")
 
 local lfs = require("libs/libkoreader-lfs")
 local DataStorage = require("datastorage")
-local IntentStore = require("intent_store")
-local MenuOrderManager = require("menuorder_manager")
-local NativeWriter = require("native_writer")
-local AtomicWriter = require("atomic_writer")
-local DataLoader = require("data_loader")
+local IntentStore = require("lib.intent_store")
+local MenuOrderManager = require("lib.menuorder_manager")
+local NativeWriter = require("lib.native_writer")
+local AtomicWriter = require("lib.atomic_writer")
+local DataLoader = require("lib.data_loader")
 
 local passed = 0
 local failed = 0

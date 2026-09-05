@@ -17,9 +17,9 @@ do
         "reorderingmenus_state.lua" }) do pcall(os.remove, _sd .. "/" .. n) end
 end
 
-local Mgr = require("menuorder_manager")
-local Materializer = require("materializer")
-local Registry = require("registry")
+local Mgr = require("lib.menuorder_manager")
+local Materializer = require("lib.materializer")
+local Registry = require("lib.registry")
 
 -- Peek at the session internals via a fresh reconcile-free path:
 -- create submenu, then manually evaluate what effectiveParent says for go_to.

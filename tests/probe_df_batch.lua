@@ -6,8 +6,8 @@ local project_dir = assert(test_path:match("^(.*)/tests/[^/]+$"))
 package.path = project_dir .. "/?.lua;" .. project_dir .. "/tests/?.lua;" .. package.path
 
 local World = require("tests.lib.sm_world")
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
 
 local STEPS = 40
 local seeds = { 314187, 523645, 628374, 733103, 1152019, 1361477, 1466206, 1570935, 1675664, 1780393 }

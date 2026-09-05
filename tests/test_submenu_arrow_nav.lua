@@ -44,8 +44,8 @@ local _ = require("gettext")
 require("main")
 
 local ReaderMenu = require("apps/reader/modules/readermenu")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
 local ReorderingMenus = require("main")
 
 local passed, failed = 0, 0

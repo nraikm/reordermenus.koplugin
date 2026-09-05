@@ -41,13 +41,13 @@ local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
-local Presets = require("presets")
-local AtomicWriter = require("atomic_writer")
-local MenuSchema = require("menu_schema")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
+local Presets = require("lib.presets")
+local AtomicWriter = require("lib.atomic_writer")
+local MenuSchema = require("lib.menu_schema")
 
 local lfs = require("libs/libkoreader-lfs")
 local view = "filemanager"
@@ -200,8 +200,8 @@ do
     MenuOrderManager:saveOrder(view)
 
     -- Capture WITH nesting.
-    local s = require("registry").buildFromData(
-        require("koreader_adapter").getDefaultOrder(view), {}, {})
+    local s = require("lib.registry").buildFromData(
+        require("lib.koreader_adapter").getDefaultOrder(view), {}, {})
     local ok_save = Presets.saveSubmenuPreset(view, outer, "Outer",
         "NestedCap", true, s, IntentStore.view(view))
     assert_true(ok_save, "C5: nested capture saved")
@@ -232,7 +232,7 @@ do
         "C5: captured member restored inside the nested container")
     local inner_items = MenuOrderManager:getMenuItems(view, inner)
     if #inner_items < 1 then
-        local sec_dbg = require("intent_store").view(view)
+        local sec_dbg = require("lib.intent_store").view(view)
         print("DBG-C5 outer=", outer, " inner=", inner)
         print("DBG-C5 po.history=",
             tostring(sec_dbg.parent_override.history

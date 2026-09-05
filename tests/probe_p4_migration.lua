@@ -17,7 +17,7 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local IntentStore = require("intent_store")
+local IntentStore = require("lib.intent_store")
 
 -- Exactly the P4 v0 payload.
 local v0 = {

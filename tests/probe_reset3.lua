@@ -20,10 +20,10 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local MenuOrderManager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
+local UIScreens = require("lib.ui_screens")
 
 local view = "reader"
 local sd = DataStorage:getSettingsDir()
@@ -56,4 +56,4 @@ for coll, v in pairs(staged) do
 end
 print("isCustomized=" .. tostring(MenuOrderManager:isCustomized(view)))
 print("adapter.isCustomized=" ..
-    tostring(require("koreader_adapter").isCustomized(view)))
+    tostring(require("lib.koreader_adapter").isCustomized(view)))

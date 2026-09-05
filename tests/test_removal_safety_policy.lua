@@ -30,8 +30,8 @@ CanvasContext:init(Device)
 require("main") -- production environment exactly like a launch
 
 local UIManager = require("ui/uimanager")
-local KoreaderAdapter = require("koreader_adapter")
-local MenuOrderManager = require("menuorder_manager")
+local KoreaderAdapter = require("lib.koreader_adapter")
+local MenuOrderManager = require("lib.menuorder_manager")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)
@@ -147,9 +147,9 @@ end
 -- P4: UI wiring pins ---------------------------------------------------------
 print("\n--- P4: mitigation stays wired into the UI ---")
 do
-    -- P0 note: the module file was renamed to ui_screens.lua;
-    -- the wiring pin follows the rename.
-    local f = io.open(project_dir .. "/ui_screens.lua", "r")
+    -- P0 note: the module file was renamed to ui_screens.lua, then moved
+    -- to lib/ui_screens.lua; the wiring pin follows the move.
+    local f = io.open(project_dir .. "/lib/ui_screens.lua", "r")
     local src = f and f:read("*a") or ""
     if f then f:close() end
     assert_true(src:find("Prepare for plugin removal", 1, true) ~= nil,

@@ -40,10 +40,10 @@ require("main")
 local lfs = require("libs/libkoreader-lfs")
 local _ = require("gettext")
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
 
 local VIEW = "filemanager"
 local sd = DataStorage:getSettingsDir()

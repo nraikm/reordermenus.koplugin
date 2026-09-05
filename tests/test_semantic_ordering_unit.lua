@@ -17,7 +17,7 @@ Run: luajit tests/test_semantic_ordering_unit.lua   (any cwd)
 --]]
 
 package.path = "/Users/nr/Development/ReorderingMenus/?.lua;" .. package.path
-local SD = require("semantic_diff")
+local SD = require("lib.semantic_diff")
 
 local passed, failed = 0, 0
 local failures = {}

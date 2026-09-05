@@ -47,11 +47,11 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
-local UIScreens = require("ui_screens")
-local KoreaderAdapter = require("koreader_adapter")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
+local UIScreens = require("lib.ui_screens")
+local KoreaderAdapter = require("lib.koreader_adapter")
 
 local VIEW = "filemanager"
 local sd = DataStorage:getSettingsDir()
@@ -422,7 +422,7 @@ do
     Manager:setItemHidden(VIEW, "history", true, "main")
     Manager:saveOrder(VIEW)
     -- downgrade the canonical file to v1 semantics (strip meta.generation)
-    local AtomicWriter = require("atomic_writer")
+    local AtomicWriter = require("lib.atomic_writer")
     local dump = require("dump")
     local path = sd .. "/reorderingmenus_intent.lua"
     local fh = io.open(path, "r")
@@ -456,7 +456,7 @@ do
     -- real customization first: a pristine world persists no intent file at all
     Manager:setItemHidden(VIEW, "history", true, "main")
     Manager:saveOrder(VIEW)
-    local AtomicWriter = require("atomic_writer")
+    local AtomicWriter = require("lib.atomic_writer")
     local path = sd .. "/reorderingmenus_intent.lua"
     local fh = io.open(path, "r")
     local body = fh and fh:read("*a") or ""

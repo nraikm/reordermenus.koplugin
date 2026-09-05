@@ -140,7 +140,7 @@ end
 -- C) text_func / enabled_func that throw: where does the plugin touch them?
 print("\n--- C) throwing text_func during plugin title collection ---")
 do
-    local MenuTitles = dofile(project_dir .. "/menu_titles.lua")
+    local MenuTitles = dofile(project_dir .. "/lib/menu_titles.lua")
     local item = {
         text_func = function() error("boom from provider") end,
         text = nil,

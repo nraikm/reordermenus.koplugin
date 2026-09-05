@@ -43,8 +43,8 @@ CanvasContext:init(Device)
 
 require("main") -- sorting-hint guard, exactly like a launch
 
-local IntentStore = require("intent_store")
-local AtomicWriter = require("atomic_writer")
+local IntentStore = require("lib.intent_store")
+local AtomicWriter = require("lib.atomic_writer")
 local util = require("util")
 
 local passed, failed = 0, 0
@@ -315,7 +315,7 @@ end
 print("\n--- T9: manager-level ensureTxn replaces spent transactions ---")
 do
     wipe_world()
-    local MenuOrderManager = require("menuorder_manager")
+    local MenuOrderManager = require("lib.menuorder_manager")
     -- stage through the manager, commit via a direct funnel use
     MenuOrderManager:setItemHidden(view, "plug_a", true, "more_tools")
     local staged_view = MenuOrderManager:stagedView(view)

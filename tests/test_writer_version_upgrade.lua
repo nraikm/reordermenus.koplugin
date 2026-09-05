@@ -38,11 +38,11 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
 
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
-local UIScreens = require("ui_screens")
-local KoreaderAdapter = require("koreader_adapter")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
+local UIScreens = require("lib.ui_screens")
+local KoreaderAdapter = require("lib.koreader_adapter")
 
 local passed, failed = 0, 0
 local function note(cond, msg)
@@ -339,16 +339,16 @@ do
         mirror_changes = false,
         hidden_in_place = true,
     }
-    local AtomicWriter = require("atomic_writer")
+    local AtomicWriter = require("lib.atomic_writer")
     AtomicWriter.writeTable(sd .. "/reorderingmenus_state.lua", legacy)
 
     -- A legacy file is only ever discovered across a PROCESS boundary
     -- (binary downgrade/upgrade + restart). The one-shot migration flag
     -- lives in the manager module, so simulate the restart by reloading it.
-    package.loaded["menuorder_manager"] = nil
-    package.loaded["ui_screens"] = nil
-    Manager = require("menuorder_manager")
-    UIScreens = require("ui_screens")
+    package.loaded["lib.menuorder_manager"] = nil
+    package.loaded["lib.ui_screens"] = nil
+    Manager = require("lib.menuorder_manager")
+    UIScreens = require("lib.ui_screens")
     Manager:dropSessionState(VIEW); IntentStore.load(true); NativeWriter._resetCaches()
     launch()
 
@@ -365,7 +365,7 @@ end
 do
     wipe_all(); launch()
     -- craft a v1 intent file (no generation counter)
-    local AtomicWriter = require("atomic_writer")
+    local AtomicWriter = require("lib.atomic_writer")
     local v1_state = {
         version = 1,
         views = {

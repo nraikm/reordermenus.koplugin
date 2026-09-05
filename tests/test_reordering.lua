@@ -48,9 +48,9 @@ do
     end
 end
 
-local MenuTitles = require("menu_titles")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuTitles = require("lib.menu_titles")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
 local MainPlugin = require("main")
 
 local passed = 0
@@ -392,7 +392,7 @@ MenuOrderManager:reconcileRegisteredItems("reader", {
 assert_eq(MenuOrderManager:getParentMenu("reader", late_search_item), "search",
     "Late Search plugin follows its hint instead of remaining a dangerous orphan")
 -- No machine-derived record may leak into canonical state for the newcomer.
-local MenuSchema = require("menu_schema")
+local MenuSchema = require("lib.menu_schema")
 local late_section = MenuOrderManager:stagedView("reader")
 assert_eq(late_section.parent_override[late_search_item], nil,
     "no anchor record written for a hinted newcomer")

@@ -58,8 +58,8 @@ local function assert_eq(actual, expected, msg)
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
 
 local mock_ui_fm = {
     file_chooser = {
@@ -106,8 +106,8 @@ local function wipe_state()
     os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
     os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_materialization.lua")
     pcall(function()
-        require("intent_store").load(true)
-        require("native_writer")._resetCaches()
+        require("lib.intent_store").load(true)
+        require("lib.native_writer")._resetCaches()
     end)
     MenuOrderManager:dropSessionState(view)
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil

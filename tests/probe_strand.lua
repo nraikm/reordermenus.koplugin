@@ -13,8 +13,8 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
 
 local view = "filemanager"
 local function fp(menu)
@@ -32,7 +32,7 @@ print("A1:", fp("setting"))
 
 Manager:dropSessionState(view)
 IntentStore.load(true)
-require("native_writer")._resetCaches()
+require("lib.native_writer")._resetCaches()
 print("A2 (restarted):", fp("setting"))
 
 -- now hide screen too: first divider strands between nothing and taps-group
@@ -40,7 +40,7 @@ Manager:setItemHidden(view, "screen", true, "setting")
 Manager:saveOrder(view)
 Manager:dropSessionState(view)
 IntentStore.load(true)
-require("native_writer")._resetCaches()
+require("lib.native_writer")._resetCaches()
 print("A3 (restarted):", fp("setting"))
 
 -- unhide everything back
@@ -51,7 +51,7 @@ Manager:saveOrder(view)
 local b = fp("setting")
 Manager:dropSessionState(view)
 IntentStore.load(true)
-require("native_writer")._resetCaches()
+require("lib.native_writer")._resetCaches()
 Manager:saveOrder(view)
 Manager:reloadFromDisk(view)
 local a = fp("setting")

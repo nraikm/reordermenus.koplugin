@@ -36,11 +36,11 @@ local Device = require("device")
 local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 
-local Registry = require("registry")
-local Materializer = require("materializer")
-local Validator = require("validator")
-local NativeWriter = require("native_writer")
-local KoreaderAdapter = require("koreader_adapter")
+local Registry = require("lib.registry")
+local Materializer = require("lib.materializer")
+local Validator = require("lib.validator")
+local NativeWriter = require("lib.native_writer")
+local KoreaderAdapter = require("lib.koreader_adapter")
 
 -- Real sorter WITH the plugin's production guards (hint + custom submenu
 -- synthesis) but WITHOUT the airbag: a crash here must stay visible.

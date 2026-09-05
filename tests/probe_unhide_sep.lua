@@ -14,8 +14,8 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
 
 local view = "filemanager"
 local function fp()
@@ -36,7 +36,7 @@ end
 
 -- 2. external-edit style round trip that DOUBLES the divider (as the fuzzer's
 --    imported file showed), then import it.
-local KoreaderAdapter = require("koreader_adapter")
+local KoreaderAdapter = require("lib.koreader_adapter")
 local path = KoreaderAdapter.getNativePath(view)
 local f = assert(io.open(path, "r"))
 local content = f:read("*a") ; f:close()

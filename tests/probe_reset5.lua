@@ -17,11 +17,11 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 
-local Materializer = require("materializer")
-local Validator = require("validator")
-local NativeWriter = require("native_writer")
-local KoreaderAdapter = require("koreader_adapter")
-local Registry = require("registry")
+local Materializer = require("lib.materializer")
+local Validator = require("lib.validator")
+local NativeWriter = require("lib.native_writer")
+local KoreaderAdapter = require("lib.koreader_adapter")
+local Registry = require("lib.registry")
 
 local view = "reader"
 local sd = DataStorage:getSettingsDir()

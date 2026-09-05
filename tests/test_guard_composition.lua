@@ -26,7 +26,7 @@ CanvasContext:init(Device)
 
 local _ = require("gettext")
 local UIManager = require("ui/uimanager")
-local MenuOrderManager = require("menuorder_manager")
+local MenuOrderManager = require("lib.menuorder_manager")
 
 local T = RW.assert_counter()
 local settings_dir = DataStorage:getSettingsDir()
@@ -68,7 +68,7 @@ local function scenario(name, pre_req_main)
 end
 
 -- UIScreens is required inside launch via parameter; fetch it here.
-local UIScreens = require("ui_screens")
+local UIScreens = require("lib.ui_screens")
 
 for _, mode in ipairs({ "external_first", "ours_first" }) do
     print(string.format("\n--- %s ---", mode))

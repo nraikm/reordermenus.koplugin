@@ -33,9 +33,9 @@ local project_dir = assert(test_path:match("^(.*)/tests/[^/]+$"),
 local FuzzLib = dofile(project_dir .. "/tests/lib/fuzz_lib.lua")
 FuzzLib.boot(project_dir)
 
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
-local KoreaderAdapter = require("koreader_adapter")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
+local KoreaderAdapter = require("lib.koreader_adapter")
 local util = require("util")
 
 local VIEW = "reader"
@@ -177,7 +177,7 @@ do
     Manager:saveOrder(VIEW)
     -- Corrupt the parent to a vanished container (representative of stale
     -- legacy parents / invalid container references).
-    local IntentStoreMod = require("intent_store")
+    local IntentStoreMod = require("lib.intent_store")
     local txn = IntentStoreMod.openTransaction()
     txn:setParentOverride(VIEW, "page_scrubber", { provider = nil, parent = "vanished_menu_xyz" })
     txn:setHidden(VIEW, "page_scrubber", { provider = nil, origin = "tools" })

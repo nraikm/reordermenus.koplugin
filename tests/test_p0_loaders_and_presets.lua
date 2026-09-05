@@ -35,9 +35,9 @@ CanvasContext:init(Device)
 require("gettext")
 require("main")
 
-local DataLoader = require("data_loader")
-local Presets = require("presets")
-local IntentStore = require("intent_store")
+local DataLoader = require("lib.data_loader")
+local Presets = require("lib.presets")
+local IntentStore = require("lib.intent_store")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)

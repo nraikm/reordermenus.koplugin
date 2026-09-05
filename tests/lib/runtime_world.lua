@@ -126,8 +126,8 @@ function RW.wipe_view(settings_dir, view, MenuOrderManager)
         os.remove(string.format(pattern, settings_dir, view))
     end
     pcall(function()
-        require("intent_store").load(true)
-        require("native_writer")._resetCaches()
+        require("lib.intent_store").load(true)
+        require("lib.native_writer")._resetCaches()
     end)
     MenuOrderManager:dropSessionState(view)
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil

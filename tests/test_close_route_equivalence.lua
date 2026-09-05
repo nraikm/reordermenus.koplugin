@@ -37,9 +37,9 @@ local UIManager = require("ui/uimanager")
 require("main")
 
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local IntentStore = require("intent_store")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local IntentStore = require("lib.intent_store")
 
 local passed, failed = 0, 0
 local function assert_eq(a, b, msg)
@@ -89,7 +89,7 @@ local function wipe_all()
 end
 local function restart()
     IntentStore.load(true)
-    require("native_writer")._resetCaches()
+    require("lib.native_writer")._resetCaches()
     MenuOrderManager:dropSessionState(view)
 end
 local function stack_size() return #UIManager._window_stack end

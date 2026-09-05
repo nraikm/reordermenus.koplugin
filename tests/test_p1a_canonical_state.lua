@@ -35,8 +35,8 @@ CanvasContext:init(Device)
 require("gettext")
 require("main")
 
-local IntentStore = require("intent_store")
-local MenuSchema = require("menu_schema")
+local IntentStore = require("lib.intent_store")
+local MenuSchema = require("lib.menu_schema")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)

@@ -37,10 +37,10 @@ local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
 
 local passed, failed = 0, 0
 local function assert_eq(actual, expected, msg)

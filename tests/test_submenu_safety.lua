@@ -47,12 +47,12 @@ local function assert_eq(actual, expected, msg)
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local Materializer = require("materializer")
-local Validator = require("validator")
-local Registry = require("registry")
-local IntentStore = require("intent_store")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
+local Materializer = require("lib.materializer")
+local Validator = require("lib.validator")
+local Registry = require("lib.registry")
+local IntentStore = require("lib.intent_store")
+local UIScreens = require("lib.ui_screens")
 
 local view = "filemanager"
 local settings_dir = DataStorage:getSettingsDir()
@@ -334,12 +334,12 @@ do
         "KOMenu:menu_buttons", "more_tools"), false,
         "T1: tab-into-submenu refused at data layer")
     -- Direct intent with a nested tab stays render-safe via migration.
-    local IntentStore = require("intent_store")
+    local IntentStore = require("lib.intent_store")
     local txn = IntentStore.openTransaction()
     txn:setParentOverride(view, tab_id, { provider = nil, parent = "more_tools" })
-    local Materializer = require("materializer")
-    local Validator = require("validator")
-    local Registry = require("registry")
+    local Materializer = require("lib.materializer")
+    local Validator = require("lib.validator")
+    local Registry = require("lib.registry")
     local s = { reg = Registry.buildFromData(
         MenuOrderManager:getDefaultOrder(view), {}, {}) }
     -- Effective parent falls back to the bar (safe migration, no duplicate).

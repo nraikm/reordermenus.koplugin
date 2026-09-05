@@ -12,9 +12,9 @@ CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 local _ = require("gettext")
 require("main")
-local Manager = require("menuorder_manager")
+local Manager = require("lib.menuorder_manager")
 local World = require("tests.lib.sm_world")
-local IntentStore = require("intent_store")
+local IntentStore = require("lib.intent_store")
 
 local SEED = tonumber(arg and arg[1]) or 1466206
 local STEPS = tonumber(arg and arg[2]) or 200

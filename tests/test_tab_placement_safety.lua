@@ -31,8 +31,8 @@ local project_dir = assert(test_path:match("^(.*)/tests/[^/]+$"),
 local FuzzLib = dofile(project_dir .. "/tests/lib/fuzz_lib.lua")
 FuzzLib.boot(project_dir)
 
-local Manager = require("menuorder_manager")
-local KoreaderAdapter = require("koreader_adapter")
+local Manager = require("lib.menuorder_manager")
+local KoreaderAdapter = require("lib.koreader_adapter")
 local MenuSorter = require("ui/menusorter")
 local util = require("util")
 
@@ -119,8 +119,8 @@ do
         tab_order = { "filemanager_settings", "setting", "tools", "search", "main" },
     }
     -- Apply through the real preset path (sparse intent preset envelope).
-    local Presets = require("presets")
-    local IntentStore = require("intent_store")
+    local Presets = require("lib.presets")
+    local IntentStore = require("lib.intent_store")
     local txn = IntentStore.openTransaction()
     -- Use the backend apply used by loadPreset (covers view presets).
     local s = { reg = nil }

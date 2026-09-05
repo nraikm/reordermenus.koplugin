@@ -36,9 +36,9 @@ CanvasContext:init(Device)
 local _ = require("gettext")
 
 require("main")
-local Manager = require("menuorder_manager")
+local Manager = require("lib.menuorder_manager")
 local World = require("tests.lib.sm_world")
-local IntentStore = require("intent_store")
+local IntentStore = require("lib.intent_store")
 
 local SEEDS = tonumber(os.getenv("DF_SEEDS")) or 10
 local STEPS = tonumber(os.getenv("DF_STEPS")) or 40

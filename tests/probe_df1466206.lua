@@ -2,8 +2,8 @@
 dofile("/Applications/KOReader.app/Contents/koreader/setupkoenv.lua")
 package.path = "/Users/nr/Development/ReorderingMenus/?.lua;/Users/nr/Development/ReorderingMenus/tests/?.lua;" .. package.path
 local World = require("tests.lib.sm_world")
-local Manager = require("menuorder_manager")
-local IntentStore = require("intent_store")
+local Manager = require("lib.menuorder_manager")
+local IntentStore = require("lib.intent_store")
 
 local seed = tonumber(arg and arg[1]) or 1466206
 local STEPS = 40

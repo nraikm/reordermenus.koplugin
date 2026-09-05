@@ -37,9 +37,9 @@ local UIManager = require("ui/uimanager")
 local MenuSorter = require("ui/menusorter")
 local _ = require("gettext")
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local IntentStore = require("intent_store")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local IntentStore = require("lib.intent_store")
 
 local view = "filemanager"
 local settings_dir = DataStorage:getSettingsDir()
@@ -63,8 +63,8 @@ local function assert_eq(actual, expected, msg)
 end
 local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
 
 local mock_ui_fm = {
     file_chooser = {

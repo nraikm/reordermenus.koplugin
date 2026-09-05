@@ -13,8 +13,8 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
 
-local KoreaderAdapter = require("koreader_adapter")
-local UIScreens = require("ui_screens")
+local KoreaderAdapter = require("lib.koreader_adapter")
+local UIScreens = require("lib.ui_screens")
 
 -- P1B (#11): no ui/plugin/insert_menu call. The old mechanism mutated the
 -- SHARED ui/elements/*_menu_order tables (process-singleton, no duplicate
@@ -61,7 +61,7 @@ end
 -- flow: fully guarded, best-effort, no UI.
 function ReorderingMenus:stopPlugin()
     local ok, err = pcall(function()
-        local Manager = require("menuorder_manager")
+        local Manager = require("lib.menuorder_manager")
         if type(Manager.suspendForDisable) == "function" then
             Manager:suspendForDisable()
         end

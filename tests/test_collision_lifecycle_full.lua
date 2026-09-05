@@ -35,9 +35,9 @@ require("main") -- production guards + insert_menu call-once
 
 local UIManager = require("ui/uimanager")
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local KoreaderAdapter = require("koreader_adapter")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local KoreaderAdapter = require("lib.koreader_adapter")
 local _ = require("gettext")
 
 local view = "filemanager"
@@ -111,8 +111,8 @@ local function wipe_state()
     os.remove(settings_dir .. "/reorderingmenus_intent.lua")
     os.remove(settings_dir .. "/reorderingmenus_materialization.lua")
     pcall(function()
-        require("intent_store").load(true)
-        require("native_writer")._resetCaches()
+        require("lib.intent_store").load(true)
+        require("lib.native_writer")._resetCaches()
     end)
     MenuOrderManager:dropSessionState(view)
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
@@ -342,8 +342,8 @@ do
         "reorderingmenus_state.lua",
     }) do pcall(os.remove, sd .. "/" .. name) end
     pcall(function()
-        require("intent_store").load(true)
-        require("native_writer")._resetCaches()
+        require("lib.intent_store").load(true)
+        require("lib.native_writer")._resetCaches()
     end)
     MenuOrderManager:dropSessionState(view)
 end

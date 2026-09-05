@@ -10,7 +10,7 @@ local Device = require("device")
 CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
-local Manager = require("menuorder_manager")
+local Manager = require("lib.menuorder_manager")
 
 Manager:setLiveRegistrations("filemanager", {}, {})
 Manager:setLiveRegistrations("reader", {}, {})
@@ -27,13 +27,13 @@ Manager:restoreItemDefault("filemanager", nonsep[1])
 Manager:resetOrder("filemanager")
 
 -- bypass ALL caches: what does Materializer say with truly empty intent?
-local Registry = require("registry")
-local KoreaderAdapter = require("koreader_adapter")
+local Registry = require("lib.registry")
+local KoreaderAdapter = require("lib.koreader_adapter")
 local reg = Registry.buildFromData(KoreaderAdapter.getDefaultOrder("filemanager"), KoreaderAdapter.collectLiveRegistrations(nil))
 local g = Materializer.resolve(reg, Materializer.emptyIntent())
 print("pure resolve taps:", table.concat(g.lists["taps_and_gestures"] or {}, ","))
 print("manager says     :", table.concat(Manager:getMenuItems("filemanager", menu), ","))
-local IntentStore = require("intent_store")
+local IntentStore = require("lib.intent_store")
 local cs = IntentStore.view("filemanager")
 for coll, tbl in pairs(cs) do
     if type(tbl)=="table" then

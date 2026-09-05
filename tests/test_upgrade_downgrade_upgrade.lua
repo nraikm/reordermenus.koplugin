@@ -47,10 +47,10 @@ local CanvasContext = require("document/canvascontext")
 CanvasContext:init(Device)
 require("main")
 
-local MenuOrderManager = require("menuorder_manager")
-local UIScreens = require("ui_screens")
-local IntentStore = require("intent_store")
-local NativeWriter = require("native_writer")
+local MenuOrderManager = require("lib.menuorder_manager")
+local UIScreens = require("lib.ui_screens")
+local IntentStore = require("lib.intent_store")
+local NativeWriter = require("lib.native_writer")
 local util = require("util")
 
 local view = "filemanager"
@@ -484,7 +484,7 @@ end
 
 print("\n--- Q10: preset saved in era N applied in era N+1 (upgrade matrix) ---")
 do
-    local Presets = require("presets")
+    local Presets = require("lib.presets")
     wipe_all(); set_era(ERA_N); restart(); launch({})
     MenuOrderManager:moveItemToMenu(view, "opds", "search", "main")
     MenuOrderManager:saveOrder(view)
