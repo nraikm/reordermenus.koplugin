@@ -66,8 +66,6 @@ local UIScreens = {
     needs_restart = false,
 }
 
-local EMPTY_HINT_ID = UIEditorModel.EMPTY_HINT_SENTINEL
-
 -- Localized, non-directional row prefixes. These are presentation only —
 -- never part of any id or persisted state.
 local function localizedTabPrefix() return _("[Tab] ") end
@@ -85,18 +83,10 @@ local function submenuArrow()
     return BD.mirroredUILayout() and "←" or "→"
 end
 
--- Case-folded comparison key for user-facing text (titles, queries, preset
--- names). Unicode-aware: É/é, Greek, Cyrillic, Turkish cases as supported by
--- utf8proc; invalid UTF-8 is repaired with "?" first. IDs are NEVER passed
--- through this on their identity path — only as an independent search key.
-local function foldKey(str)
-    return UnicodeFold.key(str)
-end
-
 local function emptyHintRow()
     return {
         text = _("(No items in this menu)"),
-        item_id = EMPTY_HINT_ID,
+        item_id = UIEditorModel.EMPTY_HINT_SENTINEL,
         checked_func = function() return true end,
         callback = function() end,
     }
@@ -108,6 +98,13 @@ local function refreshPaging(widget, preferred_index)
         #widget.item_table, widget.items_per_page, widget.show_page,
         preferred_index)
     widget:_populateItems()
+end
+
+local function resetEditorPaging(widget)
+    if not widget then return end
+    widget.orig_item_table = nil
+    widget.marked = 0
+    refreshPaging(widget)
 end
 
 local function showButtonMenu(buttons, options)
@@ -146,10 +143,6 @@ end
 -- Stage 2: keep cross-editor synchronization behind one small registry.
 function UIScreens:_notifyEditorsOfMove(view, item_id, from_menu_id, to_menu_id)
     UIEditorRegistry:notifyMove(view, item_id, from_menu_id, to_menu_id)
-end
-
-local function id_lists_match(a, b)
-    return UIEditorModel.idsMatch(a, b)
 end
 
 -- Discarding reverts every unsaved in-memory mutation (visibility toggles,
@@ -1237,12 +1230,12 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
     end
     local function tabs_have_unsaved_changes()
         if not sort_widget or type(sort_widget.item_table) ~= "table" then return false end
-        if not id_lists_match(
+        if not UIEditorModel.idsMatch(
                 visibleTabsOf(sort_widget.item_table),
                 managedTabsFromCurrentProjection(sort_widget.item_table)) then
             return true
         end
-        return not id_lists_match(
+        return not UIEditorModel.idsMatch(
             MenuOrderManager:getDisabledItems(view), last_saved_disabled)
     end
     local lifecycle
@@ -1567,8 +1560,182 @@ function UIScreens:_buildItemEditorModel(plugin, view, menu_id)
     }
 end
 
+local function buildOrderFromSortItems(source_items, view)
+    local new_list = {}
+    for _, sort_item in ipairs(source_items or {}) do
+        local iid = sort_item.item_id
+        if iid == UIEditorModel.EMPTY_HINT_SENTINEL then
+            -- skip hint
+        elseif iid == MenuOrderManager.SEPARATOR_ID or not MenuOrderManager:isItemHidden(view, iid) then
+            table.insert(new_list, iid)
+        end
+    end
+    return new_list
+end
+
+-- Heal this editor's row snapshot against cross-menu moves performed after
+-- it was opened. Drill-down keeps parent editors alive with outdated rows;
+-- saving such a snapshot used to drop an item just moved into this menu
+-- (its orphan was then re-anchored to its stock parent, visually reverting
+-- the move) or resurrect an item moved away from it.
+local function healAgainstRecentMoves(new_list, present, view, menu_id)
+    local recent_moves = MenuOrderManager:getRecentMoves(view)
+    local healed = {}
+    for _, id in ipairs(new_list) do
+        local rec = recent_moves[id]
+        if id == MenuOrderManager.SEPARATOR_ID or not rec or rec.to == menu_id then
+            table.insert(healed, id)
+        end
+    end
+    for id, rec in pairs(recent_moves) do
+        if rec.to == menu_id and not present[id]
+                and not MenuOrderManager:isItemHidden(view, id) then
+            table.insert(healed, id)
+            present[id] = true
+        end
+    end
+    return healed
+end
+
+local function buildPersistentOrder(source_items, view, menu_id, unavailable_items)
+    local new_list = buildOrderFromSortItems(source_items, view)
+    local present = {}
+    for _, id in ipairs(new_list) do
+        if id ~= MenuOrderManager.SEPARATOR_ID then present[id] = true end
+    end
+    new_list = healAgainstRecentMoves(new_list, present, view, menu_id)
+    for _, id in ipairs(unavailable_items or {}) do
+        if not present[id] and not MenuOrderManager:isItemHidden(view, id) then
+            table.insert(new_list, id)
+            present[id] = true
+        end
+    end
+    return new_list
+end
+
+-- Schema v3: the historical hidden-anchor side table is gone; the
+-- display anchor is DERIVED instead. A hidden row's previous visible
+-- sibling is its nearest preceding neighbour from the stock/default
+-- layout that is present among the editor's current rows. This is pure
+-- presentation (where to SHOW the dimmed row), never persisted state.
+local function deriveHiddenAnchor(hid, default_list_for_anchors, sort_items)
+    local hid_index
+    for i, id in ipairs(default_list_for_anchors) do
+        if id == hid then hid_index = i; break end
+    end
+    if hid_index then
+        for i = hid_index - 1, 1, -1 do
+            local candidate = default_list_for_anchors[i]
+            if candidate ~= MenuOrderManager.SEPARATOR_ID then
+                return candidate
+            end
+        end
+        return nil
+    end
+    -- For plugin-contributed / foreign items not in the static stock defaults:
+    -- Materializer places them after stock defaults, sorted alphabetically by ID.
+    local default_set = {}
+    for _, id in ipairs(default_list_for_anchors) do default_set[id] = true end
+
+    local best_foreigner_anchor = nil
+    for _, r in ipairs(sort_items) do
+        local rid = r and r.item_id
+        if rid and rid ~= UIEditorModel.EMPTY_HINT_SENTINEL and rid ~= MenuOrderManager.SEPARATOR_ID
+                and not r.is_hidden_row and not default_set[rid] then
+            if rid < hid then
+                best_foreigner_anchor = rid
+            end
+        end
+    end
+    if best_foreigner_anchor then
+        return best_foreigner_anchor
+    end
+    -- If no preceding foreigner, anchor to the last stock default resident:
+    for i = #default_list_for_anchors, 1, -1 do
+        local candidate = default_list_for_anchors[i]
+        if candidate ~= MenuOrderManager.SEPARATOR_ID then
+            return candidate
+        end
+    end
+    return nil
+end
+
+local function appendHiddenRow(hid, sort_items, seen_hidden, hidden_in_place,
+                               default_list_for_anchors, make_hidden_fn)
+    seen_hidden[hid] = true
+    local entry = make_hidden_fn(hid)
+    if not hidden_in_place then
+        table.insert(sort_items, entry)
+        return
+    end
+    local anchor_id = deriveHiddenAnchor(hid, default_list_for_anchors, sort_items)
+    if anchor_id then
+        for j, r in ipairs(sort_items) do
+            if r.item_id == anchor_id then
+                table.insert(sort_items, j + 1, entry)
+                return
+            end
+        end
+    end
+    table.insert(sort_items, entry) -- anchor gone: bottom fallback
+end
+
+local function moveRowInEditor(widget, entry, to_hidden, view, live_items_by_id)
+    if not widget or type(widget.item_table) ~= "table" or not entry then return end
+    local base = tostring(UIScreens:getDisplayTitle(view, entry.item_id, live_items_by_id))
+    if to_hidden then
+        base = base .. " (" .. _("hidden") .. ")"
+    end
+    -- No inline arrow: the edge arrow widget marks submenus (ui_compat).
+    entry.text = base
+    entry.checked_func = function()
+        return not MenuOrderManager:isItemHidden(view, entry.item_id)
+    end
+    entry.dim = to_hidden and true or nil
+    entry.is_hidden_row = to_hidden and true or nil
+
+    -- Preserve-location mode: the row keeps its exact position; only its
+    -- presentation flipped. Bottom mode relocates it into/out of the
+    -- trailing hidden section as before.
+    if MenuOrderManager:isHiddenInPlace() then
+        if not to_hidden then
+            local row_index = UIEditorModel.firstRowIndex(
+                widget.item_table, function(row) return row == entry end)
+            local first_hidden = UIEditorModel.firstRowIndex(
+                widget.item_table,
+                function(row) return row.is_hidden_row end)
+            local visible_before = false
+            for i = 1, (row_index or 1) - 1 do
+                local r = widget.item_table[i]
+                if r and not r.is_hidden_row then
+                    visible_before = true
+                    break
+                end
+            end
+            if row_index and first_hidden and first_hidden < row_index
+                    and visible_before then
+                UIEditorModel.removeRow(widget.item_table, entry)
+                UIEditorModel.insertRow(widget.item_table,
+                    first_hidden, entry)
+            end
+        end
+        resetEditorPaging(widget)
+        return
+    end
+
+    UIEditorModel.removeRow(widget.item_table, entry)
+    local insert_at = #widget.item_table + 1
+    if not to_hidden then
+        insert_at = UIEditorModel.firstRowIndex(widget.item_table,
+            function(row) return row.is_hidden_row end) or insert_at
+    end
+    UIEditorModel.insertRow(widget.item_table, insert_at, entry)
+    resetEditorPaging(widget)
+end
+
 function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, trail_ids)
     if plugin then self.plugin = plugin end
+    local ui_self = self
     -- Support the legacy 4-arg call (trail omitted) and the breadcrumb-aware
     -- 5-arg call. If the 4th arg is a table and the 5th is nil, it is the
     -- trail with no close callback.
@@ -1605,15 +1772,35 @@ function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, 
     local hidden_for_menu = model.hidden_for_menu
 
     local sort_widget
-    local getCurrentEditorOrder
-    local refreshEditorAfterMove
-    -- Forward declaration: row hold-callbacks (e.g. restore-default) run only
-    -- after the unsaved-change block below assigns this.
-    local suppress_unsaved_check
-    -- Forward declarations: row hold-callbacks (e.g. deleting a created
-    -- submenu) run only after these are assigned below.
-    local mark_editor_saved
-    local resetEditorPaging
+    local lifecycle
+    local last_saved_model
+
+    local function buildOrder(source)
+        return buildPersistentOrder(source, view, menu_id, unavailable_items)
+    end
+
+    local function getCurrentEditorOrder()
+        return buildOrder((sort_widget and sort_widget.item_table) or sort_items)
+    end
+
+    local function markEditorSaved()
+        last_saved_model = getCurrentEditorOrder()
+        if lifecycle then lifecycle.mark_saved() end
+    end
+
+    local function moveRowWithinEditor(entry, to_hidden)
+        moveRowInEditor(sort_widget, entry, to_hidden, view, live_items_by_id)
+    end
+
+    local function refreshEditorAfterMove(moved_item_id)
+        if not sort_widget or not sort_widget.item_table then return end
+        UIEditorModel.removeRowsById(sort_widget.item_table, moved_item_id)
+        if #sort_widget.item_table == 0 then
+            table.insert(sort_widget.item_table, emptyHintRow())
+        end
+        resetEditorPaging(sort_widget)
+        markEditorSaved()
+    end
 
     local function create_sep_item()
         local this_entry
@@ -1627,15 +1814,11 @@ function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, 
                     ok_text = _("Delete"),
                     ok_callback = function()
                         if sort_widget and sort_widget.item_table then
-                            for i, sit in ipairs(sort_widget.item_table) do
-                                if sit == this_entry then
-                                    table.remove(sort_widget.item_table, i)
-                                    sort_widget.marked = 0
-                                    refreshPaging(sort_widget)
-                                    if refresh_func then refresh_func() end
-                                    self:showNotice(_("Separator deleted."))
-                                    break
-                                end
+                            if UIEditorModel.removeRow(sort_widget.item_table, this_entry) then
+                                sort_widget.marked = 0
+                                refreshPaging(sort_widget)
+                                if refresh_func then refresh_func() end
+                                ui_self:showNotice(_("Separator deleted."))
                             end
                         end
                     end,
@@ -1645,16 +1828,6 @@ function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, 
         return this_entry
     end
 
-    -- Build ordered list: visible items + hidden items for this menu at bottom (unchecked)
-    local sort_items = {}
-    local seen_hidden = {}
-
-    -- Assigned once resetEditorPaging exists below: moves a row object between
-    -- the visible section and the trailing hidden section of the editor model,
-    -- so visibility toggles are immediately reflected instead of leaving the
-    -- row stuck looking unchanged ("can't unhide").
-    local move_row_within_editor
-
     local function makeSortItem(id, submenu_flag, disp_text)
         local this_id = id
         local is_sub = submenu_flag
@@ -1662,7 +1835,7 @@ function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, 
         local submenu_cb = nil
         if is_sub then
             submenu_cb = function()
-                self:showItemSortWidget(plugin, view, this_id, function()
+                ui_self:showItemSortWidget(plugin, view, this_id, function()
                     if sort_widget then sort_widget:_populateItems() end
                 end, child_trail)
             end
@@ -1680,21 +1853,17 @@ function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, 
                 local is_hidden = MenuOrderManager:isItemHidden(view, this_id)
                 if not is_hidden and MenuOrderManager:isItemProtected(this_id) then
                     UIManager:show(Notification:new{
-                        text = T(
-_("%1 cannot be hidden."),
-                            self:getDisplayTitle(view, this_id, live_items_by_id)),
+                        text = T(_("%1 cannot be hidden."),
+                            ui_self:getDisplayTitle(view, this_id, live_items_by_id)),
                     })
                     return
                 end
                 MenuOrderManager:setItemHidden(view, this_id, not is_hidden, menu_id)
-                if move_row_within_editor then
-                    move_row_within_editor(entry, not is_hidden)
-                end
+                moveRowWithinEditor(entry, not is_hidden)
                 if is_hidden then
                     UIManager:show(Notification:new{
-                        text = T(
-_("Shown “%1”."),
-                            self:getDisplayTitle(view, this_id, live_items_by_id)),
+                        text = T(_("Shown “%1”."),
+                            ui_self:getDisplayTitle(view, this_id, live_items_by_id)),
                     })
                 end
             end,
@@ -1706,16 +1875,13 @@ _("Shown “%1”."),
                             text = _("Move to another menu…"),
                             callback = function()
                                 UIManager:close(dialog)
-                                self:showDestinationMenuChooser(
+                                ui_self:showDestinationMenuChooser(
                                     plugin, view, this_id, menu_id,
                                     function(moved_item_id)
-                                        if refreshEditorAfterMove then
-                                            refreshEditorAfterMove(moved_item_id)
-                                        elseif refresh_func then
-                                            refresh_func()
-                                        end
+                                        refreshEditorAfterMove(moved_item_id)
+                                        if refresh_func then refresh_func() end
                                     end,
-                                    getCurrentEditorOrder and getCurrentEditorOrder() or nil
+                                    getCurrentEditorOrder()
                                 )
                             end,
                         }
@@ -1727,16 +1893,13 @@ _("Shown “%1”."),
                                 UIManager:close(dialog)
                                 if MenuOrderManager:isItemProtected(this_id) then
                                     UIManager:show(Notification:new{
-                                        text = T(
-_("%1 cannot be hidden."),
-                                            self:getDisplayTitle(view, this_id, live_items_by_id)),
+                                        text = T(_("%1 cannot be hidden."),
+                                            ui_self:getDisplayTitle(view, this_id, live_items_by_id)),
                                     })
                                     return
                                 end
                                 MenuOrderManager:setItemHidden(view, this_id, true, menu_id)
-                                if move_row_within_editor then
-                                    move_row_within_editor(entry, true)
-                                end
+                                moveRowWithinEditor(entry, true)
                                 if refresh_func then refresh_func() end
                             end,
                         }
@@ -1749,24 +1912,19 @@ _("%1 cannot be hidden."),
                                 local ok_restore, err_restore =
                                     MenuOrderManager:restoreItemDefault(view, this_id)
                                 if ok_restore then
-                                    if self:saveAndApply(plugin, view, true) then
+                                    if ui_self:saveAndApply(plugin, view, true) then
                                         UIManager:show(Notification:new{
-                                            text = T(
-_("Restored “%1”."),
+                                            text = T(_("Restored “%1”."),
                                                 MenuTitles:getTitle(this_id, live_items_by_id)),
                                         })
-                                        -- The placement is durably restored;
-                                        -- close this editor and reopen it
-                                        -- fresh so the close check compares
-                                        -- against reality.
                                         lifecycle.close_after_commit()
                                         UIManager:nextTick(function()
-                                            self:showItemSortWidget(plugin, view, menu_id,
+                                            ui_self:showItemSortWidget(plugin, view, menu_id,
                                                 on_close_callback, trail_ids)
                                         end)
                                     end
                                 else
-                                    self:showError(err_restore)
+                                    ui_self:showError(err_restore)
                                     if refresh_func then refresh_func() end
                                 end
                             end,
@@ -1779,7 +1937,7 @@ _("Restored “%1”."),
                             text = T(_("Edit submenu contents %1"), submenuArrow()),
                             callback = function()
                                 UIManager:close(dialog)
-                                self:showItemSortWidget(plugin, view, this_id, function()
+                                ui_self:showItemSortWidget(plugin, view, this_id, function()
                                     if refresh_func then refresh_func() end
                                 end, child_trail)
                             end,
@@ -1792,14 +1950,14 @@ _("Restored “%1”."),
                             text = _("Delete this submenu…"),
                             callback = function()
                                 UIManager:close(dialog)
-                                local submenu_title = self:getDisplayTitle(view, this_id, live_items_by_id)
+                                local submenu_title = ui_self:getDisplayTitle(view, this_id, live_items_by_id)
                                 UIManager:show(ConfirmBox:new{
                                     text = T(_("Delete the empty submenu “%1”?"), submenu_title),
                                     ok_text = _("Delete"),
                                     ok_callback = function()
                                         local ok, err = MenuOrderManager:deleteCustomSubmenu(view, this_id)
                                         if not ok then
-                                            self:showError(err)
+                                            ui_self:showError(err)
                                             return
                                         end
                                         if sort_widget and type(sort_widget.item_table) == "table" then
@@ -1809,14 +1967,13 @@ _("Restored “%1”."),
                                                 table.insert(sort_widget.item_table,
                                                     emptyHintRow())
                                             end
-                                            resetEditorPaging()
+                                            resetEditorPaging(sort_widget)
                                         end
-                                        if not self:saveAndApply(plugin, view, true) then
+                                        if not ui_self:saveAndApply(plugin, view, true) then
                                             return
                                         end
-                                        if mark_editor_saved then mark_editor_saved() end
-                                        self:showNotice(T(
-_("Submenu “%1” deleted."), submenu_title))
+                                        markEditorSaved()
+                                        ui_self:showNotice(T(_("Submenu “%1” deleted."), submenu_title))
                                         if refresh_func then refresh_func() end
                                     end,
                                 })
@@ -1825,7 +1982,7 @@ _("Submenu “%1” deleted."), submenu_title))
                     })
                 end
                 dialog = ButtonDialog:new{
-                    title = T(_("“%1”"), self:getDisplayTitle(view, this_id, live_items_by_id)),
+                    title = T(_("“%1”"), ui_self:getDisplayTitle(view, this_id, live_items_by_id)),
                     title_align = "center",
                     buttons = buttons,
                 }
@@ -1833,28 +1990,6 @@ _("Submenu “%1” deleted."), submenu_title))
             end,
         }
         return entry
-    end
-
-    -- How hidden entries are presented: "in place" keeps each dimmed row at
-    -- the position it occupied among visible entries; "bottom" collects them
-    -- into the trailing hidden section.
-    local hidden_in_place = MenuOrderManager:isHiddenInPlace()
-
-    for idx, item_id in ipairs(items) do
-        local is_sep = (item_id == MenuOrderManager.SEPARATOR_ID)
-        if is_sep then
-            table.insert(sort_items, create_sep_item())
-        else
-            local item_title = self:getDisplayTitle(view, item_id, live_items_by_id)
-            -- Only KOReader order-table submenus are editable here. A plugin may
-            -- expose its own sub_item_table (for example HTTP Inspector), but
-            -- its internal arrangement is owned by that plugin and cannot be
-            -- safely persisted through KOReader's menu order.
-            local is_submenu = MenuOrderManager:isSubmenu(view, item_id)
-            -- Plain title: the edge arrow widget marks submenus (ui_compat).
-            local display_text = item_title
-            table.insert(sort_items, makeSortItem(item_id, is_submenu, display_text))
-        end
     end
 
     local function make_hidden_row(hid)
@@ -1873,46 +2008,35 @@ _("Submenu “%1” deleted."), submenu_title))
                 return false -- hidden => unchecked
             end,
             callback = function()
-                -- Tapping checkbox shows the item again. Truthful restoration:
-                -- when the row stays effectively hidden inside a hidden
-                -- ancestor (or has no valid home), keep it in the hidden
-                -- section and explain the dependency instead of reporting a
-                -- misleading success.
                 MenuOrderManager:setItemHidden(view, this_id, false, menu_id)
                 local ok_st, st = pcall(function()
                     return MenuOrderManager:getVisibilityStatus(view, this_id)
                 end)
                 local state = (ok_st and st and st.state) or nil
                 if state == "hidden_by_ancestor" and st.ancestor then
-                    local anc_title = self:getDisplayTitle(view, st.ancestor, live_items_by_id)
+                    local anc_title = ui_self:getDisplayTitle(view, st.ancestor, live_items_by_id)
                     UIManager:show(InfoMessage:new{
                         text = T(_("“%1” is no longer hidden by itself, but it is still inside hidden “%2” and stays invisible until that path is shown. Use Hidden items to reveal its containing path."),
-                            self:getDisplayTitle(view, this_id, live_items_by_id), anc_title),
+                            ui_self:getDisplayTitle(view, this_id, live_items_by_id), anc_title),
                     })
-                    -- Keep the row hidden so the editor model matches the
-                    -- projection; the explicit flag is already cleared.
-                    if refresh_func then refresh_func() end
                     return
                 elseif state ~= nil and state ~= "visible" and state ~= "explicitly_hidden" then
                     UIManager:show(InfoMessage:new{
                         text = T(_("“%1” could not be shown yet (%2)."),
-                            self:getDisplayTitle(view, this_id, live_items_by_id), tostring(state)),
+                            ui_self:getDisplayTitle(view, this_id, live_items_by_id), tostring(state)),
                     })
                     return
                 end
-                if move_row_within_editor then
-                    move_row_within_editor(entry, false)
-                end
+                moveRowWithinEditor(entry, false)
                 UIManager:show(Notification:new{
-                    text = T(
-_("Shown “%1”."),
-                        self:getDisplayTitle(view, this_id, live_items_by_id)),
+                    text = T(_("Shown “%1”."),
+                        ui_self:getDisplayTitle(view, this_id, live_items_by_id)),
                 })
             end,
             hold_callback = function(self_item, refresh_func)
                 UIManager:show(ConfirmBox:new{
                     text = T(_("Show “%1” in this menu again? It stays where it is placed."),
-                        self:getDisplayTitle(view, this_id, live_items_by_id)),
+                        ui_self:getDisplayTitle(view, this_id, live_items_by_id)),
                     ok_text = _("Show"),
                     ok_callback = function()
                         MenuOrderManager:setItemHidden(view, this_id, false, menu_id)
@@ -1921,17 +2045,15 @@ _("Shown “%1”."),
                         end)
                         local state = (ok_st and st and st.state) or nil
                         if state == "hidden_by_ancestor" and st.ancestor then
-                            local anc_title = self:getDisplayTitle(view, st.ancestor, live_items_by_id)
+                            local anc_title = ui_self:getDisplayTitle(view, st.ancestor, live_items_by_id)
                             UIManager:show(InfoMessage:new{
                                 text = T(_("“%1” is no longer hidden by itself, but it is still inside hidden “%2” and stays invisible until that path is shown."),
-                                    self:getDisplayTitle(view, this_id, live_items_by_id), anc_title),
+                                    ui_self:getDisplayTitle(view, this_id, live_items_by_id), anc_title),
                             })
                             if refresh_func then refresh_func() end
                             return
                         end
-                        if move_row_within_editor then
-                            move_row_within_editor(entry, false)
-                        end
+                        moveRowWithinEditor(entry, false)
                         if refresh_func then refresh_func() end
                     end,
                 })
@@ -1940,257 +2062,7 @@ _("Shown “%1”."),
         return entry
     end
 
-    -- Bottom mode appends in disabled-list order. Preserve-location mode
-    -- walks backwards so chains stay stable: several hidden entries sharing
-    -- one anchor are re-inserted after it in their original relative order.
-    --
-    -- Schema v3: the historical hidden-anchor side table is gone; the
-    -- display anchor is DERIVED instead. A hidden row's previous visible
-    -- sibling is its nearest preceding neighbour from the stock/default
-    -- layout that is present among the editor's current rows. This is pure
-    -- presentation (where to SHOW the dimmed row), never persisted state.
-    local default_list_for_anchors =
-        MenuOrderManager:getDefaultOrder(view)[menu_id] or {}
-    local function derive_hidden_anchor(hid)
-        local hid_index
-        for i, id in ipairs(default_list_for_anchors) do
-            if id == hid then hid_index = i break end
-        end
-        if hid_index then
-            for i = hid_index - 1, 1, -1 do
-                local candidate = default_list_for_anchors[i]
-                if candidate ~= MenuOrderManager.SEPARATOR_ID then
-                    return candidate
-                end
-            end
-            return nil
-        end
-        -- For plugin-contributed / foreign items not in the static stock defaults:
-        -- Materializer places them after stock defaults, sorted alphabetically by ID.
-        local default_set = {}
-        for _, id in ipairs(default_list_for_anchors) do default_set[id] = true end
-
-        local best_foreigner_anchor = nil
-        for _, r in ipairs(sort_items) do
-            local rid = r and r.item_id
-            if rid and rid ~= EMPTY_HINT_ID and rid ~= MenuOrderManager.SEPARATOR_ID
-                    and not r.is_hidden_row and not default_set[rid] then
-                if rid < hid then
-                    best_foreigner_anchor = rid
-                end
-            end
-        end
-        if best_foreigner_anchor then
-            return best_foreigner_anchor
-        end
-        -- If no preceding foreigner, anchor to the last stock default resident:
-        for i = #default_list_for_anchors, 1, -1 do
-            local candidate = default_list_for_anchors[i]
-            if candidate ~= MenuOrderManager.SEPARATOR_ID then
-                return candidate
-            end
-        end
-        return nil
-    end
-    local function append_hidden_row(hid)
-        seen_hidden[hid] = true
-        local entry = make_hidden_row(hid)
-        if not hidden_in_place then
-            table.insert(sort_items, entry)
-            return
-        end
-        -- Preserve-location mode: re-insert right after the derived previous
-        -- visible sibling so the dimmed row sits where the entry used to.
-        local anchor_id = derive_hidden_anchor(hid)
-        if anchor_id then
-            for j, r in ipairs(sort_items) do
-                if r.item_id == anchor_id then
-                    table.insert(sort_items, j + 1, entry)
-                    return
-                end
-            end
-        end
-        table.insert(sort_items, entry) -- anchor gone: bottom fallback
-    end
-
-    local function maybe_append_hidden(hid)
-        -- Only add if not already visible (shouldn't be)
-        local already = false
-        for __, it in ipairs(items) do
-            if it == hid then already = true; break end
-        end
-        if not already and not seen_hidden[hid] then
-            append_hidden_row(hid)
-        end
-    end
-
-    if hidden_in_place then
-        for i = #hidden_for_menu, 1, -1 do
-            maybe_append_hidden(hidden_for_menu[i])
-        end
-    else
-        for __, hid in ipairs(hidden_for_menu) do
-            maybe_append_hidden(hid)
-        end
-    end
-
-    -- If no items and no hidden, add hint
-    if #sort_items == 0 then
-        table.insert(sort_items, emptyHintRow())
-    end
-
-    local function buildOrderFromSortItems(source_items)
-        local new_list = {}
-        for _, sort_item in ipairs(source_items or {}) do
-            local iid = sort_item.item_id
-            if iid == EMPTY_HINT_ID then
-                -- skip hint
-            elseif iid == MenuOrderManager.SEPARATOR_ID or not MenuOrderManager:isItemHidden(view, iid) then
-                table.insert(new_list, iid)
-            end
-        end
-        return new_list
-    end
-
-    -- Heal this editor's row snapshot against cross-menu moves performed after
-    -- it was opened. Drill-down keeps parent editors alive with outdated rows;
-    -- saving such a snapshot used to drop an item just moved into this menu
-    -- (its orphan was then re-anchored to its stock parent, visually reverting
-    -- the move) or resurrect an item moved away from it.
-    local function healAgainstRecentMoves(new_list, present)
-        local recent_moves = MenuOrderManager:getRecentMoves(view)
-        local healed = {}
-        for _, id in ipairs(new_list) do
-            local rec = recent_moves[id]
-            if id == MenuOrderManager.SEPARATOR_ID or not rec or rec.to == menu_id then
-                table.insert(healed, id)
-            end
-            -- else: moved to another menu since this editor opened; dropping
-            -- the stale row keeps a save from resurrecting it here.
-        end
-        for id, rec in pairs(recent_moves) do
-            if rec.to == menu_id and not present[id]
-                    and not MenuOrderManager:isItemHidden(view, id) then
-                table.insert(healed, id)
-                present[id] = true
-            end
-        end
-        return healed
-    end
-
-    local function buildPersistentOrder(source_items)
-        local new_list = buildOrderFromSortItems(source_items)
-        local present = {}
-        for _, id in ipairs(new_list) do
-            if id ~= MenuOrderManager.SEPARATOR_ID then present[id] = true end
-        end
-        new_list = healAgainstRecentMoves(new_list, present)
-        for _, id in ipairs(unavailable_items) do
-            if not present[id] and not MenuOrderManager:isItemHidden(view, id) then
-                table.insert(new_list, id)
-                present[id] = true
-            end
-        end
-        return new_list
-    end
-
-    -- A cross-menu move is saved immediately. Include any pending drag, sort,
-    -- separator, or visibility changes from this editor in that same save so
-    -- opening the destination chooser cannot silently discard them.
-    getCurrentEditorOrder = function()
-        local source_items = (sort_widget and sort_widget.item_table) or sort_items
-        return buildPersistentOrder(source_items)
-    end
-
-    -- The SortWidget owns a separate UI model from MenuOrderManager. Merely
-    -- repainting it after a move leaves the old row and parent/index captured
-    -- in its callbacks; the next separator/sort/OK action can then put the item
-    -- back in its source menu. Remove it from the editor model and reset all
-    -- selection/paging state to the newly saved source menu instead.
-    --
-    -- Live interface sync for cross-menu moves performed while this editor is
-    -- open (e.g. a parent menu editor during drill-down). The destination
-    -- editor gains a visible row for the moved item; source editors drop it.
-    -- Defined as methods: _notifyEditorsOfMove invokes them as
-    -- widget:syncMovedIn(item_id).
-    local syncMovedIn
-    local syncMovedOut
-
-    resetEditorPaging = function()
-        sort_widget.orig_item_table = nil
-        sort_widget.marked = 0
-        refreshPaging(sort_widget)
-    end
-
-    -- Relocate a row object between the visible block and the trailing hidden
-    -- section of the editor model. Hiding appends to the end of the hidden
-    -- section; unhiding inserts just before the first remaining hidden row
-    -- (i.e. at the end of the visible block). Text and checkbox state are
-    -- rewritten in the same step: hidden rows carry a baked-in " (hidden)"
-    -- label and a constant-false checkbox, both of which must flip when the
-    -- item is restored.
-    move_row_within_editor = function(entry, to_hidden)
-        if not sort_widget or type(sort_widget.item_table) ~= "table"
-                or not entry then return end
-        local base = tostring(UIScreens:getDisplayTitle(view, entry.item_id, live_items_by_id))
-        if to_hidden then
-            base = base .. " (" .. _("hidden") .. ")"
-        end
-        -- No inline arrow: the edge arrow widget marks submenus (ui_compat).
-        entry.text = base
-        entry.checked_func = function()
-            return not MenuOrderManager:isItemHidden(view, entry.item_id)
-        end
-        entry.dim = to_hidden and true or nil
-        entry.is_hidden_row = to_hidden and true or nil
-
-        -- Preserve-location mode: the row keeps its exact position; only its
-        -- presentation flipped. Bottom mode relocates it into/out of the
-        -- trailing hidden section as before.
-        if MenuOrderManager:isHiddenInPlace() then
-            if not to_hidden then
-                -- Restoring a row that was displayed via the bottom-fallback
-                -- section: land it at the end of the VISIBLE block (ahead of
-                -- any remaining dimmed rows). A row already sitting at its
-                -- preserved in-place position (no hidden rows after it and
-                -- visible rows before it) is left exactly where it is.
-                local row_index = UIEditorModel.firstRowIndex(
-                    sort_widget.item_table, function(row) return row == entry end)
-                local first_hidden = UIEditorModel.firstRowIndex(
-                    sort_widget.item_table,
-                    function(row) return row.is_hidden_row end)
-                local visible_before = false
-                for i = 1, (row_index or 1) - 1 do
-                    local r = sort_widget.item_table[i]
-                    if r and not r.is_hidden_row then
-                        visible_before = true
-                        break
-                    end
-                end
-                if row_index and first_hidden and first_hidden < row_index
-                        and visible_before then
-                    UIEditorModel.removeRow(sort_widget.item_table, entry)
-                    UIEditorModel.insertRow(sort_widget.item_table,
-                        first_hidden, entry)
-                end
-            end
-            resetEditorPaging()
-            return
-        end
-
-        UIEditorModel.removeRow(sort_widget.item_table, entry)
-        local insert_at = #sort_widget.item_table + 1
-        if not to_hidden then
-            insert_at = UIEditorModel.firstRowIndex(sort_widget.item_table,
-                function(row) return row.is_hidden_row end) or insert_at
-        end
-        UIEditorModel.insertRow(sort_widget.item_table, insert_at, entry)
-        resetEditorPaging()
-    end
-
-    -- Defined as methods: _notifyEditorsOfMove invokes them as
-    -- widget:syncMovedIn(item_id).
-    syncMovedIn = function(self, moved_item_id)
+    local function syncMovedIn(moved_item_id)
         if not sort_widget or type(sort_widget.item_table) ~= "table" then return end
         for _, row in ipairs(sort_widget.item_table) do
             if row.item_id == moved_item_id then
@@ -2199,50 +2071,69 @@ _("Shown “%1”."),
         end
         UIEditorModel.removeEmptyHints(sort_widget.item_table)
         local is_submenu = MenuOrderManager:isSubmenu(view, moved_item_id)
-        local item_title = UIScreens:getDisplayTitle(view, moved_item_id, live_items_by_id)
+        local item_title = ui_self:getDisplayTitle(view, moved_item_id, live_items_by_id)
         local new_row = makeSortItem(moved_item_id, is_submenu, item_title)
         local insert_at = #sort_widget.item_table + 1
         if not MenuOrderManager:isHiddenInPlace() then
-            -- Bottom mode: land ahead of the trailing hidden section.
             insert_at = UIEditorModel.firstRowIndex(sort_widget.item_table,
                 function(row) return row.is_hidden_row end) or insert_at
         end
         UIEditorModel.insertRow(sort_widget.item_table, insert_at, new_row)
-        resetEditorPaging()
-        if mark_editor_saved then mark_editor_saved() end
+        resetEditorPaging(sort_widget)
+        markEditorSaved()
     end
 
-    syncMovedOut = function(self, moved_item_id)
+    local function syncMovedOut(moved_item_id)
         if not sort_widget or type(sort_widget.item_table) ~= "table" then return end
         if UIEditorModel.removeRowsById(sort_widget.item_table, moved_item_id) == 0 then
             return
         end
-        resetEditorPaging()
-        if mark_editor_saved then mark_editor_saved() end
+        resetEditorPaging(sort_widget)
+        markEditorSaved()
     end
 
-    refreshEditorAfterMove = function(moved_item_id)
-        if not sort_widget or not sort_widget.item_table then return end
-        UIEditorModel.removeRowsById(sort_widget.item_table, moved_item_id)
-        if #sort_widget.item_table == 0 then
-            table.insert(sort_widget.item_table, emptyHintRow())
+    local sort_items = {}
+    local seen_hidden = {}
+    local hidden_in_place = MenuOrderManager:isHiddenInPlace()
+    local default_list_for_anchors =
+        MenuOrderManager:getDefaultOrder(view)[menu_id] or {}
+
+    for _, item_id in ipairs(items) do
+        if item_id == MenuOrderManager.SEPARATOR_ID then
+            table.insert(sort_items, create_sep_item())
+        else
+            local item_title = self:getDisplayTitle(view, item_id, live_items_by_id)
+            local is_submenu = MenuOrderManager:isSubmenu(view, item_id)
+            table.insert(sort_items, makeSortItem(item_id, is_submenu, item_title))
         end
-        resetEditorPaging()
-        if mark_editor_saved then mark_editor_saved() end
     end
 
-    -- Unsaved-change tracking for the title-bar close button. Footer buttons
-    -- keep their original behaviour: the check icon saves and closes, the
-    -- exit icon closes without asking. The editor model is compared against
-    -- the same normalization the save path produces (buildPersistentOrder),
-    -- captured at open and refreshed at every save point - this keeps
-    -- provider-less preserved entries from ever registering as edits, while
-    -- drags, sorts, separators and visibility toggles all register.
-    suppress_unsaved_check = false
-    local last_saved_model = buildPersistentOrder(sort_items)
-    -- Out-of-band staging baseline (see editor_has_unsaved_changes): whatever
-    -- the shared transaction holds RIGHT NOW belongs to prior context. Only
-    -- staging added while this editor is open counts as its unsaved work.
+    local function maybe_append_hidden(hid)
+        local already = false
+        for _, it in ipairs(items) do
+            if it == hid then already = true; break end
+        end
+        if not already and not seen_hidden[hid] then
+            appendHiddenRow(hid, sort_items, seen_hidden, hidden_in_place,
+                default_list_for_anchors, make_hidden_row)
+        end
+    end
+
+    if hidden_in_place then
+        for i = #hidden_for_menu, 1, -1 do
+            maybe_append_hidden(hidden_for_menu[i])
+        end
+    else
+        for _, hid in ipairs(hidden_for_menu) do
+            maybe_append_hidden(hid)
+        end
+    end
+
+    if #sort_items == 0 then
+        table.insert(sort_items, emptyHintRow())
+    end
+
+    last_saved_model = buildOrder(sort_items)
     local initial_txn = MenuOrderManager.peekTransaction
         and MenuOrderManager:peekTransaction() or nil
     local initial_txn_staged = {}
@@ -2250,34 +2141,12 @@ _("Shown “%1”."),
         initial_txn_staged[v] = initial_txn
             and util.tableDeepCopy(initial_txn:view(v)) or {}
     end
-    mark_editor_saved = function()
-        if sort_widget and type(sort_widget.item_table) == "table" then
-            last_saved_model = buildPersistentOrder(sort_widget.item_table)
-        else
-            last_saved_model = buildPersistentOrder(sort_items)
-        end
-    end
+
     local function editor_has_unsaved_changes()
-        -- Out-of-band staging guard (P0 §9/H2b): the shared transaction is
-        -- view-global, so a cross-menu move staged through the manager API
-        -- while this editor is open never touches its rows - the model-vs-
-        -- baseline check alone cannot see it, and a silent close would let
-        -- it ride the next save. Scope: staging that appeared AFTER this
-        -- editor opened (snapshotted below). Pre-existing staged residue
-        -- (startup reconcile repairs) is deliberately NOT this editor's to
-        -- prompt about - silent closes already sweep it via
-        -- reloadWorkingOrderFromDisk, and nagging on every routine close of
-        -- a freshly opened menu is a UX regression. A stale-epoch txn is
-        -- excluded symmetrically: commit() refuses it, so it cannot ride a
-        -- later save either.
         if initial_txn_staged and MenuOrderManager.peekTransaction then
             local txn = MenuOrderManager:peekTransaction()
             if txn and (txn.store_epoch == nil
                     or txn.store_epoch == IntentStore.storeEpoch()) then
-                -- Reference point depends on WHICH transaction we are looking
-                -- at: our birth txn -> the snapshot taken at open; a REPLACED
-                -- txn (a sibling editor saved meanwhile) -> its own baseline,
-                -- canonical, since fresh staging mirrors canonical at birth.
                 for _, v in ipairs({ "reader", "filemanager" }) do
                     local reference = (txn == initial_txn)
                         and initial_txn_staged[v] or IntentStore.view(v)
@@ -2288,41 +2157,22 @@ _("Shown “%1”."),
             end
         end
         if not sort_widget or type(sort_widget.item_table) ~= "table" then return false end
-        return not id_lists_match(
-            buildPersistentOrder(sort_widget.item_table), last_saved_model)
+        return not UIEditorModel.idsMatch(
+            buildOrder(sort_widget.item_table), last_saved_model)
     end
-    -- Defined after the widget/lifecycle exist: clears drag/selection state
-    -- through the shared lifecycle handle once a commit has landed.
-    local mark_saved_via_lifecycle
+
     local function save_editor_model()
         local source_items = (sort_widget and sort_widget.item_table) or sort_items
-        -- The editor model is translated into minimal intent operations
-        -- against the freshly materialized baseline and committed atomically.
-        MenuOrderManager:stageList(view, menu_id,
-            buildPersistentOrder(source_items))
+        MenuOrderManager:stageList(view, menu_id, buildOrder(source_items))
         local saved, save_err = self:saveAndApply(plugin, view)
         if not saved then
-            -- A semantic no-op save ("unchanged") means canonical state
-            -- ALREADY equals this editor's model (e.g. a drag hand-reverted
-            -- before saving). The durable state matches what the user asked
-            -- for: refresh the saved baseline so the editor becomes clean
-            -- instead of staying permanently dirty on a save that cannot
-            -- fail louder.
             if save_err == CommitPipeline.STATUS.UNCHANGED then
-                if mark_editor_saved then mark_editor_saved() end
-                if mark_saved_via_lifecycle then mark_saved_via_lifecycle() end
+                markEditorSaved()
                 return true
             end
-            -- Real failure: the ConfirmBox has already closed; the editor
-            -- stays open and dirty (staged draft survives via the saveOrder
-            -- rebase), so pressing Save again retries. saveAndApply has
-            -- already shown the error toast.
             return false
         end
-        -- Durable commit: the current model is the new saved baseline, and
-        -- drag/selection state clears (which also repaints the dirty suffix).
-        if mark_editor_saved then mark_editor_saved() end
-        if mark_saved_via_lifecycle then mark_saved_via_lifecycle() end
+        markEditorSaved()
         return true
     end
 
@@ -2333,11 +2183,11 @@ _("Shown “%1”."),
             save_editor_model()
         end,
     }
-    sort_widget.syncMovedIn = syncMovedIn
-    sort_widget.syncMovedOut = syncMovedOut
+    sort_widget.syncMovedIn = function(_, id) syncMovedIn(id) end
+    sort_widget.syncMovedOut = function(_, id) syncMovedOut(id) end
     UIEditorRegistry:register(view, menu_id, sort_widget)
 
-    local lifecycle = attachEditorCloseLifecycle(self, sort_widget, {
+    lifecycle = attachEditorCloseLifecycle(self, sort_widget, {
         view = view,
         has_unsaved_changes = editor_has_unsaved_changes,
         save = save_editor_model,
@@ -2345,27 +2195,19 @@ _("Shown “%1”."),
         on_close_callback = on_close_callback,
         on_closed = function(widget)
             UIEditorRegistry:unregister(widget)
-            -- P1B #13: release this editor's claim on the private tap patch.
             UICompat.releaseSortWidgetSubmenuTap(SortWidget)
         end,
     })
-    mark_saved_via_lifecycle = function() lifecycle.mark_saved() end
 
-    local outer_self_item = self
     function sort_widget:onShowWidgetMenu()
         local this = self
         local dialog
         local sep_text = this.marked > 0 and _("Insert separator after selection") or _("Add separator at bottom")
         local sep_msg = this.marked > 0 and _("Separator inserted after.") or _("Separator added at bottom.")
-        -- Mirror the separator placement rules: nothing selected appends at
-        -- the bottom, a marked row inserts the new entry right after it.
         local submenu_insert_pos = this.marked > 0 and this.marked + 1 or #this.item_table + 1
-        -- Map the editor-model position onto the persisted list: count the
-        -- staged entries the rows before the insertion point account for.
-        -- Hidden rows and the empty hint never match and are skipped.
         local function persistedIndexForEditorPos(pos)
             return UIEditorModel.persistedIndexForRowPosition(
-                this.item_table, pos, getCurrentEditorOrder(), EMPTY_HINT_ID)
+                this.item_table, pos, getCurrentEditorOrder())
         end
         local selected_submenu_id
         local selected_submenu_title
@@ -2373,7 +2215,7 @@ _("Shown “%1”."),
             local sel = this.item_table[this.marked]
             if sel and sel.item_id and sel.is_submenu then
                 selected_submenu_id = sel.item_id
-                selected_submenu_title = outer_self_item:getDisplayTitle(view, sel.item_id, live_items_by_id)
+                selected_submenu_title = ui_self:getDisplayTitle(view, sel.item_id, live_items_by_id)
             end
         end
         local function openResetSubmenu()
@@ -2384,9 +2226,9 @@ _("Shown “%1”."),
                 align = "left",
                 callback = function()
                     UIManager:close(reset_dialog)
-                    outer_self_item:confirmResetSubmenu(plugin, view, menu_id, menu_title, function()
+                    ui_self:confirmResetSubmenu(plugin, view, menu_id, menu_title, function()
                         UIManager:nextTick(function()
-                            outer_self_item:showItemSortWidget(plugin, view, menu_id, on_close_callback, trail_ids)
+                            ui_self:showItemSortWidget(plugin, view, menu_id, on_close_callback, trail_ids)
                         end)
                         lifecycle.close_after_commit()
                     end)
@@ -2398,12 +2240,9 @@ _("Shown “%1”."),
                     align = "left",
                     callback = function()
                         UIManager:close(reset_dialog)
-                        outer_self_item:confirmResetSubmenu(plugin, view, selected_submenu_id, selected_submenu_title, function()
-                            -- The reset saved a new layout for the submenu; reopen
-                            -- this editor fresh instead of repainting stale rows,
-                            -- so the close check compares against reality.
+                        ui_self:confirmResetSubmenu(plugin, view, selected_submenu_id, selected_submenu_title, function()
                             UIManager:nextTick(function()
-                                outer_self_item:showItemSortWidget(plugin, view, menu_id, on_close_callback, trail_ids)
+                                ui_self:showItemSortWidget(plugin, view, menu_id, on_close_callback, trail_ids)
                             end)
                             lifecycle.close_after_commit()
                         end)
@@ -2415,8 +2254,8 @@ _("Shown “%1”."),
                 align = "left",
                 callback = function()
                     UIManager:close(reset_dialog)
-                    outer_self_item:confirmResetAllMenus(plugin, view, function()
-                        outer_self_item:showTabReorderDialog(plugin, view)
+                    ui_self:confirmResetAllMenus(plugin, view, function()
+                        ui_self:showTabReorderDialog(plugin, view)
                     end, function()
                         lifecycle.close_after_commit()
                     end)
@@ -2434,19 +2273,14 @@ _("Shown “%1”."),
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
-                    local insert_pos
-                    if this.marked > 0 then
-                        insert_pos = this.marked + 1
-                    else
-                        insert_pos = #this.item_table + 1
-                    end
+                    local insert_pos = this.marked > 0 and this.marked + 1 or #this.item_table + 1
                     local new_sep = create_sep_item()
                     UIEditorModel.removeEmptyHints(this.item_table)
                     insert_pos = UIEditorModel.insertRow(
                         this.item_table, insert_pos, new_sep)
                     this.marked = insert_pos
                     refreshPaging(this, insert_pos)
-                    outer_self_item:showNotice(sep_msg)
+                    ui_self:showNotice(sep_msg)
                 end,
             }},
             {{
@@ -2455,7 +2289,7 @@ _("Shown “%1”."),
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
-                    outer_self_item:showCreateSubmenuDialog(
+                    ui_self:showCreateSubmenuDialog(
                         plugin, view, menu_id,
                         persistedIndexForEditorPos(submenu_insert_pos),
                         getCurrentEditorOrder,
@@ -2466,9 +2300,8 @@ _("Shown “%1”."),
                                 this.item_table, submenu_insert_pos, new_row)
                             this.marked = submenu_insert_pos
                             refreshPaging(this, submenu_insert_pos)
-                            outer_self_item:showNotice(T(
-_("Submenu “%1” created."), title))
-                            mark_editor_saved()
+                            ui_self:showNotice(T(_("Submenu “%1” created."), title))
+                            markEditorSaved()
                         end)
                 end,
             }},
@@ -2479,7 +2312,7 @@ _("Submenu “%1” created."), title))
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
-                    outer_self_item:showItemSortWidget(plugin, view, selected_submenu_id, function()
+                    ui_self:showItemSortWidget(plugin, view, selected_submenu_id, function()
                         this:_populateItems()
                     end, child_trail)
                 end,
@@ -2490,15 +2323,15 @@ _("Submenu “%1” created."), title))
             align = "left",
             callback = function()
                 UIManager:close(dialog)
-                outer_self_item:showSearchDialog(plugin, view)
+                ui_self:showSearchDialog(plugin, view)
             end,
         }})
         table.insert(buttons, {{
-            text = outer_self_item:_hiddenMenuLabel(view),
+            text = ui_self:_hiddenMenuLabel(view),
             align = "left",
             callback = function()
                 UIManager:close(dialog)
-                outer_self_item:showHiddenItemsManager(plugin, view)
+                ui_self:showHiddenItemsManager(plugin, view)
             end,
         }})
         table.insert(buttons, {{
@@ -2506,7 +2339,7 @@ _("Submenu “%1” created."), title))
             align = "left",
             callback = function()
                 UIManager:close(dialog)
-                outer_self_item:showSortSubmenu(this)
+                ui_self:showSortSubmenu(this)
             end,
         }})
         table.insert(buttons, {{
@@ -2514,15 +2347,11 @@ _("Submenu “%1” created."), title))
             align = "left",
             callback = function()
                 UIManager:close(dialog)
-                local current_menu_items = buildOrderFromSortItems(this.item_table)
-                outer_self_item:showSubmenuPresetsMenu(plugin, view, menu_id, menu_title, function(preset_applied)
+                local current_menu_items = buildOrderFromSortItems(this.item_table, view)
+                ui_self:showSubmenuPresetsMenu(plugin, view, menu_id, menu_title, function(preset_applied)
                     if preset_applied then
-                        -- The submenu preset staged into this editor's open
-                        -- transaction; reopen this editor fresh so its model
-                        -- reflects the staged reality, and skip the dirty
-                        -- discard on the way out.
                         UIManager:nextTick(function()
-                            outer_self_item:showItemSortWidget(plugin, view, menu_id, on_close_callback, trail_ids)
+                            ui_self:showItemSortWidget(plugin, view, menu_id, on_close_callback, trail_ids)
                         end)
                         lifecycle.close_after_commit()
                     end
@@ -2542,7 +2371,7 @@ _("Submenu “%1” created."), title))
             align = "left",
             callback = function()
                 UIManager:close(dialog)
-                outer_self_item:showAdvancedMenu(plugin, view)
+                ui_self:showAdvancedMenu(plugin, view)
             end,
         }})
         dialog = showButtonMenu(buttons, {
@@ -3133,7 +2962,7 @@ function UIScreens:showSearchResults(plugin, view, query, on_close_callback)
     -- Unicode-aware case-insensitive matching over BOTH the query and the
     -- presented titles/ids. Canonical ids are never rewritten here: the
     -- folded forms are independent search keys, identity stays byte-exact.
-    local clean_query = foldKey(query)
+    local clean_query = UnicodeFold.key(query)
     clean_query = clean_query:gsub("^%s+", ""):gsub("%s+$", "")
     local all_menus = MenuOrderManager:getAllMenusAndSubmenus(view)
     local disabled = MenuOrderManager:getDisabledItems(view)
@@ -3143,8 +2972,8 @@ function UIScreens:showSearchResults(plugin, view, query, on_close_callback)
     -- Duplicate labels must still be distinct entries: matching and dedup go
     -- by stable id, never by display title.
     local function queryMatches(item_id, title)
-        return foldKey(item_id):find(clean_query, 1, true)
-            or foldKey(title):find(clean_query, 1, true)
+        return UnicodeFold.key(item_id):find(clean_query, 1, true)
+            or UnicodeFold.key(title):find(clean_query, 1, true)
     end
 
     for __, menu_entry in ipairs(all_menus) do

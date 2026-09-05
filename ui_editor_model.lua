@@ -9,11 +9,6 @@ local EditorModel = {
     EMPTY_HINT_SENTINEL = {},
 }
 
--- Backwards-compatible alias: code that only needs "some non-colliding key"
--- can keep using a constant name. Row matching must use the sentinel object
--- (EditorModel.isEmptyHintRow), not this value.
-EditorModel.EMPTY_HINT_ID = EditorModel.EMPTY_HINT_SENTINEL
-
 function EditorModel.isEmptyHintRow(row)
     return row ~= nil and row.item_id == EditorModel.EMPTY_HINT_SENTINEL
 end
@@ -83,10 +78,8 @@ end
 -- Translate a position in the editor's row model to an insertion point in a
 -- persisted id sequence. Rows omitted from persistence (such as the empty
 -- hint) are ignored, while repeated ids such as separators retain multiplicity.
--- (ignored_row is accepted for call-site compatibility; hint rows are always
--- recognized structurally via their sentinel.)
 function EditorModel.persistedIndexForRowPosition(rows, row_position,
-                                                   persisted_ids, ignored_row)
+                                                   persisted_ids)
     local remaining = {}
     for index = 1, row_position - 1 do
         local row = rows[index]

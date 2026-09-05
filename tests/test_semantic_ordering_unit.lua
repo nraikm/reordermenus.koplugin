@@ -6,8 +6,7 @@ independent semantic layer of semantic_diff.lua
 
   detect_relocation / classify_permutation / apply_operation /
   orders_equivalent / canonical_records_equal / live_orders_equivalent /
-  is_noop_move / moves_are_inverse / anchor_is_redundant / matches_default /
-  minimize_stage / same_anchor_semantics / normalize_sequence /
+  is_noop_move / normalize_sequence /
   multiset_diff / separator_anchors / items_projection
 
 Property invariant under test (task §Tests):
@@ -341,12 +340,6 @@ do
     -- ...but canonical equality keeps them distinct (dormant record is DATA).
     eq(SD.canonical_records_equal({"A","ghost","B"}, {"A","B"}), false,
         "canonical equality preserves tombstone difference")
-
-    -- Restored default.
-    eq(SD.matches_default({"B","A","C"}, {"A","B","C"}), false,
-        "matches_default false when permuted")
-    eq(SD.matches_default({"A","B","C"}, {"A","B","C"}), true,
-        "matches_default true on default arrangement")
 end
 
 -- ===========================================================================
@@ -362,37 +355,6 @@ do
         { type = "move_after", item = "B", after = "C" })
     eq(noop, false, "is_noop_move: real move detected")
 
-    -- Inverse moves restore baseline (cross-spelling).
-    -- C: A B C -> head via move_before(false) == {C,A,B};
-    --    then C -> end via move_after("B") restores {A,B,C}.
-    noop = SD.moves_are_inverse({"A","B","C"},
-        { type = "move_before", item = "C", before = false },
-        { type = "move_after",  item = "C", after = "B" })
-    eq(noop, true, "moves_are_inverse: cross-spelling pair cancels")
-    -- Same-spelling round trip also cancels.
-    noop = SD.moves_are_inverse({"A","B","C"},
-        { type = "move_after", item = "C", after = "A" },
-        { type = "move_after", item = "C", after = "B" })
-    eq(noop, true, "moves_are_inverse: same-spelling pair cancels")
-    -- Distinct spots are NOT inverses.
-    noop = SD.moves_are_inverse({"A","B","C"},
-        { type = "move_after", item = "C", after = "A" },
-        { type = "move_after", item = "C", after = false })
-    eq(noop, false, "moves_are_inverse: distinct spots are not inverses")
-    -- Two no-ops are NOT an inverse pair (nothing moved).
-    noop = SD.moves_are_inverse({"A","B","C"},
-        { type = "move_after", item = "B", after = "A" },
-        { type = "move_after", item = "B", after = "A" })
-    eq(noop, false, "inverse pair must actually move something")
-
-    -- Redundant explicit anchor == move-to-same-location.
-    noop = SD.anchor_is_redundant({"A","B","C"},
-        { type = "move_after", item = "C", after = "B" })
-    eq(noop, true, "anchor_is_redundant on current neighborhood")
-    noop = SD.anchor_is_redundant({"A","B","C"},
-        { type = "move_before", item = "C", before = false })
-    eq(noop, false, "anchor_is_redundant false on real move")
-
     -- apply_operation strictness.
     local out, aerr = SD.apply_operation({"A","B"},
         { type = "move_after", item = "C", after = "A" })
@@ -405,98 +367,6 @@ do
     out, aerr = SD.apply_operation({"A","B"}, { type = "teleport", item = "A" })
     ok(out == nil and aerr.code == "unknown_operation_type",
         "unknown op types rejected")
-end
-
--- ===========================================================================
--- §6 MINIMIZE WITHOUT REPEATED GRAPH RESOLUTION
--- ===========================================================================
-do
-    local r, err
-
-    -- R1: no-op against baseline drops out; real op survives.
-    r = SD.minimize_stage({"A","B","C"},
-        { { type = "move_after", item = "B", after = "A" },
-          { type = "move_after", item = "C", after = "A" } })
-    ok(not err and r, "minimize runs")
-    eq(#r.ops, 1, "R1: no-op staged op removed")
-    eq(r.ops[1].op.item, "C", "R1: surviving op is the real move")
-    seq_eq(r.final_sequence, {"A","C","B"}, "R1: final sequence correct")
-    eq(r.redundant, false, "R1: not redundant")
-
-    -- R2: adjacent inverse pair collapses to nothing -> whole stage redundant.
-    r = SD.minimize_stage({"A","B","C"},
-        { { type = "move_before", item = "C", before = false },
-          { type = "move_after",  item = "C", after = "B" } })
-    eq(r.redundant, true, "R2: away-then-back stage is redundant")
-    eq(#r.ops, 0, "R2: no ops survive")
-
-    -- R3/R4 vs CURRENT RECORD:
-    -- current anchor naming the SAME gap in the other spelling
-    -- (after "A"  ==  before "B") -> drop_matching_anchor.
-    r = SD.minimize_stage({"A","B","C"},
-        { { type = "move_after", item = "C", after = "A" } },
-        { form = "anchor",
-          op = { type = "move_before", item = "C", before = "B" } })
-    eq(r.drop_matching_anchor, true,
-        "R4: staged anchor equals persisted anchor spelling-independently")
-
-    -- Genuinely different placements do not match the record.
-    r = SD.minimize_stage({"A","B","C"},
-        { { type = "move_before", item = "C", before = false } },
-        { form = "anchor",
-          op = { type = "move_after", item = "C", after = "B" } })
-    eq(r.drop_matching_anchor, false,
-        "R4: head move does not match a stay-put anchor")
-
-    -- current sequence record already says the final arrangement -> redundant.
-    r = SD.minimize_stage({"A","B","C"},
-        { { type = "move_after", item = "A", after = "B" } },
-        { form = "sequence", items = {"B","A","C"} })
-    eq(r.redundant, true, "R4: sequence record already encodes the outcome")
-
-    -- different record content -> NOT redundant.
-    r = SD.minimize_stage({"A","B","C"},
-        { { type = "move_after", item = "A", after = "C" } },
-        { form = "sequence", items = {"B","A","C"} })
-    eq(r.redundant, false, "record mismatch keeps the stage alive")
-
-    -- Empty staged list with no record: nothing to do.
-    r = SD.minimize_stage({"A","B","C"}, {})
-    eq(r.redundant, true, "empty stage is redundant by definition")
-end
-
--- ===========================================================================
--- §7 DORMANT PROVIDER DISCIPLINE (never optimize away dormant intent)
--- ===========================================================================
-do
-    -- An op touching an unavailable id must be RETAINED verbatim.
-    local dorm_op = { type = "move_after", item = "ghost", after = "A" }
-    local r, err = SD.minimize_stage(
-        {"A","B"}, { dorm_op }, nil,
-        { is_available = { ghost = false } })
-    ok(err == nil and r ~= nil, "dormant-aware minimize runs")
-    eq(#r.ops, 0, "dormant op excluded from live chain")
-    eq(#r.retained_dormant, 1, "dormant op retained for provider return")
-    eq(r.retained_dormant[1].item or r.retained_dormant[1].op.item,
-        "ghost", "retained op intact")
-    eq(r.redundant, false,
-        "presence of retained dormant intent blocks blanket-redundant verdict")
-
-    -- The SAME stage without availability info is an ordinary no-op drop.
-    r = SD.minimize_stage({"A","ghost","B"},
-        { { type = "move_after", item = "ghost", after = "A" } })
-    eq(r.redundant, true,
-        "without liveness info, same-location move is just a no-op")
-
-    -- Live ops still minimize while a dormant one rides along.
-    r = SD.minimize_stage(
-        {"A","B","C"},
-        { { type = "move_after", item = "B", after = "A" },
-          dorm_op },
-        nil,
-        { is_available = { ghost = false } })
-    eq(#r.ops, 0, "live no-op dropped, dormant preserved")
-    eq(#r.retained_dormant, 1, "dormant preserved alongside live reduction")
 end
 
 -- ===========================================================================

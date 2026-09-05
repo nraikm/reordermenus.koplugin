@@ -2254,27 +2254,12 @@ end
 
 function MenuOrderManager:savePreset(view, preset_name)
     local txn = ensureTxn()
-    return Presets.saveViewPreset(view, preset_name,
-        util.tableDeepCopy(txn:view(view)))
+    return Presets.saveViewPreset(view, preset_name, txn:view(view))
 end
 
 function MenuOrderManager:updatePreset(view, preset)
-    local name, is_builtin
-    if type(preset) == "table" then
-        is_builtin = preset.is_builtin == true
-            or (type(preset.id) == "string" and preset.id:sub(1, 8) == "builtin_")
-        name = preset.name
-            or (type(preset.path) == "string" and preset.path:match("([^/]+)%.lua$"))
-    elseif type(preset) == "string" then
-        name = preset
-    end
-    if is_builtin then
-        return false, _("Built-in presets cannot be updated.")
-    end
-    if not name or name == "" then return false, _("Preset not found.") end
     local txn = ensureTxn()
-    return Presets.updateUserPresetFile(view, name,
-        util.tableDeepCopy(txn:view(view)))
+    return Presets.updateUserPresetFile(view, preset, txn:view(view))
 end
 
 -- Import a dense (legacy) order table into a standalone intent section by

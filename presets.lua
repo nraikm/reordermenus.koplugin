@@ -400,6 +400,30 @@ end
 -- User view presets
 -- -------------------------------------------------------------------------
 
+function Presets.parseUserPresetDescriptor(preset)
+    local is_builtin = false
+    local raw_name
+    if type(preset) == "table" then
+        is_builtin = preset.is_builtin == true
+            or (type(preset.id) == "string" and preset.id:sub(1, 8) == "builtin_")
+        raw_name = preset.name
+            or (type(preset.path) == "string" and preset.path:match("([^/]+)%.lua$"))
+    elseif type(preset) == "string" then
+        raw_name = preset
+    end
+    if is_builtin then
+        return nil, _("Built-in presets cannot be updated."), true
+    end
+    if not raw_name or raw_name == "" then
+        return nil, _("Preset not found."), false
+    end
+    local clean_name, name_err = cleanPresetName(raw_name:gsub("^user_", ""))
+    if not clean_name then
+        return nil, name_err, false
+    end
+    return clean_name, nil, false
+end
+
 function Presets.saveViewPreset(view, preset_name, intent_section)
     local clean_name, name_err = cleanPresetName(preset_name)
     if not clean_name then return false, name_err end
@@ -591,10 +615,9 @@ end
 -- mentions; records for ids it has never heard about are carried over so
 -- entries added since the save keep their placement and visibility.
 function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
-    -- Snapshot the current section first: the transaction hands out the live
-    -- table, which the snapshot is about to replace.
-    local current = util.tableDeepCopy(txn:view(view))
-    local result = txn:view(view)
+    -- The transaction hands out the live staging table for this view.
+    local current = txn:view(view)
+    local result = current
 
     -- P1B: build the preset's ID FOOTPRINT once. Every id the snapshot
     -- mentions - hidden, re-parented, anchored, sequenced, or defining a
@@ -633,7 +656,7 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
         return node == nil or node.default_parent == nil
     end
 
-    local carried_hidden, carried_parent, carried_position = {}, {}, {}
+    local carried_hidden, carried_parent, carried_position, carried_custom = {}, {}, {}, {}
     for id, record in pairs(current.hidden or {}) do
         if carriedOver(id) then carried_hidden[id] = util.tableDeepCopy(record) end
     end
@@ -646,6 +669,9 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
         if carriedOver(id) then
             carried_position[id] = util.tableDeepCopy(record)
         end
+    end
+    for id, custom in pairs(current.custom_menus or {}) do
+        carried_custom[id] = util.tableDeepCopy(custom)
     end
 
     -- Snapshot governs the mentioned surface entirely. Schema v3: hidden
@@ -713,19 +739,19 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
     result.tab_order = preset_intent.tab_order
         and util.tableDeepCopy(preset_intent.tab_order) or nil
     result.custom_menus = {}
-    for id, record in pairs(util.tableDeepCopy(
-            preset_intent.custom_menus or {})) do
+    for id, record in pairs(preset_intent.custom_menus or {}) do
         -- Schema v3: custom-menu placement lives ONLY in parent_override; a
         -- creation-time parent on a legacy snapshot folds in there (the
         -- explicit override still wins when both exist).
         if type(record) == "table" then
-            if type(record.parent) == "string"
+            local rec_copy = util.tableDeepCopy(record)
+            if type(rec_copy.parent) == "string"
                     and result.parent_override[id] == nil then
                 result.parent_override[id] =
-                    { provider = nil, parent = record.parent }
+                    { provider = nil, parent = rec_copy.parent }
             end
-            record.parent = nil
-            result.custom_menus[id] = record
+            rec_copy.parent = nil
+            result.custom_menus[id] = rec_copy
         end
     end
 
@@ -741,9 +767,9 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
     for id, record in pairs(carried_position) do
         result.position_override[id] = record
     end
-    for id, custom in pairs(current.custom_menus or {}) do
+    for id, custom in pairs(carried_custom) do
         if not result.custom_menus[id] then
-            result.custom_menus[id] = util.tableDeepCopy(custom)
+            result.custom_menus[id] = custom
         end
     end
     -- Centralized safe migration (single authority with editor + resolve):
@@ -1275,17 +1301,8 @@ function Presets.listDeletablePresets(view)
 end
 
 function Presets.updateUserPresetFile(view, preset, intent_section)
-    local name
-    if type(preset) == "table" then
-        name = preset.name
-            or (type(preset.path) == "string" and preset.path:match("([^/]+)%.lua$"))
-    elseif type(preset) == "string" then
-        name = preset
-    end
-    if not name or name == "" then return false, _("Preset not found.") end
-    local clean_name, name_err = cleanPresetName(name:gsub("^user_", ""))
-    if not clean_name then return false, name_err end
-    name = clean_name
+    local name, name_err = Presets.parseUserPresetDescriptor(preset)
+    if not name then return false, name_err end
     local file_path = string.format("%s/%s.lua", Presets.getPresetsDir(view), name)
     if lfs.attributes(file_path, "mode") ~= "file" then
         return false, _("Preset file not found.")

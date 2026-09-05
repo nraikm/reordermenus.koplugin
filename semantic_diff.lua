@@ -14,7 +14,6 @@ Algorithms (all deterministic; ties break on the lexicographically smallest
 id, never on pairs() iteration order):
 
   lcs(a, b)          - longest common subsequence via dynamic programming
-  diff_sequences     - LCS-based element diff: kept / removed / added
   infer_list_change  - classifies one menu's old->new as a minimal action:
                          identical            -> nil (no information)
                          single_move          -> { id, after } anchor
@@ -73,51 +72,6 @@ function SemanticDiff.lcs(a, b)
     return result
 end
 
--- Element-level classification of old vs new. Returns:
---   kept   = ordered common subsequence (as it appears in NEW)
---   removed= ids in OLD but not in NEW (sorted)
---   added  = ids in NEW but not in OLD (in new order)
-function SemanticDiff.diff_sequences(old, new)
-    local kept = SemanticDiff.lcs(old, new)
-    local kept_set = {}
-    for _, id in ipairs(kept) do kept_set[id] = true end
-
-    local old_set, new_set = {}, {}
-    for _, id in ipairs(old) do old_set[id] = true end
-    for _, id in ipairs(new) do new_set[id] = true end
-
-    local removed, added = {}, {}
-    for _, id in ipairs(old) do
-        if not kept_set[id] and not new_set[id] then table.insert(removed, id) end
-    end
-    -- ids present in both but NOT in the LCS were moved; they are neither
-    -- removed nor added.
-    local moved_or_kept_in_new = {}
-    for _, id in ipairs(new) do
-        if not kept_set[id] then
-            if old_set[id] then
-                table.insert(moved_or_kept_in_new, id)
-            else
-                table.insert(added, id)
-            end
-        end
-    end
-    for _, id in ipairs(kept) do table.insert(moved_or_kept_in_new, id) end
-    table.sort(removed)
-    return kept, removed, moved_or_kept_in_new, added
-end
-
-local function same_multiset(a, b)
-    if #a ~= #b then return false end
-    local count = {}
-    for _, x in ipairs(a) do count[x] = (count[x] or 0) + 1 end
-    for _, x in ipairs(b) do
-        count[x] = (count[x] or 0) - 1
-        if (count[x] or 0) < 0 then return false end
-    end
-    return true
-end
-
 local function find_block_relocation(old, new)
     local n = #old
     for len = n - 1, 2, -1 do
@@ -173,23 +127,11 @@ end
 function SemanticDiff.infer_list_change(old, new)
     if type(old) ~= "table" or type(new) ~= "table" then return nil end
 
-    -- strip separators for ordering analysis; separator placement is handled
-    -- through separator records by the caller.
-    local function strip(t)
-        local out = {}
-        for _, id in ipairs(t) do
-            if id ~= SEPARATOR_ID then table.insert(out, id) end
-        end
-        return out
-    end
-    local olds, news = strip(old), strip(new)
+    local olds = SemanticDiff.items_projection(old)
+    local news = SemanticDiff.items_projection(new)
 
     if #olds == #news then
-        local identical = true
-        for i = 1, #olds do
-            if olds[i] ~= news[i] then identical = false break end
-        end
-        if identical then return nil end
+        if SemanticDiff.sequence_equal(olds, news) then return nil end
 
         local reversed = #olds > 1
         for i = 1, #olds do
@@ -216,14 +158,7 @@ function SemanticDiff.infer_list_change(old, new)
         -- order. Those carry no ORDERING information at all - the id sets
         -- change, which membership reconciliation handles - so freezing an
         -- explicit sequence for them would shadow future upstream reorders.
-        local function is_subsequence(small, big)
-            local j = 1
-            for i = 1, #big do
-                if big[i] == small[j] then j = j + 1 end
-            end
-            return j > #small
-        end
-        if #news < #olds and is_subsequence(news, olds) then
+        if #news < #olds and SemanticDiff.is_subsequence(news, olds) then
             local new_set = {}
             for _, id in ipairs(news) do new_set[id] = true end
             local removed = {}
@@ -232,7 +167,7 @@ function SemanticDiff.infer_list_change(old, new)
             end
             return { kind = "removal", removed = removed }
         end
-        if #news > #olds and is_subsequence(olds, news) then
+        if #news > #olds and SemanticDiff.is_subsequence(olds, news) then
             local old_set = {}
             for _, id in ipairs(olds) do old_set[id] = true end
             local added = {}
@@ -779,187 +714,5 @@ function SemanticDiff.is_noop_move(baseline, op, opts)
     return SemanticDiff.sequence_equal(applied, nb), nil
 end
 
--- Inverse move: op undoes another placement on the same item (their anchor
--- neighborhoods coincide). Two ops are inverses exactly when applying one
--- after the other restores the original sequence — checked by execution, not
--- by field comparison, so move_after/move_before spellings of the same spot
--- cancel correctly.
-local function inverse_pair(seq, first, second, opts)
-    local once, err1 = SemanticDiff.apply_operation(seq, first)
-    if err1 then return false end
-    local twice, err2 = SemanticDiff.apply_operation(once, second)
-    if err2 then return false end
-    if not SemanticDiff.sequence_equal(twice, seq) then return false end
-    -- Guard against true no-op pairs: an inverse must actually MOVE something.
-    return not SemanticDiff.sequence_equal(once, seq)
-end
-
-function SemanticDiff.moves_are_inverse(seq, op_a, op_b, opts)
-    local nb, err = SemanticDiff.normalize_sequence(seq, opts)
-    if err then return nil, err end
-    return inverse_pair(nb, op_a, op_b, opts), nil
-end
-
--- Redundant explicit anchor: recording `op` would not change what the
--- baseline already says (same location), OR the anchor names a neighborhood
--- the row already occupies.
-function SemanticDiff.anchor_is_redundant(baseline, op, opts)
-    return SemanticDiff.is_noop_move(baseline, op, opts)
-end
-
--- Restored default: proposed equals the default derivation (item-wise).
-function SemanticDiff.matches_default(proposed, default_seq, opts)
-    local eq, err = SemanticDiff.orders_equivalent(default_seq, proposed, opts)
-    if err then return nil, err end
-    return eq, nil
-end
-
--- -------------------------------------------------------------------------
--- MINIMIZATION WITHOUT REPEATED GRAPH RESOLUTION
--- -------------------------------------------------------------------------
--- Pure, LOCAL reduction of a staged operation set against ONE known baseline
--- sequence plus the relevant current record description. No materializer
--- calls, no store access. The caller supplies:
---
---   baseline      - current applicable item sequence for the level
---   staged_ops    - array of semantic ops (move_after/move_before/parent_only)
---   current_record - optional description of what is already persisted:
---                    { form = "anchor", op = <semantic op> }
---                       or { form = "sequence", items = {...} }
---   is_available  - optional map id->bool; dormant-aware filtering
---
--- Rules (in order):
---   R1 drop any staged op that is a no-op against the RUNNING sequence
---      (starts at baseline);
---   R2 drop a staged op whose effect merely RESTORES the running sequence to
---      its pre-stage state along the chain (inverse-of-previous cancellation);
---   R3 if after reduction every op is a no-op against baseline AND the
---      current record's semantic content equals the baseline projection, the
---      whole stage is REDUNDANT (record should be dropped upstream);
---   R4 a current anchor record equal to the surviving staged op is dropped
---      from the output (already persisted); a current SEQUENCE record equal
---      to the final projected sequence marks the stage redundant.
--- Dormant discipline: ops touching ids with is_available[id] == false are
--- PRESERVED verbatim (a currently ineffective record may be intentionally
--- retained for provider return); the minimizer never drops those and reports
--- them under `retained_dormant`. Callers decide liveness policy; this module
--- refuses to guess.
--- -------------------------------------------------------------------------
-
-function SemanticDiff.minimize_stage(baseline, staged_ops, current_record, opts)
-    opts = opts or {}
-    local nb, err = SemanticDiff.normalize_sequence(baseline, opts)
-    if err then return nil, err end
-    local is_available = opts.is_available
-    local function dormant(id)
-        return is_available ~= nil and is_available[id] == false
-    end
-
-    if type(staged_ops) ~= "table" then
-        return nil, { code = "bad_arguments", detail = "staged_ops must be an array" }
-    end
-
-    local retained_dormant = {}
-    local running = nb
-    local kept = {}
-    for i, op in ipairs(staged_ops) do
-        if type(op) ~= "table" or type(op.item) ~= "string" then
-            return nil, { code = "bad_arguments", detail = "op #" .. tostring(i) }
-        end
-        if dormant(op.item) then
-            retained_dormant[#retained_dormant + 1] = op
-        else
-            local applied, aerr = SemanticDiff.apply_operation(running, op)
-            if aerr then
-                return nil, aerr
-            end
-            if SemanticDiff.sequence_equal(applied, running) then
-                -- R1: no-op at this point in the chain.
-            else
-                kept[#kept + 1] = { op = op, seq_before = running, seq_after = applied }
-                running = applied
-            end
-        end
-    end
-
-    -- R2: collapse adjacent inverse pairs (move X then move X back).
-    local collapsed = {}
-    for i = 1, #kept do
-        local last = collapsed[#collapsed]
-        if last and inverse_pair(last.seq_before, last.op, kept[i].op, opts) then
-            collapsed[#collapsed] = nil
-            running = last.seq_before
-        else
-            collapsed[#collapsed + 1] = kept[i]
-        end
-    end
-
-    local final_sequence = running
-    if #collapsed > 0 then final_sequence = collapsed[#collapsed].seq_after end
-
-    -- Record comparison, purely structural.
-    local redundant_against_record = false
-    local drop_matching_anchor = false
-    if current_record and current_record.form == "sequence"
-            and type(current_record.items) == "table" then
-        local rec, rerr = SemanticDiff.normalize_sequence(current_record.items, opts)
-        if rerr then return nil, rerr end
-        if SemanticDiff.sequence_equal(
-                SemanticDiff.items_projection(rec),
-                SemanticDiff.items_projection(final_sequence)) then
-            redundant_against_record = true
-        end
-    elseif current_record and current_record.form == "anchor"
-            and type(current_record.op) == "table" then
-        if #collapsed == 1
-                and SemanticDiff.same_anchor_semantics(collapsed[1].op, current_record.op) then
-            drop_matching_anchor = true
-        end
-    end
-
-    -- R3: nothing survived and the final state equals the baseline.
-    local all_noop = #collapsed == 0 and #retained_dormant == 0
-        and SemanticDiff.sequence_equal(final_sequence, nb)
-
-    return {
-        ops = collapsed,
-        final_sequence = final_sequence,
-        retained_dormant = retained_dormant,
-        redundant = all_noop or redundant_against_record,
-        drop_matching_anchor = drop_matching_anchor,
-    }, nil
-end
-
--- Anchor-form equivalence: two placements agree when executing both against
--- any common sequence yields the same landing spot for the item. We check it
--- against the given baseline (cheap, deterministic, sufficient for record
--- comparison where both were derived from that baseline).
-function SemanticDiff.same_anchor_semantics(op_a, op_b)
-    if type(op_a) ~= "table" or type(op_b) ~= "table" then return false end
-    if op_a.item ~= op_b.item then return false end
-    local ta, tb = op_a.type, op_b.type
-    if ta == tb then
-        if ta == "move_after" then return op_a.after == op_b.after end
-        if ta == "move_before" then return op_a.before == op_b.before end
-        if ta == "parent_only" then return true end
-        return false
-    end
-    -- Cross-spelling equivalence (after=X vs before=Y naming the same gap):
-    -- resolve via application against a synthetic witness sequence.
-    local witness, parts = {}, {}
-    local function add(id) if type(id) == "string" then parts[id] = true end end
-    add(op_a.after); add(op_a.before); add(op_b.after); add(op_b.before); add(op_a.item)
-    for id in pairs(parts) do witness[#witness + 1] = id end
-    table.sort(witness)
-    local ra, ea = SemanticDiff.apply_operation(witness, op_a)
-    if ea then return false end
-    local rb, eb = SemanticDiff.apply_operation(witness, op_b)
-    if eb then return false end
-    -- Same landing position of item?
-    local pa, pb
-    for i, id in ipairs(ra) do if id == op_a.item then pa = i break end end
-    for i, id in ipairs(rb) do if id == op_b.item then pb = i break end end
-    return pa ~= nil and pa == pb
-end
-
 return SemanticDiff
+

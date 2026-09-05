@@ -51,12 +51,9 @@ end
 -- -------------------------------------------------------------------------
 -- Semantic read adapter
 -- -------------------------------------------------------------------------
--- The materializer body consumes ONLY these accessors when reading intent.
--- They delegate to the public Materializer.shim (bottom of file), which is
--- the SINGLE seam to remap when the canonical representation changes
--- (Agent A/D handoff): everything downstream consumes the semantic concepts
--- these functions return - explicit anchor / explicit sequence / explicit
--- parent / hidden / default-unmodified.
+-- The materializer body consumes MenuSchema accessors directly when reading
+-- intent: explicit anchor / explicit sequence / explicit parent / hidden /
+-- default-unmodified.
 
 local function readHiddenRecord(intent, id)
     if type(intent) ~= "table" or type(intent.hidden) ~= "table" then
@@ -70,8 +67,9 @@ end
 -- user's hide sequence), ties broken by id so malformed/migrated data that
 -- lacks ordinals still projects identically in every process.
 local function eachHiddenRecord(intent, visit)
-    for _, entry in Materializer.shim.hiddenRecords(intent) do
-        visit(entry.id)
+    local section = type(intent) == "table" and intent or {}
+    for _, id in ipairs(MenuSchema.orderedHiddenIds(section)) do
+        visit(id)
     end
 end
 
@@ -79,17 +77,21 @@ end
 -- Sequence entries carry their own provider era: entries stamped for another
 -- provider's era of their id are skipped until that provider returns.
 local function readOrderEntries(intent, menu_id)
-    return Materializer.shim.orderEntries(intent, menu_id)
+    local section = type(intent) == "table" and intent or {}
+    local record = MenuSchema.getOrderRecord(section, menu_id)
+    return record and record.entries or nil
 end
 
 -- The explicit parent record for one id (nil = no explicit parent intent).
 local function readParentRecord(intent, id)
-    return Materializer.shim.explicitParent(intent, id)
+    local section = type(intent) == "table" and intent or {}
+    return MenuSchema.getParentOverrideRecord(section, id)
 end
 
 -- The explicit sibling anchor for one id (nil = no explicit slot intent).
 local function readPositionRecord(intent, id)
-    return Materializer.shim.positionAnchor(intent, id)
+    local section = type(intent) == "table" and intent or {}
+    return MenuSchema.getPositionOverrideRecord(section, id)
 end
 
 -- -------------------------------------------------------------------------
@@ -747,76 +749,5 @@ function Materializer.listEquals(a, b)
     return true
 end
 
--- -------------------------------------------------------------------------
--- Canonical read seam (P1A integration: delegates to menu_schema v3)
---
--- The materializer body consumes ONLY these accessors when reading intent.
--- They are thin delegations onto MenuSchema's accessor surface - the schema
--- module owns every physical-storage detail (record shapes, ordinal
--- ordering, separator tokens); this seam owns only the SEMANTIC concepts
--- downstream projection consumes:
---
---   Materializer.shim.hiddenRecords(intent)
---       -> iterator over {id=..., ordinal=number|nil} in hide order,
---          ordinal-less/malformed records sorted by id (deterministic).
---   Materializer.shim.orderEntries(intent, menu_id)
---       -> array of entries, each either {separator=true} or
---          {id=string, provider=string|nil}, in curated order; nil when the
---          level carries no explicit sequence.
---   Materializer.shim.explicitParent(intent, id)
---       -> {provider=..., parent=...}|nil - the single parent-authority
---          record for an item or created submenu.
---   Materializer.shim.positionAnchor(intent, id)
---       -> {provider=..., after=...}|{after=false}|nil sibling anchor.
---   Materializer.shim.customMenus(intent)
---       -> map id -> {title=...} for user-created containers.
--- -------------------------------------------------------------------------
-Materializer.shim = {
-    hiddenRecords = function(intent)
-        local section = type(intent) == "table" and intent or {}
-        -- Canonical accessor: hide-order iteration lives in menu_schema
-        -- (per-record ordinals, id tiebreak for migrated/malformed data).
-        local ordered_ids = MenuSchema.orderedHiddenIds(section)
-        local ordered = {}
-        for index, id in ipairs(ordered_ids) do
-            local record = type(section.hidden) == "table"
-                and type(section.hidden[id]) == "table"
-                and section.hidden[id] or {}
-            ordered[index] = {
-                id = id,
-                ordinal = (type(record.ordinal) == "number")
-                    and record.ordinal or math.huge,
-            }
-        end
-        return ipairs(ordered)
-    end,
-
-    orderEntries = function(intent, menu_id)
-        local section = type(intent) == "table" and intent or {}
-        -- Canonical accessor: combined order record (entries carry their own
-        -- era stamps; separator tokens are typed entries).
-        local record = MenuSchema.getOrderRecord(section, menu_id)
-        return record and record.entries or nil
-    end,
-
-    explicitParent = function(intent, id)
-        local section = type(intent) == "table" and intent or {}
-        return MenuSchema.getParentOverrideRecord(section, id)
-    end,
-
-    positionAnchor = function(intent, id)
-        local section = type(intent) == "table" and intent or {}
-        return MenuSchema.getPositionOverrideRecord(section, id)
-    end,
-
-    customMenus = function(intent)
-        local section = type(intent) == "table" and intent or {}
-        -- Titles only; parent authority lives in explicitParent.
-        local titles = MenuSchema.customMenuTitles(section)
-        local present = type(section.custom_menus) == "table"
-            and next(section.custom_menus) ~= nil or false
-        return titles, present
-    end,
-}
-
 return Materializer
+
