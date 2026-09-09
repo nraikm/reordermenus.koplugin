@@ -1,156 +1,171 @@
-# Developer Architecture Documentation
+# Architecture
 
-This document describes the runtime architecture, domain model, persistence semantics, and structural invariants of the **Reordering Menus** plugin for KOReader.
+Reordering Menus stores **explicit user choices**, then combines them with current
+KOReader defaults and live plugin registrations to build each view's menus.
+Untouched items follow upstream changes; customized items retain their recorded
+placement, order, and visibility.
 
----
+## Data flow
 
-## 1. Governing Principle: Sparse Declarative User Intent
-
-Reordering Menus persists **only explicit user intent** — never an absolute snapshot of resolved menus. 
-
-Menus are materialized at runtime as a pure function of:
-1. Current KOReader stock menu defaults;
-2. Currently registered plugin contributions and sorting hints;
-3. Canonical user intent stored by the plugin.
-
-```
-       Current KOReader defaults (reader_menu_order / filemanager_menu_order defaults)
-       Current live plugin contributions (+ sorting hints)
-                         │
-                         ▼
-                   BASE REGISTRY                      (registry.lua)
-                         │
-      User Intent ───────┼───────────────────────────► MATERIALIZER (materializer.lua)
- (reorderingmenus_intent.lua)                          Pure resolve(registry, intent)
-                         │
-                         ▼
-              VALIDATED MENU GRAPH                    (validator.lua)
-                         │
-                         ▼
-          MINIMAL NATIVE OVERRIDES                    (native_writer.lua)
-   (reader_menu_order.lua / filemanager_menu_order.lua)
-                         │
-                         ▼
-                Stock KOReader MenuSorter
+```text
+KOReader defaults + live plugin registrations and sorting hints
+                            │
+                      registry.lua
+                            │
+Canonical intent ──► materializer.lua
+                            │
+                       validator.lua
+                            │
+                     native_writer.lua
+                            │
+                 KOReader's stock MenuSorter
 ```
 
-When KOReader or a third-party plugin updates:
-- **Untouched menus and items follow future upstream changes automatically** without migration or drift.
-- **Customized items follow the user's explicit instructions** (anchored placement or custom sequence).
+`Materializer.resolve(registry, intent)` is pure and history-free: the same
+inputs produce the same graph on cold start, reload, or restart. Previous
+resolved graphs do not influence the result.
 
----
+Resolution creates custom containers, applies parent changes and ordering
+anchors, places untouched items using their defaults or sorting hints, and
+handles visibility and dividers. Validation checks and repairs the graph before
+native output is written. Only menu levels that differ from current defaults
+are emitted.
 
-## 2. Canonical vs Derived State
+## Module map
 
-| Tier | File / Storage Location | Role & Authority | Mutability & Lifecycle |
-|---|---|---|---|
-| **Canonical Intent** | `settings/reorderingmenus_intent.lua` | **Authoritative source of truth**. Contains sparse user operations (moves, anchors, visibility toggles, created submenus, per-entry provider stamps, divider anchors). | Committed first on user action via atomic replacement. |
-| **Derived Native Overrides** | `settings/reader_menu_order.lua`<br>`settings/filemanager_menu_order.lua` | **Derived projection** consumed by KOReader's stock `MenuSorter`. Contains only menus that deviate from stock. | Generated from canonical intent + current registry. Regenerated if missing, corrupt, or lagging. |
-| **Reconciliation Metadata** | `settings/reorderingmenus_materialization.lua` | **Non-canonical cache & checkpoint**. Stores previous emission fingerprints and bound `intent_gen` to distinguish plugin emissions from hand edits. | Ephemeral checkpoint. Can be safely deleted; regenerated on next run. |
-| **Plugin Preferences** | `settings/settings.reader.lua` (`["reorderingmenus"]`) | Presentation toggles (e.g., `hidden_in_place`, hidden built-in presets). | Independent user UI preferences. |
+Plugin-local modules live under `lib/` and are required with dotted
+`lib.*` names (`lib.menuorder_manager` resolves to
+`lib/menuorder_manager.lua` through the plugin loader's package.path
+template). `main.lua` and `_meta.lua` keep the loader-contract names at
+the plugin root.
 
-Canonical intent is organized per view into these sparse collections:
-
-| Collection | Purpose |
+| Responsibility | Modules |
 |---|---|
-| `hidden` | Hidden item or tab records, stamped with provider identity. |
-| `parent_override` | Explicit item and custom-container parent changes. |
-| `position_override` | Single-item placement anchors. |
-| `order_override` | Explicit item sequences for reordered menus. |
-| `custom_menus` | User-created submenu identities and titles. |
-| `separators` | Anchored divider placement. |
-| `raw_override` | Verbatim fallback for external native edits that cannot be represented semantically. |
-| `tab_order` | Explicit top-level tab order. |
+| Plugin entry point and KOReader integration | `main.lua`, `lib/koreader_adapter.lua` |
+| Public operations used by editors and tests | `lib/menuorder_manager.lua` |
+| Registry, resolution, and graph validation | `lib/registry.lua`, `lib/materializer.lua`, `lib/validator.lua` |
+| Shared placement and visibility rules | `lib/placement.lua`, `lib/visibility.lua` |
+| Canonical state, transactions, and migrations | `lib/intent_store.lua` |
+| Commit, derived writes, and live reload | `lib/commit_pipeline.lua` |
+| Native output and external-edit reconciliation | `lib/native_writer.lua`, `lib/semantic_diff.lua` |
+| Safe loading and atomic file replacement | `lib/data_loader.lua`, `lib/atomic_writer.lua` |
+| View and submenu presets | `lib/presets.lua` |
+| Editor screens, helpers, and open-editor tracking | `lib/ui_screens.lua`, `lib/ui_editor_model.lua`, `lib/ui_editor_registry.lua` |
+| Scoped SortWidget integration | `lib/ui_compat.lua` |
 
-Display text is never used as persistent identity. Ordering and placement are
-keyed by stable item IDs and, where applicable, provider identity.
+The manager translates editing operations into intent transactions. The commit
+pipeline centralizes persistence and refresh, so callers can distinguish a
+failed save from saved intent that still needs regeneration or a restart.
 
----
+## Stored state
 
-## 3. The Materialization Pipeline
+All paths below are relative to KOReader's `settings/` directory.
 
-### Pure Resolution
-`Materializer.resolve(reg, intent)` is a **history-free, pure domain function**:
-$$\text{Graph} = \text{resolve}(\text{Registry}, \text{Intent})$$
-- Cold start, warm reload, and post-restart materializations are byte-for-byte identical.
-- No cached "previous graphs" or stateful seeds leak across runs.
+| File | Role |
+|---|---|
+| `reorderingmenus_intent.lua` | **Canonical customization state**, separated by view. Commit this first. |
+| `reader_menu_order.lua`, `filemanager_menu_order.lua` | Derived overrides consumed by stock `MenuSorter`; regenerated when missing, invalid, or behind intent. |
+| `reorderingmenus_materialization.lua` | Disposable checkpoint containing emission fingerprints and `intent_gen`; distinguishes plugin output from external edits. |
+| `settings.reader.lua`, under `reorderingmenus` | Plugin preferences, including hidden-entry display and hidden built-in presets. |
 
-### Pipeline Stages
-1. **Base Registry (`registry.lua`)**: Collects stock menu items and live plugin contributions via KOReader's `menu.registerToMainMenu` entries and sorting hints.
-2. **Materializer (`materializer.lua`)**:
-   - Applies custom submenu definitions and parent overrides.
-   - Places explicitly moved items into their destination menus.
-   - Evaluates single-item anchors (`position_override`) relative to surviving neighbor items.
-   - Applies bulk sequences from `order_override.entries`; every entry carries its own provider stamp.
-   - Applies divider placement only from anchored `separators` records.
-   - Attaches uncustomized items to their default homes or hint destinations (implicit anchoring).
-   - Isolates hidden items into `KOMenu:disabled` or menu-local hidden records.
-3. **Validator (`validator.lua`)**: Checks structural invariants before any commit or disk write.
-4. **Native Writer (`native_writer.lua`)**: Emits minimal native Lua tables only for menus that differ from stock defaults.
+Canonical intent contains sparse collections. An absent customization means
+“follow the current default.” Display labels are never persistent identities.
 
----
+| Collection | Records |
+|---|---|
+| `hidden` | Explicit hiding, with provider identity and hide order. |
+| `parent_override` | Parent changes for items and custom containers. |
+| `position_override` | Single-item placement relative to neighboring IDs. |
+| `order_override` | Explicit menu sequences with a provider stamp on each entry. |
+| `custom_menus` | Custom submenu IDs and titles. |
+| `separators` | Anchored divider positions. |
+| `raw_override` | Native edits that cannot be represented losslessly as semantic intent. |
+| `tab_order` | Top-level tab sequence. |
 
-## 4. Structural Invariants
+## Rules that changes must preserve
 
-The materializer and validator strictly enforce the following invariants:
+### Placement and ownership
 
-1. **Single Parent Rule**: Every live item belongs to at most one parent menu in the resolved hierarchy. No item may appear in multiple menus simultaneously.
-2. **Acyclicity**: The submenu graph is strictly a directed acyclic graph (tree/forest). A submenu cannot be moved into itself or any of its descendants. Cyclic references are rejected or pruned during ingest.
-3. **Hidden Isolation**: Hidden items are removed from the active native menu tree so KOReader does not render them. Their association with their original parent menu is preserved in canonical intent. Explicit hiding (`hidden[id]` with an applicable provider stamp) is distinct from inherited invisibility (a visible record inside a hidden/unreachable ancestor, cascaded into `KOMenu:disabled` by the validator), from unplaced rows (no valid parent), and from provider absence (dormant ghosts). The manager exposes this via `getVisibilityStatus` (`visible` / `explicitly_hidden` / `hidden_by_ancestor` / `unplaced` / `provider_absent`); the interface never reports a misleading successful restoration and offers `revealHiddenPath` (unhide only the ancestors on that path) without silently revealing unrelated hidden content.
-10. **Placement Capabilities (`placement.lua`, single authority)**: Top-level tabs are not ordinary submenu containers — they carry tab-bar capabilities (position in `KOMenu:menu_buttons`, icon, tab-bar rendering) that a nested row cannot render. Only their order (`tab_order`) and visibility (`hidden`) are customizable; their parent is always `KOMenu:menu_buttons`. Editor moves (`canMoveItemToMenu` / `moveItemToMenu` / destination chooser), preset ingestion (`applyUserIntentPreset` / dense import / external import / submenu presets), and runtime resolution (`Materializer.effectiveParent` fallback + `Validator.removeNestedTabs` repair) all funnel through `Placement.canPlace`. Supported container relocations retain functional children and callbacks through stock `MenuSorter`; unsupported tab-nesting placements are deterministically migrated (tab stays in the bar, nested placeholder removed) with the preset file preserved on disk for recoverability. Vanished containers (upstream-removed homes) stay dormant in canonical intent and reapply when the home returns; unhide migrates a stale home to a valid one instead of leaving the row unplaced-disabled.
-4. **Provider Identity `(id, provider)`**:
-   - Customizations are stamped with the identity of the provider that served the item (`"stock"` or `"plugin:<name>"`).
-   - If a plugin is uninstalled, its customized records become dormant **ghost records**. They do not contaminate or block new plugins that contribute the same ID.
-   - Reinstalling the original plugin seamlessly restores the customized placement.
-5. **Custom Submenu Ownership**: User-created submenus are registered under `KOMenu:custom_submenus` with unique IDs (`custom_sub_<uuid>`). Deleting a custom submenu is permitted only when it is completely empty of visible and hidden items.
-6. **Raw vs Semantic Exclusivity**: If an external hand edit cannot be losslessly translated into semantic anchors, it is preserved as an isolated scoped override. A raw level owns that level exclusively: load and mutation paths remove contradictory bulk-order and divider records.
-7. **History-Free Resolution**: The current registry and canonical intent completely determine the graph. Previous materialized graphs do not participate in resolution.
-8. **Sparse Native Output**: A native menu level is emitted only when its resolved list differs from KOReader's current default derivation.
-9. **Provider Dormancy**: Records for an absent provider remain canonical but do not materialize. A different provider reusing the same ID does not inherit those records; the original provider regains them if it returns.
+Each live item has at most one parent, and the menu hierarchy must be acyclic.
+A submenu cannot move into itself or a descendant. Custom submenu IDs use
+`custom_sub_<uuid>` and are registered under `KOMenu:custom_submenus`; deletion
+requires the submenu to contain no visible or hidden items.
 
----
+Top-level tabs always belong to `KOMenu:menu_buttons`. Users can reorder or hide
+them, but cannot nest them inside ordinary menus: nested rows cannot render tab
+icons and callbacks correctly. `Placement.canPlace` is the shared authority for
+editor moves, preset/import paths, and resolution. Materializer fallback and
+`Validator.removeNestedTabs` also repair unsupported tab nesting at runtime.
+See [migration policy](migration-policy.md) for legacy placement recovery.
 
-## 5. Persistence & Durability: Atomic Replacement
+### Provider identity and missing items
 
-Persistence follows a strict **commit-first, derive-second** order:
+Customizations identify an item by ID and provider (`stock` or `plugin:<name>`).
+If that provider disappears, its records remain dormant and reactivate when it
+returns. Another provider reusing the ID does not inherit stamped records.
+Legacy records without a provider stamp match any provider.
 
-1. **Transaction Stage**: Changes stage in memory against the current generation (`intent_gen`).
-2. **Canonical Commit**: Canonical intent (`reorderingmenus_intent.lua`) is serialized, written to a unique temporary file (`*.tmp.*`), validated, and atomically renamed onto destination.
-   > **Note on Durability**: Persistence uses **atomic replacement** (file replacement via `os.rename`). It guarantees that readers never observe partially written or truncated files. It does not claim battery-pull fsync hardware durability.
-3. **Derived Native Output**: Minimal native override files (`reader_menu_order.lua`, `filemanager_menu_order.lua`) and sidecar metadata (`reorderingmenus_materialization.lua`) are written via atomic replacement.
-4. **Crash Recovery**: If the system terminates between canonical commit and native write, the next launch detects the generation mismatch via the sidecar's `intent_gen` and rematerializes the native files automatically.
+A missing ordinary container also leaves its customization dormant until the
+home returns. Explicitly unhiding an item can repair a stale home by choosing a
+valid parent.
 
-Malformed canonical intent is never silently replaced. The original bytes are
-quarantined, deterministic repairs are reported, and future schema versions
-remain write-protected until explicitly reset or imported. See the
-[Migration & Version Policy](migration-policy.md) for version-specific rules.
+### Visibility
 
----
+Explicit hiding differs from being inside a hidden ancestor, having no valid
+parent, or belonging to an absent provider. `getVisibilityStatus` reports:
 
-## 6. Feature Surface Taxonomy
+- `visible`: reachable in the active tree.
+- `explicitly_hidden`: hidden by an applicable intent record.
+- `hidden_by_ancestor`: inside a hidden or unreachable ancestor.
+- `unplaced`: no valid parent.
+- `provider_absent`: the contributing provider is unavailable.
 
-To maintain simplicity and stability, features are classified into four clear categories:
+Hidden items stay out of the active native tree through `KOMenu:disabled` or
+menu-local hidden records. Intent retains their parent association.
+`revealHiddenPath` unhides only ancestors on the item's path; restoring a row
+must not claim success while it remains unreachable or reveal unrelated items.
 
-### Core Features (Primary User Surface)
-- Drag-and-drop item reordering in Book view and File Manager.
-- Showing / hiding items and submenus via checkbox.
-- Moving items and submenus to any valid destination menu.
-- Creating and deleting custom submenus.
-- Natural A–Z / Z–A sorting.
-- Explicit scoped resets (item, submenu, Book view, File Manager, both views).
-- Sparse view presets and direct/nested submenu presets.
+### Ordering and raw edits
 
-### Advanced Features (`Tools → More tools → Reorder menus → Hamburger → Advanced…`)
-- **Mirror changes (Book & File Manager)**: Bi-directional synchronization of moves and visibility toggles across both views.
-- **Keep hidden entries in position**: Display toggle to keep hidden entries dimmed in-place versus collected at the bottom.
-- **Manage hidden items**: Direct catalog of all hidden entries across menus.
-- **Search menu items**: Unicode case-folded search across all menu titles and IDs.
-- **Prepare for plugin removal**: Unhides all items across both views before uninstalling to ensure stock KOReader compatibility.
+Bulk sequences carry provider stamps per entry; dividers live in anchored
+`separators` records. A raw override exclusively owns its menu level, so load
+and mutation paths remove conflicting semantic order and divider records.
+External native edits are imported as semantic intent when possible, with raw
+fallback for changes that cannot be represented losslessly.
 
-### Diagnostics Surface (`Advanced… → View resolved menu override`)
-- **Resolved KOReader menu override**: Read-only text viewer displaying the exact derived Lua table written for KOReader's native `MenuSorter`. Separated from user editing surfaces.
+## Saving and recovery
 
-### Deprecated / Removed Features
-- **Dense full-tree snapshots**: Replaced by sparse intent presets. Legacy dense presets are converted on load.
-- **File-path preset references**: Replaced by named descriptors and deterministic envelopes.
-- **Global SortWidget monkey-patching**: Replaced by scoped, ref-counted tap installation active only while Reordering Menus editors are open.
+The write order is **commit intent, then derive native files**:
+
+1. Stage a transaction against the current generation.
+2. Serialize canonical intent to a unique temporary file, validate it, and
+   atomically rename it into place.
+3. Resolve and validate changed views, write their minimal native overrides,
+   and checkpoint the emitted generation and fingerprints.
+4. Reload requested live menus. Report whether the change is fully applied,
+   needs regeneration, or requires a restart.
+
+If execution stops after the canonical commit, the next launch detects the
+checkpoint's generation mismatch and regenerates derived files. Atomic
+replacement prevents readers from seeing partial files; it does not guarantee
+hardware durability after a battery pull because it does not claim `fsync`.
+
+Malformed canonical data is preserved before repair. Future schema versions
+remain write-protected rather than being silently replaced. Version-specific
+rules belong in the [migration policy](migration-policy.md).
+
+## UI and compatibility boundaries
+
+Editors provide reordering, visibility, valid moves, custom submenus, sorting,
+scoped resets, and presets. Search and hidden-item tools are in editor menus.
+**Advanced…** contains mirroring, hidden-entry display preferences, the read-only
+resolved-override viewer, and removal preparation.
+
+Mirroring applies to visibility changes and cross-menu moves when the item and
+destination exist in both views. Reordering, dividers, tab order, restores, and
+resets remain per-view. SortWidget tap support is scoped and reference-counted
+while editors are open.
+
+See the [compatibility guide](compatibility-matrix.md) for upstream workarounds,
+the [testing guide](testing.md) for validation, and the [README](../README.md)
+for user workflows.

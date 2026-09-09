@@ -1,7 +1,7 @@
 # Testing Guide
 
-This is the maintained guide for running and extending the Reordering Menus
-test suite. The executable suites are the source of truth.
+Run tests from the repository root against a real KOReader installation.
+The executable suites and `run_tests.sh` define the test contract.
 
 ## Prerequisites
 
@@ -23,19 +23,13 @@ or modify the developer's normal KOReader settings.
 
 ## Running Tests
 
-Run the quick tier across every `tests/test_*.lua` suite plus the hostile
-storage-safety harness:
+| Task | Command |
+|---|---|
+| Quick tier: all default suites and hostile storage harness | `./run_tests.sh` |
+| One suite | `./run_tests.sh tests/test_ui_flows.lua` |
+| Several suites | `./run_tests.sh tests/test_semantic_diff_unit.lua tests/test_materializer_determinism.lua` |
 
-```bash
-./run_tests.sh
-```
-
-Run one or more targeted suites by passing paths relative to the repository:
-
-```bash
-./run_tests.sh tests/test_ui_flows.lua
-./run_tests.sh tests/test_semantic_diff_unit.lua tests/test_materializer_determinism.lua
-```
+Suite paths are relative to the repository (absolute paths also work).
 
 Logs are written to `/tmp/rm_test_<suite>.log`. A failed run prints the exact
 log path.
@@ -58,7 +52,7 @@ validates it and fails if a suite silently ignores the requested tier knobs.
 `tests/run_tier.sh` is a compatibility wrapper for the two state-machine
 suites; `run_tests.sh` remains the configuration authority.
 
-## Seeds and Reproduction
+## Reproducing randomized failures
 
 Default tier schedules are deterministic. Generate a fresh state-machine seed
 list and print it for later replay with:
@@ -148,7 +142,7 @@ VERIFY=1 ./build_release.sh
 Verification extracts the built ZIP into an isolated plugin directory and
 rejects fallback module resolution from the development checkout.
 
-## Adding or Changing Tests
+## Adding or changing tests
 
 - Name default-run suites `tests/test_<subject>.lua`.
 - Keep tests hermetic; use the runner-provided `KO_HOME` and do not write to a
@@ -160,3 +154,6 @@ rejects fallback module resolution from the development checkout.
 - Add subprocess coverage when the behavior depends on crash, restart, module
   cache, or process-lifetime boundaries.
 - Run targeted suites first, then the tier appropriate to the change.
+
+See [architecture](architecture.md) for the invariants tests should protect and
+[migration policy](migration-policy.md) for supported historical formats.

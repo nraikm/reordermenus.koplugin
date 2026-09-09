@@ -14,17 +14,14 @@ Reorder, hide, move, and group KOReader menu items in both **Book view** and the
 
 ## Features
 
-- **Independent Layouts**: Customize top menus and submenus in Book view and File Manager independently.
-- **Deep Reordering**: Open and reorder KOReader-defined nested submenus at any depth.
-- **Show / Hide**: Toggle visibility of any item with a single tap on its checkbox.
-- **Move Items & Submenus**: Move any item or complete submenu to another parent menu with cycle prevention.
-- **Custom Submenus**: Create empty submenus anywhere in the hierarchy, name them, and organize items into them.
-- **Mirroring (Optional)**: Mirror changes between Book view and File Manager automatically whenever the same items exist in both contexts.
-- **Presets**: Save and restore complete view layouts or focused submenu presets (direct or nested).
-- **Explicit Resets**: Reset a single item, an individual submenu, the current view (Book view or File Manager), or both views back to stock defaults.
-- **Safe Upstream Updates**: Uncustomized menus and items follow future KOReader and plugin updates automatically without breaking your custom placements.
-
----
+- Customize Book view and File Manager independently, including nested submenus.
+- Reorder and hide items, move items or submenus to valid destinations, and
+  create custom submenus. Top-level tabs can be reordered or hidden.
+- Save view layouts or direct/nested submenu presets.
+- Reset an item, submenu, one view, or both views to stock defaults.
+- Optionally mirror visibility changes and cross-menu moves between views
+  when the item and destination exist in both. Other changes remain per-view.
+- Let untouched items follow KOReader and plugin updates automatically.
 
 ## Installation
 
@@ -33,40 +30,34 @@ Reorder, hide, move, and group KOReader menu items in both **Book view** and the
 3. Copy the `reorderingmenus.koplugin` folder into your KOReader `plugins/` directory (e.g. `koreader/plugins/reorderingmenus.koplugin`).
 4. Restart KOReader.
 
----
+## Editing menus
 
-## Basic Workflow
+Open **Tools → More tools → Reorder menus**.
 
-Open the editor from the main menu:
-
-```text
-Tools → More tools → Reorder menus
-```
-
-- **Reorder**: Drag entries up or down to change their order. The title shows an “Unsaved changes” marker until you save.
-- **Hide / Show**: Tap the checkbox next to any entry to hide or restore it.
-- **Open a Submenu**: Tap the arrow at the row's trailing edge to enter its editor directly (it flips sides in right-to-left layouts). Tapping an already-selected submenu row, or choosing **Edit submenu contents** in the hold dialog, works too. Nested editors title themselves with their path, e.g. `Book view › Tools › More tools`.
-- **Submenu Actions & Reset**: Tap the hamburger menu icon (top-left) for **Search…**, **Hidden items (count)**, **Sort…**, presets, custom submenus, **Reset…**, and **Advanced…**.
-- **Save Changes**: Tap the checkmark icon in the bottom-right corner to save your changes.
-- **Discard Changes**: Every exit — the title-bar `X`, the bottom exit icon, or the Back key — asks Save / Discard / Cancel when there are unsaved changes. Clean editors close immediately.
-
----
+1. Drag entries to reorder them; tap a checkbox to hide or show an entry.
+2. Open a submenu with the arrow at the row's trailing edge. You can also tap
+   an already-selected submenu or hold it and choose **Edit submenu contents**.
+   Nested editor titles show the path, such as `Book view › Tools › More tools`.
+3. Use the top-left hamburger menu for search, hidden items, sorting, presets,
+   custom submenus, resets, and advanced options.
+4. Tap the bottom-right checkmark to save. The title marks unsaved changes;
+   closing a changed editor offers **Save / Discard / Cancel**.
 
 ## Presets
 
-### View Presets
-The top-level hamburger menu (**Presets…**) lets you save the complete current layout (Book view or File Manager) as a named preset or restore built-in presets.
+**View presets** save the current Book view or File Manager layout. Open
+**Presets…** in the top-level editor to save a named layout or apply a built-in
+preset. View presets include explicit placement and visibility choices.
 
-### Submenu Presets
-Inside any submenu editor, open **Presets for _menu name_…**:
-- **Save this menu order…** (`[Direct]`): Captures only the immediate item sequence of the current submenu.
-- **Save with nested submenu orders…** (`[Nested]`): Captures the current submenu order plus all submenus nested within it.
+**Submenu presets** are available under **Presets for _menu name_…**:
 
-Applying a preset updates item sequences while keeping your existing visibility settings and custom-created submenus intact.
+- **Save this menu order…** (`[Direct]`) captures the immediate item sequence.
+- **Save with nested submenu orders…** (`[Nested]`) also captures descendant orders.
 
----
+Applying a submenu preset changes sequences while retaining existing visibility
+settings and custom-created submenus.
 
-## Important Safety & Plugin Removal Note
+## Disabling or uninstalling
 
 **Disabling** Reordering Menus (via the plugin manager) automatically
 returns Book view and File Manager menus to stock KOReader order on the
@@ -82,9 +73,7 @@ Tools → More tools → Reorder menus → Hamburger → Advanced… → Prepare
 
 This unhides all items across both views, ensuring that stock KOReader and other third-party plugins can find their default menu destinations without issue when Reordering Menus is no longer active.
 
----
-
-## Supported KOReader Versions
+## Compatibility
 
 - The automated integration baseline is KOReader
   `v2025.10-43-g562fc11_2025-11-28`. Other releases may work, but are not
@@ -93,16 +82,12 @@ This unhides all items across both views, ensuring that stock KOReader and other
   the compatibility matrix before widening this window.
 - Works entirely within user settings (`settings/reader_menu_order.lua`, `settings/filemanager_menu_order.lua`, `settings/reorderingmenus_intent.lua`) without patching core KOReader application files.
 
----
+## Development
 
-## Developer Documentation
-
-For architecture details, compatibility boundaries, migrations, and testing:
-
-- [Developer Architecture Documentation](docs/architecture.md) — Explains the canonical sparse user intent model, materialization pipeline, validation, and persistence semantics.
-- [KOReader Compatibility Matrix](docs/compatibility-matrix.md) — Documents runtime defensive workarounds and their exact removal conditions.
-- [Migration & Version Policy](docs/migration-policy.md) — Details schema versioning and upgrade guarantees.
-- [Testing Guide](docs/testing.md) — Covers prerequisites, test tiers, targeted runs, randomized replay, regression fixtures, and release verification.
+- [Architecture](docs/architecture.md): data flow, modules, state, and invariants.
+- [Compatibility](docs/compatibility-matrix.md): integration boundaries and workaround removal.
+- [Migration policy](docs/migration-policy.md): file versions and recovery rules.
+- [Testing](docs/testing.md): suites, seed replay, fixtures, and release verification.
 
 ### Running Tests
 
