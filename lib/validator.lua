@@ -1,18 +1,31 @@
 --[[--
 validator.lua — structural guarantees for a materialized menu graph.
 
-Runs after materialization and repairs deterministically instead of
-crashing or corrupting KOReader's MenuSorter. Checks:
+Prompt 3 Part C inventory: every repair below runs ONCE, inside
+Resolver.resolve (the single effective entry), as the final pure checker over
+a COPY of the materialized graph. It is retained (not deleted) because it
+still adds independent value as the render-safety gate: even hand-built or
+malformed graphs (tests, legacy imports, future callers bypassing IntentOps)
+come out render-safe + diagnosed. Repairs:
 
-  - single parent   : every visible id is listed exactly once
-  - no cycles       : submenu containers must form a DAG under the tab bar
-  - valid anchors   : position hints and separators referencing siblings
-  - collision       : created submenu ids must not clash with stock ids
-  - hidden invariant: hidden ids appear in no list; protected entries stay
-                      reachable so menu editing can never lock itself out
+  - repairDuplicateOwnership (single parent; explicit parent_override wins,
+    else customized-destination-wins, else alphabetical)
+  - breakCycles (container DAG; sorted scan, back-edges dropped)
+  - removeHiddenRows (hidden invariant: hidden ids in no list)
+  - removeNestedTabs (tab capability: tabs never nested, bar only live tabs)
+  - hideUnreachableContainers (reachability cascade into disabled, unplaced
+    accounting)
+  - rebuildOwnership (owner/index recomputation post-repair)
+  - restoreProtectedItems (editing can never lock itself out)
+  - ensureNonEmptyTabBar (stock MenuSorter [1] safety + real-list guarantee)
+  - collectUnplacedWarnings (observability, no silent loss)
 
-The validator never mutates intent; it repairs the derived graph and
-reports what it had to fix.
+The validator never mutates intent; it repairs the derived graph copy and
+reports warnings (surfaced as Resolver diagnostics). New editor commands are
+validated BEFORE staging via Placement (IntentOps.setMembership refuses
+structural violations), so valid drafts rarely trigger repairs; malformed /
+dormant IMPORTED intent is preserved in canonical state and only repaired in
+the effective projection + diagnostics (never destroyed to produce validity).
 --]]
 
 local MenuSchema = require("lib.menu_schema")
@@ -244,9 +257,14 @@ local function hideUnreachableContainers(ctx)
     end
     for _, id in ipairs(ctx.graph.unplaced or {}) do
         if id ~= SEPARATOR_ID and not explicit_disabled[id] and not cascaded_set[id] then
+            -- Unplaced ids with no live node and no custom container are
+            -- dormant (provider absent), not stranded: they stay out of the
+            -- disabled set so their records persist untouched until return.
+            -- (Registry no longer carries an `available` flag — presence in
+            -- reg.nodes IS liveness.)
             local is_custom = ctx.intent and ctx.intent.custom_menus and ctx.intent.custom_menus[id] ~= nil
             local node = ctx.reg.nodes and ctx.reg.nodes[id]
-            if is_custom or (node and node.available ~= false) then
+            if is_custom or node ~= nil then
                 table.insert(newly_cascaded, id)
                 cascaded_set[id] = true
             end
@@ -423,14 +441,31 @@ local function ensureNonEmptyTabBar(ctx)
     -- EMPTY bar crashes the build (and would do so even with our guards,
     -- because the crash is not hint-related). If every tab ended up hidden,
     -- the most recently hidden one is restored as a landing place.
+    -- Recovery must yield a REAL reachable level: the restored tab gets a
+    -- list (created when missing) so final tabs never reference nonexistent
+    -- levels, even when the last tab was removed upstream or the candidate
+    -- itself was hidden/unreachable.
+    local function is_live_tab(id)
+        if array_contains(ctx.reg.tab_list, id) then return true end
+        local info = ctx.reg.menus and ctx.reg.menus[id]
+        return type(info) == "table" and info.is_tab == true
+    end
     if #ctx.tabs == 0 then
         local restore_id
         for i = #ctx.graph.disabled, 1, -1 do
             local candidate = ctx.graph.disabled[i]
-            if ctx.reg.menus[candidate]
-                    or array_contains(ctx.reg.tab_list, candidate) then
+            if is_live_tab(candidate) then
                 restore_id = candidate
                 break
+            end
+        end
+        if restore_id == nil then
+            for i = #ctx.graph.disabled, 1, -1 do
+                local candidate = ctx.graph.disabled[i]
+                if ctx.reg.menus[candidate] then
+                    restore_id = candidate
+                    break
+                end
             end
         end
         restore_id = restore_id
@@ -442,9 +477,21 @@ local function ensureNonEmptyTabBar(ctx)
             end
             ctx.graph.disabled = still_disabled
             ctx.hidden[restore_id] = nil
+            if ctx.lists[restore_id] == nil then
+                ctx.lists[restore_id] = {}
+            end
             table.insert(ctx.tabs, restore_id)
             table.insert(ctx.warnings, string.format(
                 "empty menu bar: restored %s as landing tab", restore_id))
+        end
+    end
+    -- Final invariant: every tab references a real list. A tab whose level
+    -- did not survive the unreachable-container pass (or never existed in
+    -- this registry generation) gets an empty reachable level rather than a
+    -- dangling reference.
+    for _, tab_id in ipairs(ctx.tabs) do
+        if ctx.lists[tab_id] == nil then
+            ctx.lists[tab_id] = {}
         end
     end
 end

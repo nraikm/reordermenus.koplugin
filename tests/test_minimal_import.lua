@@ -207,10 +207,30 @@ do
         if tostring(k):find("_ext_") then n_ext_sep = n_ext_sep + 1 end
     end
     assert_eq(n_records, 0, "I8: divider insertion records no ordering intent")
-    -- Exactly ONE ext-separator record for ONE inserted divider (the stock
-    -- dividers must not be re-frozen); the record anchors the new divider.
-    assert_true(n_ext_sep <= 1,
-        "I8: at most one separator record per inserted divider, no litter")
+    -- Prompt 2 §4 unified divider ownership: REPLACEMENT (complete arrangement).
+    -- Records own placement entirely (stock suppressed whenever any record
+    -- exists), so a single inserted divider freezes the complete observed
+    -- arrangement (stock positions re-recorded explicitly). This litters
+    -- relative to delta-minimal (1 record) but keeps editor/import agreeing
+    -- (one interpretation) and makes single-stock removals representable
+    -- (explicit replacement without that slot) plus away-and-back exact
+    -- (no stock+user duplication). Effective behavior (extra divider present,
+    -- no ordering frozen) is what matters; litter is the accepted trade-off.
+    -- Count ALL separator records for the level (ext + others), not just ext.
+    local n_sep_help = 0
+    for _, sep in pairs(sec.separators or {}) do
+        if type(sep) == "table" and sep.parent == "help" and sep.zero_dividers ~= true then
+            n_sep_help = n_sep_help + 1
+        end
+    end
+    local observed_dividers = 0
+    for _, id in ipairs(MenuOrderManager:getMenuItems(view, "help")) do
+        if id == "----------------------------" then observed_dividers = observed_dividers + 1 end
+    end
+    assert_eq(n_sep_help, observed_dividers,
+        "I8: unified replacement records complete divider arrangement")
+    assert_true(observed_dividers >= 4,
+        "I8: extra divider present in effective layout")
 end
 
 print("\n--- I9: manually adding an unknown ID preserves it ---")

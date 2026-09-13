@@ -90,8 +90,16 @@ fi
 
 pass=0 fail=0 failed_list=""
 start_ts=$(date +%s)
+# ---- Per-run log directory (Prompt 5 §9) ----------------------------------
+# Suite logs used to share fixed /tmp/rm_test_<name>.log paths, so two
+# concurrent runner invocations overwrote each other's logs mid-run. Every
+# invocation now gets its own directory; the authoritative log for a suite is
+# $RUN_LOGDIR/<name>.log (never collides). On failure a convenience copy is
+# also left at /tmp/rm_test_<name>.log (last-writer-wins, debugging only).
+RUN_LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/rm_runlogs.XXXXXX")"
 for f in "${suites[@]}"; do
     name="$(basename "$f")"
+    suite_log="$RUN_LOGDIR/rm_test_$name.log"
     truncated=0
     # ---- Hermetic per-suite state home ---------------------------------
     # DataStorage honors KO_HOME; pointing it at a throwaway directory gives
@@ -104,15 +112,15 @@ for f in "${suites[@]}"; do
     mkdir -p "$suite_home/settings"
     export KO_HOME="$suite_home"
     if [ "$name" = "run_storage_safety_hostile.sh" ]; then
-        bash "$f" "$KOREADER_DIR" > "/tmp/rm_test_$name.log" 2>&1
+        bash "$f" "$KOREADER_DIR" > "$suite_log" 2>&1
         suite_rc=$?
     elif [ "$name" = "test_crash_pipeline.lua" ]; then
         # Multi-stage suite: stage -1 hard-exits (simulated crash) and the
         # recovery stage must run as a separate process, exactly like a real
         # crash+restart. Running the file bare would always report failure.
-        bash "$PLUGIN_DIR/tests/run_crash_pipeline.sh" > "/tmp/rm_test_$name.log" 2>&1
+        bash "$PLUGIN_DIR/tests/run_crash_pipeline.sh" > "$suite_log" 2>&1
         suite_rc=$?
-    elif KO_HOME="$suite_home" ./luajit "$f" > "/tmp/rm_test_$name.log" 2>&1; then
+    elif KO_HOME="$suite_home" ./luajit "$f" > "$suite_log" 2>&1; then
         suite_rc=0
     else
         suite_rc=1
@@ -120,13 +128,24 @@ for f in "${suites[@]}"; do
 
     # ---- truncated-output guard (BEFORE config checks) ----------------------
     # A log with no final summary line means the run died mid-execution
-    # (bootstrap crash, OOM kill). Retry once, then let the checks below judge.
+    # (bootstrap crash, OOM kill). Retry once under the SAME hermetic
+    # KO_HOME (the old retry dropped it and could pollute real settings),
+    # and let the RETRY's outcome decide: if it produced a summary, its exit
+    # status is the suite's status (previously the stale first-run rc was
+    # kept, so a recovered retry still failed the suite).
     CONFIG_REQUIRED=" test_state_machine.lua test_state_machine_verbs.lua test_differential_fuzz.lua test_menusorter_differential_fuzz.lua test_gen1_determinism.lua "
     if [[ "$CONFIG_REQUIRED" == *" $name "* ]] \
-       && ! grep -qE '([0-9]+ passed, [0-9]+ failed)|([0-9]+ iterations, [0-9]+ failures)|([0-9]+ checks passed, [0-9]+ failed)|(round-trip equivalence)' "/tmp/rm_test_$name.log"; then
-        ./luajit "$f" > "/tmp/rm_test_$name.log" 2>&1 || true
-        grep -qE '([0-9]+ passed, [0-9]+ failed)|([0-9]+ iterations, [0-9]+ failures)|([0-9]+ checks passed, [0-9]+ failed)|(round-trip equivalence)' "/tmp/rm_test_$name.log" || \
+       && ! grep -qE '([0-9]+ passed, [0-9]+ failed)|([0-9]+ iterations, [0-9]+ failures)|([0-9]+ checks passed, [0-9]+ failed)|(round-trip equivalence)' "$suite_log"; then
+        if KO_HOME="$suite_home" ./luajit "$f" > "$suite_log" 2>&1; then
+            retry_rc=0
+        else
+            retry_rc=$?
+        fi
+        if grep -qE '([0-9]+ passed, [0-9]+ failed)|([0-9]+ iterations, [0-9]+ failures)|([0-9]+ checks passed, [0-9]+ failed)|(round-trip equivalence)' "$suite_log"; then
+            suite_rc=$retry_rc
+        else
             truncated=1
+        fi
     fi
 
     # ---- P0-A: effective-config verification -------------------------------
@@ -142,11 +161,11 @@ for f in "${suites[@]}"; do
     # (e.g. quick tier: DF_STEPS=40 vs SM_STEPS=80). Only the family a suite
     # actually consumes is checked here.
     cfg_fail=""
-    if grep -q '^EFFECTIVE_CONFIG ' "/tmp/rm_test_$name.log"; then
-        reported_seeds="$(sed -n 's/^EFFECTIVE_CONFIG .* seeds=\([0-9]*\) .*/\1/p' "/tmp/rm_test_$name.log" | tail -1)"
-        reported_steps="$(sed -n 's/^EFFECTIVE_CONFIG .* steps=\([0-9]*\).*/\1/p' "/tmp/rm_test_$name.log" | tail -1)"
-        reported_iters="$(sed -n 's/^EFFECTIVE_CONFIG .* iterations=\([0-9]*\).*/\1/p' "/tmp/rm_test_$name.log" | tail -1)"
-        reported_seedlist="$(sed -n 's/^EFFECTIVE_CONFIG .* seed_list=\(.*\)$/\1/p' "/tmp/rm_test_$name.log" | tail -1)"
+    if grep -q '^EFFECTIVE_CONFIG ' "$suite_log"; then
+        reported_seeds="$(sed -n 's/^EFFECTIVE_CONFIG .* seeds=\([0-9]*\) .*/\1/p' "$suite_log" | tail -1)"
+        reported_steps="$(sed -n 's/^EFFECTIVE_CONFIG .* steps=\([0-9]*\).*/\1/p' "$suite_log" | tail -1)"
+        reported_iters="$(sed -n 's/^EFFECTIVE_CONFIG .* iterations=\([0-9]*\).*/\1/p' "$suite_log" | tail -1)"
+        reported_seedlist="$(sed -n 's/^EFFECTIVE_CONFIG .* seed_list=\(.*\)$/\1/p' "$suite_log" | tail -1)"
 
         case "$name" in
             test_state_machine.lua|test_state_machine_verbs.lua)
@@ -173,10 +192,10 @@ for f in "${suites[@]}"; do
         esac
 
         # A requested seed bank must appear in the reported seed_list for state machine suites.
-        if [ -n "${SM_SEED_LIST:-}" ] && [[ "$name" == test_state_machine*.lua ]] && grep -q 'seed_list=' "/tmp/rm_test_$name.log"; then
+        if [ -n "${SM_SEED_LIST:-}" ] && [[ "$name" == test_state_machine*.lua ]] && grep -q 'seed_list=' "$suite_log"; then
             IFS=',' read -ra want_seeds <<< "$SM_SEED_LIST"
             for ws in "${want_seeds[@]}"; do
-                if ! grep -q "seed_list=.*${ws}\([+,]\|$\)" "/tmp/rm_test_$name.log" 2>/dev/null \
+                if ! grep -q "seed_list=.*${ws}\([+,]\|$\)" "$suite_log" 2>/dev/null \
                    && ! echo "$reported_seedlist" | tr '+' '\n' | grep -qx "$ws"; then
                     cfg_fail="$cfg_fail seed_bank missing seed=$ws"
                     break
@@ -194,9 +213,13 @@ for f in "${suites[@]}"; do
         printf '  [PASS] %s\n' "$name"
     else
         fail=$((fail+1)); failed_list="$failed_list $name"
-        printf '  [FAIL] %s  (log: /tmp/rm_test_%s.log)\n' "$name" "$name"
+        # Convenience copy for debugging (authoritative log stays in the
+        # per-run directory printed here; the /tmp copy may be overwritten by
+        # a concurrent invocation).
+        cp -p "$suite_log" "/tmp/rm_test_$name.log" 2>/dev/null || true
+        printf '  [FAIL] %s  (log: %s)\n' "$name" "$suite_log"
         [ -n "$cfg_fail" ] && printf '         CONFIG MISMATCH:%s\n' "$cfg_fail"
-        grep -m3 '^\s*\[FAIL\]' "/tmp/rm_test_$name.log" | sed 's/^/         /'
+        grep -m3 '^\s*\[FAIL\]' "$suite_log" | sed 's/^/         /'
     fi
     rm -rf "$suite_home"
     unset KO_HOME

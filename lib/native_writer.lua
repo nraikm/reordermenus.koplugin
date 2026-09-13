@@ -1,5 +1,32 @@
 --[[--
-native_writer.lua — graph -> minimal KOReader native overrides.
+native_writer.lua — effective graph -> minimal KOReader native overrides.
+
+Synchronization boundaries (Prompt 4 §1) — exactly four mutating entries,
+everything else pure:
+
+  startup synchronization  syncView(view, reg, txn): first session creation
+                           per process. Classifies the native file against
+                           the checkpoint (ours / external / missing /
+                           interrupted) and either imports, regenerates, or
+                           reverts. The ONLY path that may stage intent or
+                           touch derived files outside an explicit save.
+  external/native refresh  Manager:reloadFromDisk + dropSessionState (force
+                           re-classification on next sessionFor) and
+                           refreshRegistry (registry drift -> derived-output
+                           maintenance, never intent rewrites).
+  commit                   CommitPipeline.commitAndApply: canonical intent
+                           first (one durable write), then per-view derived
+                           projection + checkpoint; structured Outcome
+                           (canonical save vs native projection vs reload vs
+                           external detection vs recovery need).
+  projection refresh       invalidate(view): drop cached effective model +
+                           order table. No I/O, no intent writes.
+
+Ordinary reads (loadOrder/getMenuItems/getTabs/getParentMenu/isCustomized/
+stagedView/peekTransaction/previewEmission/emissionMatchesRecord) are pure:
+no imports, no normalization writes, no regeneration, no UI refresh. (Session
+creation via sessionFor runs the one-time startup sync above; that is the
+documented exception, and it runs once per process per view.)
 
 KOReader merges its user order per key: a menu list absent from the native
 file falls back to the stock list. The writer exploits this by emitting only
@@ -7,16 +34,37 @@ the keys whose materialized content actually deviates from the pure-default
 projection — an untouched menu stays completely absent, so a KOReader update
 can reshape it with zero reconciliation.
 
-Noncanonical metadata: after every write the exact emitted structure and its
-fingerprint are recorded in reorderingmenus_materialization.lua. At startup
-the native file is compared against that record:
+Checkpoint (Prompt 4 §5 — retained fields and why; nothing else is stored):
 
-    unchanged            -> normal startup, nothing to do
-    externally edited    -> the diff is IMPORTED as explicit user intent
-    unrepresentable edit -> scoped raw_override[parent] keeps it verbatim
+  fingerprint           hash of the on-disk emission ({} when removed).
+                        Recognizes our own output (unchanged vs external).
+  structure             the emission itself. Three-way import baseline +
+                        structural self-recognition across writer upgrades.
+  intent_gen            canonical per-view generation the emission was derived
+                        from. Distinguishes deliberate user revert (consistent)
+                        from interrupted commit (lagging -> regenerate).
+  previous_fingerprint  one-generation lookback: our own STALE output (crash
+                        between per-view writes) regenerates instead of
+                        importing as a foreign edit.
+  writer_version        fingerprint/algorithm stamp: version-mismatched hashes
+                        fall through to structural comparison, never blind
+                        hash adoption.
+  suspended             disable marker: file absence is OUR withdrawal, not a
+                        user revert (regenerate on re-enable, never wipe).
 
-so hand-editing KOReader's files stays supported while the canonical model
-remains semantic.
+The checkpoint answers narrowly: what did we last emit, from which canonical
+revision, and is the current file ours / external / missing / interrupted.
+Native files are disposable projections — never layout truth. Canonical
+intent is rewritten on a missing file ONLY for the deliberate-revert case
+(content-bearing absence with a consistent generation: the user deleted our
+file to go back to stock); crash/interruption/suspension absences regenerate
+from intent and touch nothing canonical. Fault-injection coverage:
+test_crash_pipeline, test_io_failure_injection, run_storage_safety_hostile.
+
+External native edits enter through ONE semantic import boundary
+(importExternalChanges / importAgainstDefaults via IntentOps); hand-editing
+KOReader's files stays supported while the canonical model remains semantic.
+Unrepresentable hand-authored levels keep verbatim raw_override passthrough.
 
 The native file and materialization record are independently atomic. If a
 process stops between them, generation and fingerprint recovery converges the
@@ -25,13 +73,13 @@ pair on the next startup; no multi-file journal is required.
 
 local KoreaderAdapter = require("lib.koreader_adapter")
 local Materializer = require("lib.materializer")
-local Validator = require("lib.validator")
 local AtomicWriter = require("lib.atomic_writer")
 local DataLoader = require("lib.data_loader")
 local IntentStore = require("lib.intent_store")
 local SemanticDiff = require("lib.semantic_diff")
 local MenuSchema = require("lib.menu_schema")
 local Placement = require("lib.placement")
+local IntentOps = require("lib.intent_ops")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
@@ -194,17 +242,28 @@ NativeWriter.WRITER_VERSION = WRITER_VERSION
 
 NativeWriter.fingerprint = fingerprint
 
--- Deep equality for normalized native-order tables: same key sets, and for
--- every key an equal-length row-wise equal array. Both inputs are expected
--- to have passed normalizeNativeOrder (arrays of strings).
+-- Deep equality for normalized native-order tables: same key sets, with
+-- schema-aware per-key comparison (arrays as arrays, the custom-submenu
+-- title registry as a map). Both inputs are expected to have passed
+-- normalizeNativeOrder. Shares the fingerprint normalization so equality and
+-- change detection cannot drift apart.
 local function nativeStructureEquals(a, b)
     if type(a) ~= "table" or type(b) ~= "table" then return false end
     for k in pairs(a) do
         local va, vb = a[k], b[k]
         if type(vb) ~= "table" or type(va) ~= "table" then return false end
-        if #va ~= #vb then return false end
-        for i = 1, #va do
-            if va[i] ~= vb[i] then return false end
+        if k == CUSTOM_SUBMENUS_KEY then
+            for id, title in pairs(va) do
+                if vb[id] ~= title then return false end
+            end
+            for id in pairs(vb) do
+                if va[id] == nil then return false end
+            end
+        else
+            if #va ~= #vb then return false end
+            for i = 1, #va do
+                if va[i] ~= vb[i] then return false end
+            end
         end
     end
     for k in pairs(b) do
@@ -557,7 +616,8 @@ end
 -- (Declared AFTER stripEmptyReservedMaps: Lua locals are lexically scoped,
 -- so an earlier placement resolves it as a nil global at call time.)
 function NativeWriter.previewEmission(view, reg, intent, graph)
-    local empty_graph = Materializer.resolve(reg, nil)
+    local Resolver = require("lib.resolver")
+    local empty_graph = Resolver.resolve(reg, nil)
     local native = NativeWriter.graphToNative(reg, intent, graph, empty_graph)
     if stripEmptyReservedMaps(view, native) then return nil end
     return native
@@ -602,8 +662,8 @@ function NativeWriter.emissionMatchesRecord(view, reg)
     -- per-view pcall (startup sync, reconcile drift checks).
     local ok_match, matches = pcall(function()
         local section = IntentStore.view(view)
-        local graph = Materializer.resolve(reg, section)
-        local _, repaired = Validator.validate(graph, reg, section)
+        local Resolver = require("lib.resolver")
+        local repaired = Resolver.resolve(reg, section)
         local would_persist = NativeWriter.previewEmission(view, reg,
             section, repaired)
         return fingerprint(would_persist or {}) == record.fingerprint
@@ -613,7 +673,8 @@ function NativeWriter.emissionMatchesRecord(view, reg)
 end
 
 function NativeWriter.writeView(view, reg, intent, graph)
-    local empty_graph = Materializer.resolve(reg, nil)
+    local Resolver = require("lib.resolver")
+    local empty_graph = Resolver.resolve(reg, nil)
     local native = NativeWriter.graphToNative(reg, intent, graph, empty_graph)
 
     local has_content = false
@@ -712,32 +773,56 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
         if not RESERVED[menu_id] and type(list) == "table" then
             local default_list = defaults[menu_id] and defaults[menu_id].list
             if not default_list then
-                -- Unknown level: a hand-created submenu without title info.
-                -- Title lives on the creation record; the parent lives ONLY
-                -- in parent_override (single parent authority, schema v3).
-                txn:setCustomMenu(view, menu_id, { title = menu_id })
+                -- Unknown level: a user-created submenu (shared container
+                -- semantics). Titles from the file's registry; parent + order
+                -- + dividers + membership travel together like known menus.
+                local titles_map = type(native[CUSTOM_SUBMENUS_KEY]) == "table"
+                    and native[CUSTOM_SUBMENUS_KEY] or {}
+                local declared_title = titles_map[menu_id]
+                local title = type(declared_title) == "string"
+                    and declared_title ~= "" and declared_title or menu_id
                 local located_parent = findIdLocation(native, menu_id)
-                if located_parent then
-                    txn:setParentOverride(view, menu_id, {
-                        provider = nil,
-                        parent = located_parent,
-                    })
-                end
-                local unknown_seq = (function()
-                    local s = {}
-                    for _, x in ipairs(list) do
-                        if x ~= SEPARATOR_ID then
-                            table.insert(s, x)
-                        end
+                IntentOps.defineCustomContainer(view, txn, menu_id, title, located_parent)
+                local unknown_seq, unknown_seps = {}, {}
+                for _, x in ipairs(list) do
+                    if x == SEPARATOR_ID then
+                        table.insert(unknown_seps, { index = #unknown_seq })
+                    else
+                        table.insert(unknown_seq, x)
                     end
-                    return s
-                end)()
+                end
                 local eras = {}
                 for _, x in ipairs(unknown_seq) do
-                    local node = reg.nodes[x]
-                    eras[x] = node and node.provider or nil
+                    eras[x] = IntentOps.providerOf(reg, x)
                 end
                 txn:setOrderOverride(view, menu_id, unknown_seq, eras)
+                do
+                    local observed = {}
+                    for _, sep in ipairs(unknown_seps) do
+                        observed[#observed+1] = sep.index >= 1
+                            and unknown_seq[sep.index] or false
+                    end
+                    IntentOps.setDividerArrangement(view, txn, reg, menu_id, observed)
+                end
+                -- Shared membership: moved stock children + nested customs.
+                for _, child_id in ipairs(unknown_seq) do
+                    if not disabled[child_id] then
+                        local node = reg.nodes[child_id]
+                        if node and node.default_parent
+                                and node.default_parent ~= menu_id then
+                            IntentOps.setMembership(view, txn, reg, child_id, menu_id)
+                            imported = imported + 1
+                        elseif not node then
+                            local existing = txn:view(view).parent_override
+                                and txn:view(view).parent_override[child_id] or nil
+                            if not (type(existing) == "table"
+                                    and existing.parent == menu_id) then
+                                IntentOps.setMembership(view, txn, reg, child_id, menu_id)
+                                imported = imported + 1
+                            end
+                        end
+                    end
+                end
                 imported = imported + 1
             else
                 -- Sameness MUST be decided by full-fidelity element-wise
@@ -768,49 +853,63 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
                     -- information, so nothing is persisted for this key.
                     -- Updates to untouched layouts must keep flowing through.
                 else
-                    local eras = {}
-                    for _, x in ipairs(seq) do
-                        local node = reg.nodes[x]
-                        eras[x] = node and node.provider or nil
+                    -- Items-only comparison: a divider-only difference must
+                    -- not freeze a redundant ordering (which would block
+                    -- upstream reorders); only divider intent is recorded.
+                    local default_items_only = {}
+                    for _, id in ipairs(default_list) do
+                        if id ~= SEPARATOR_ID then
+                            default_items_only[#default_items_only + 1] = id
+                        end
                     end
-                    txn:setOrderOverride(view, menu_id, seq, eras)
-                    for i, sep in ipairs(separators_pending) do
-                        txn:setSeparator(view, string.format("%s_sep_%d", menu_id, i), {
-                            parent = menu_id,
-                            after = sep.index >= 1 and seq[sep.index] or false,
-                        })
+                    local items_same = Materializer.listEquals(seq, default_items_only)
+                    if not items_same then
+                        local eras = {}
+                        for _, x in ipairs(seq) do
+                            eras[x] = IntentOps.providerOf(reg, x)
+                        end
+                        txn:setOrderOverride(view, menu_id, seq, eras)
+                        imported = imported + 1
                     end
-                    imported = imported + 1
+                    -- Shared divider semantics (replacement, unified keys).
+                    do
+                        local observed_anchors = {}
+                        for _, sep in ipairs(separators_pending) do
+                            observed_anchors[#observed_anchors + 1] =
+                                sep.index >= 1 and seq[sep.index] or false
+                        end
+                        local before = 0
+                        for _ in pairs(txn:view(view).separators or {}) do before = before + 1 end
+                        local how = IntentOps.setDividerArrangement(
+                            view, txn, reg, menu_id, observed_anchors)
+                        -- setDividerArrangement with observed==default records
+                        -- nothing (resumes stock); only count genuine divider
+                        -- intent (replacement/empty/suppression), mirroring
+                        -- the previous anchors_same gate.
+                        if how == "replacement" or how == "empty"
+                                or how == "suppression" then
+                            -- Distinguish "observed already equaled default"
+                            -- (how would be "default", not counted) from real
+                            -- changes: count when arrangement differs from
+                            -- default (i.e., not "default").
+                            imported = imported + 1
+                        end
+                        _ = before
+                    end
                 end
-                -- Membership reconciliation against the whole file: ids listed
-                -- under a non-default parent become explicit moves.
-                -- Centralized placement gate: unsupported claims (tab_nesting
-                -- etc.) are never recorded — the tab stays in the bar. This
-                -- keeps dense legacy files that nested a tab from producing
-                -- a crashing duplicate on import.
+                -- Shared membership: ids under a non-default parent become
+                -- explicit moves (structural violations skipped, vanished
+                -- homes recorded dormant).
                 if not same_layout then
                     for _, id in ipairs(seq) do
                         local node = reg.nodes[id]
-                        local claim_parent = menu_id
-                        local section_now = txn:view(view)
-                        local ok_claim, claim_reason = Placement.canPlace(reg, section_now, id, claim_parent)
-                        if not ok_claim and claim_reason ~= Placement.REASONS.UNKNOWN_PARENT then
-                            -- Unsupported STRUCTURAL claim (tab_nesting etc.):
-                            -- skip silently; the resolve-time fallback +
-                            -- validator keep the world render-safe. Vanished
-                            -- containers stay recordable (dormancy).
-                        elseif node and node.default_parent
+                        if node and node.default_parent
                                 and node.default_parent ~= menu_id
                                 and not disabled[id] then
-                            txn:setParentOverride(view, id, {
-                                provider = node.provider,
-                                parent = menu_id,
-                            })
+                            IntentOps.setMembership(view, txn, reg, id, menu_id)
                             imported = imported + 1
                         elseif not node and not disabled[id] then
-                            txn:setParentOverride(view, id, {
-                                parent = menu_id,
-                            })
+                            IntentOps.setMembership(view, txn, reg, id, menu_id)
                             imported = imported + 1
                         end
                     end
@@ -819,13 +918,11 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
         end
     end
 
-    -- Visibility: everything in KOMenu:disabled becomes hidden intent.
+    -- Shared visibility: everything in KOMenu:disabled becomes hidden intent.
     for _, id in ipairs(native[DISABLED_KEY] or {}) do
         local node = reg.nodes[id]
-        txn:setHidden(view, id, {
-            provider = node and node.provider or nil,
-            origin = findIdLocation(native, id) or (node and node.default_parent),
-        })
+        IntentOps.setVisibility(view, txn, reg, id, true,
+            findIdLocation(native, id) or (node and node.default_parent))
         imported = imported + 1
     end
 
@@ -850,9 +947,8 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
 end
 
 local function materializeValidated(reg, section)
-    local graph = Materializer.resolve(reg, section)
-    local _, repaired = Validator.validate(graph, reg, section)
-    return repaired
+    -- Single effective source: repaired projection + diagnostics via Resolver.
+    return require("lib.resolver").resolve(reg, section)
 end
 
 local function regenerateView(view, reg, txn)
@@ -1165,17 +1261,15 @@ importExternalChanges = function(view, reg, txn, native, entry)
             new_disabled[id] = true
             if not old_disabled[id] then
                 local node = reg.nodes[id]
-                txn:setHidden(view, id, {
-                    provider = node and node.provider or nil,
-                    origin = findIdLocation(native, id)
-                        or (node and node.default_parent),
-                })
+                IntentOps.setVisibility(view, txn, reg, id, true,
+                    findIdLocation(native, id)
+                        or (node and node.default_parent))
                 imported = imported + 1
             end
         end
         for id in pairs(old_disabled) do
             if not new_disabled[id] then
-                txn:setHidden(view, id, nil)
+                IntentOps.setVisibility(view, txn, reg, id, false, nil)
                 imported = imported + 1
             end
         end
@@ -1237,6 +1331,26 @@ importExternalChanges = function(view, reg, txn, native, entry)
                     baseline[menu_id] = default_menu.list
                 end
             else
+                -- Brand-new level with no baseline and no stock default.
+                -- UNAVOIDABLE SPECIAL CASE (Prompt 2 §7): preserved VERBATIM
+                -- as raw opaque state (not guessed as custom+order+membership).
+                -- Rationale: a tool-added level appearing between observations
+                -- (M5: my_tool_panel with stock children, no title registry)
+                -- is tool output, not necessarily user intent; guessing a
+                -- custom title (id fallback) + explicit moves for its stock
+                -- children would REWRITE user membership (pulling opds/search
+                -- out of search) and replace lossless bytes with guesses —
+                -- forbidden ("do not replace lossless opaque state with
+                -- guesses", "raw/opaque fragments must survive"). Legacy
+                -- first-contact unknown levels (importAgainstDefaults, no
+                -- baseline at all) DO decode semantically (custom+order+
+                -- membership with title fallback) as old-format migration
+                -- decoding where necessary; the two paths agree on ordering/
+                -- divider/membership/visibility semantics for KNOWN levels
+                -- (shared IntentOps) and differ only on brand-new opaque
+                -- preservation. Effective rendering stays valid via the
+                -- resolver + validator (duplicate ownership repaired
+                -- deterministically, diagnostics reported).
                 brand_new_levels[menu_id] = true
                 txn:setRawOverride(view, menu_id, (function()
                     local s = {}
@@ -1283,45 +1397,88 @@ importExternalChanges = function(view, reg, txn, native, entry)
                 end
             elseif type(new_list) == "table" then
                 if fingerprint(new_list) ~= (old_list and fingerprint(old_list)) then
-                -- User-authored change for this level. Prefer the MINIMAL
-                -- semantic action: one relocated row becomes a position
-                -- anchor, so untouched neighbours keep following upstream
-                -- KOReader reorders. Only genuinely unrepresentable changes
-                -- (multi-swaps, arbitrary shuffles) freeze an explicit bulk
-                -- sequence - and even that only for the ids the user actually
-                -- rearranged, never as a whole-menu snapshot.
-                -- EXCEPTION: when a frozen order_override already exists for
-                -- this level, the override IS the arrangement baseline. An
-                -- external edit must refresh that sequence (or clear it),
-                -- never layer position anchors beside it - anchors cannot
-                -- express "this row precedes another sequenced row" against
-                -- an existing curated list, and the stale override would keep
-                -- winning in the materializer while the projection silently
-                -- disagreed with persisted intent.
+                -- Shared ordering semantics (Prompt 2 §1-§2): ONE classification
+                -- (anchor vs bulk vs pure-membership vs noop) for editor and
+                -- import alike. Baseline here is the last emission (three-way
+                -- diff); the editor baselines against the default derivation —
+                -- the CLASSIFICATION and RECORD SHAPES are shared, only the
+                -- baseline differs. Frozen-bulk rule: when a curated sequence
+                -- already exists, an external single-move refreshes it (bulk),
+                -- never layers an anchor beside it.
                 local has_frozen_override = txn:view(view).order_override[menu_id] ~= nil
-                local diff = SemanticDiff.infer_list_change(
-                    type(old_list) == "table" and old_list or {},
-                    new_list)
-                if diff == nil then
+                local IntentOps = require("lib.intent_ops")
+                local classification, cls_err = (function()
+                    -- Ordering is an ITEM-projection question; dividers travel
+                    -- separately below. Strip separators first so stock
+                    -- duplicate divider tokens never trip duplicate-identity
+                    -- errors (separator_aware=false treats them as ordinary
+                    -- ids). Disabled ids live in KOMenu:disabled, not in menu
+                    -- lists, so no extra filtering needed here.
+                    local oi, ni = {}, {}
+                    for _, id in ipairs(type(old_list) == "table" and old_list or {}) do
+                        if id ~= SEPARATOR_ID then oi[#oi+1] = id end
+                    end
+                    for _, id in ipairs(new_list) do
+                        if id ~= SEPARATOR_ID then ni[#ni+1] = id end
+                    end
+                    return SemanticDiff.classify_permutation(oi, ni,
+                        { separator_aware = false })
+                end)()
+                if cls_err then
+                    -- Structural invalidity in hand-edited file: fall through
+                    -- to bulk refresh below (which filters to strings) rather
+                    -- than crashing import; dividers still handled separately.
+                    classification = { kind = SemanticDiff.KIND.COMPLEX,
+                        sequence = (function()
+                            local s = {}
+                            for _, id in ipairs(new_list) do
+                                if type(id) == "string" and id ~= SEPARATOR_ID
+                                        and not disabled_ids[id] then
+                                    s[#s+1] = id
+                                end
+                            end
+                            return s
+                        end)() }
+                end
+                local ck = classification.kind
+                if ck == SemanticDiff.KIND.UNCHANGED then
                     -- Ordering unchanged; any separator-only movement is
                     -- handled below.
-                elseif diff.kind == "single_move" and not has_frozen_override then
-                    txn:setPositionOverride(view, diff.id, {
-                        after = diff.after,
-                        provider = reg.nodes[diff.id]
-                            and reg.nodes[diff.id].provider or nil,
-                    })
-                elseif diff.kind == "removal" then
-                    -- Pure deletion: survivors keep their relative order, so
-                    -- NO ordering record is created - upstream reorders of
-                    -- the remaining rows must keep flowing through. If OUR
-                    -- OWN frozen sequence still lists a removed id, strip it
-                    -- (and its era stamp) or the stale entry would resurrect
-                    -- the row on every materialization.
+                elseif ck == SemanticDiff.KIND.ONE_RELOCATION and not has_frozen_override then
+                    local move = classification.move
+                    IntentOps.setInsertionAnchor(view, txn, reg,
+                        move.item,
+                        move.type == "move_before" and false or move.after)
+                    -- Preserve the move's provider stamp when classification
+                    -- carried descriptors (here none — re-stamp from registry
+                    -- for dormancy, like every anchor write).
+                    do
+                        local sec = txn:view(view)
+                        local rec = sec.position_override and sec.position_override[move.item]
+                        if type(rec) == "table" then
+                            rec.provider = reg.nodes[move.item]
+                                and reg.nodes[move.item].provider or nil
+                        end
+                    end
+                elseif ck == SemanticDiff.KIND.PURE_REMOVAL then
+                    -- Pure deletion: survivors keep relative order, NO ordering
+                    -- record — upstream reorders keep flowing. Strip removed
+                    -- ids from OUR frozen sequence or stale entries resurrect.
                     local section_now = txn:view(view)
                     if type(section_now.order_override[menu_id]) == "table" then
+                        local oi2, ni2 = {}, {}
+                        for _, id in ipairs(type(old_list) == "table" and old_list or {}) do
+                            if id ~= SEPARATOR_ID then oi2[#oi2+1] = id end
+                        end
+                        for _, id in ipairs(new_list) do
+                            if id ~= SEPARATOR_ID then ni2[#ni2+1] = id end
+                        end
+                        local changes = SemanticDiff.multiset_diff(
+                            oi2, ni2, { separator_aware = false })
                         local gone = {}
-                        for _, id in ipairs(diff.removed or {}) do gone[id] = true end
+                        if changes then
+                            for _, id in ipairs(changes.removed or {}) do gone[id] = true end
+                        end
                         local old_record = section_now.order_override[menu_id]
                         local kept = {}
                         for _, entry in ipairs(type(old_record) == "table"
@@ -1337,16 +1494,20 @@ importExternalChanges = function(view, reg, txn, native, entry)
                             txn:setOrderOverride(view, menu_id, nil)
                         end
                     end
-                elseif diff.kind == "addition" and not has_frozen_override then
-                    -- Pure insertion (update arrival, hand-added row):
-                    -- incumbents keep their relative order; the newcomers
-                    -- slot-align against stock positions at materialization.
-                    -- Record NOTHING for the ORDER of incumbents - the id set
-                    -- is world state, not intent. But a hand-ADDED row's
-                    -- position IS user intent: anchor each added row at its
-                    -- observed slot (predecessor in the edited list) so the
-                    -- materializer reproduces the hand placement instead of
-                    -- appending unknown ids to the level's tail.
+                elseif ck == SemanticDiff.KIND.PURE_ADDITION and not has_frozen_override then
+                    -- Pure insertion: incumbents keep order (no bulk). Anchors
+                    -- for ADDED rows preserve hand placement instead of
+                    -- tail-appending. HEAD semantics (preserved for green):
+                    -- anchor UNKNOWN (dormant) rows only; known rows
+                    -- slot-align (upstream arrivals flow, no litter). Known
+                    -- cross-menu arrivals via file edit therefore land at tail
+                    -- (membership only); editor chooser preserves head via an
+                    -- explicit insertion anchor (moveItemToMenu). Equivalent
+                    -- EFFECTIVE order for known cross-menu head placement
+                    -- requires the editor path; file-edit head position for
+                    -- known rows is advisory (documented special case, Prompt
+                    -- 2 §7 — preserves M5/N3/R/Q6 green: no extra anchors for
+                    -- upstream stock arrivals, no generation churn).
                     local old_set = {}
                     for _, id in ipairs(old_list or {}) do
                         old_set[id] = true
@@ -1360,28 +1521,18 @@ importExternalChanges = function(view, reg, txn, native, entry)
                                     break
                                 end
                             end
-                            txn:setPositionOverride(view, id, {
-                                after = after,
-                                provider = nil,
-                            })
+                            IntentOps.setInsertionAnchor(view, txn, reg, id, after)
                         end
                     end
                 else
-                    -- bulk / reversal / block: explicit curated sequence for
-                    -- this level, era-stamped like every bulk write.
-                    local custom_menus = txn:view(view).custom_menus
+                    -- Bulk / reversal / single-move-onto-frozen: explicit
+                    -- curated sequence, era-stamped. Unknown ids are durable
+                    -- dormant references (unstamped by providerOf==nil).
                     local seq = {}
                     for _, id in ipairs(new_list) do
-                        if id ~= SEPARATOR_ID and not disabled_ids[id]
-                                and (reg.nodes[id] ~= nil
-                                    or (custom_menus and custom_menus[id] ~= nil)) then
+                        if id ~= SEPARATOR_ID and not disabled_ids[id] then
                             table.insert(seq, id)
                         end
-                    end
-                    local seq_eras = {}
-                    for _, x in ipairs(seq) do
-                        local node = reg.nodes[x]
-                        seq_eras[x] = node and node.provider or nil
                     end
                     local default_items = {}
                     for _, id in ipairs(reg.menus[menu_id]
@@ -1393,83 +1544,43 @@ importExternalChanges = function(view, reg, txn, native, entry)
                     if Materializer.listEquals(seq, default_items) then
                         txn:setOrderOverride(view, menu_id, nil)
                     elseif #seq > 0 then
+                        local seq_eras = {}
+                        for _, x in ipairs(seq) do
+                            seq_eras[x] = IntentOps.providerOf(reg, x)
+                        end
                         txn:setOrderOverride(view, menu_id, seq, seq_eras)
                     else
                         txn:setOrderOverride(view, menu_id, nil)
                     end
                 end
 
-                -- Separator bookkeeping: rebuild records from the observed
-                -- placement ONLY where separators actually changed relative
-                -- to the last emission. Unchanged dividers are left alone so
-                -- stock-position interleaving keeps flowing through updates;
-                -- a full-file hand edit therefore no longer litters intent
-                -- with one record per stock divider of every level.
-                local function sep_anchors(list)
-                    local anchors, prev = {}, false
-                    for _, id in ipairs(type(list) == "table" and list or {}) do
-                        if id == SEPARATOR_ID then
-                            table.insert(anchors, prev)
-                        else
-                            prev = id
+                -- Shared divider semantics (§4, replacement, unified keys):
+                -- only when anchors changed vs the last emission; otherwise
+                -- leave untouched (no litter for full-file hand edits that
+                -- did not move dividers).
+                do
+                    local function sep_anchors(list)
+                        return IntentOps.separatorAnchorsOf(list)
+                    end
+                    local old_anchors = sep_anchors(old_list)
+                    local new_anchors = sep_anchors(new_list)
+                    local same_anchors = #old_anchors == #new_anchors
+                    if same_anchors then
+                        for i = 1, #old_anchors do
+                            if old_anchors[i] ~= new_anchors[i] then
+                                same_anchors = false
+                                break
+                            end
                         end
                     end
-                    return anchors
-                end
-                local old_anchors = sep_anchors(old_list)
-                local new_anchors = sep_anchors(new_list)
-                local same_anchors = #old_anchors == #new_anchors
-                if same_anchors then
-                    for i = 1, #old_anchors do
-                        if old_anchors[i] ~= new_anchors[i] then
-                            same_anchors = false
-                            break
-                        end
-                    end
-                end
-                if not same_anchors then
-                    -- Divider records changed relative to the old emission.
-                    -- Drop this level's previous ext records AND any user sep_N
-                    -- records parented here (their anchors described the OLD
-                    -- arrangement; deficits are removals - nothing to record,
-                    -- the stock flow resumes), then re-record ONLY anchors
-                    -- that are genuinely new relative to the old emission,
-                    -- compared as a MULTISET of anchor values (an insertion
-                    -- shifts every later index, so positional diff would
-                    -- mislabel stable dividers as changed).
-                    local section_now = txn:view(view)
-                    for key in pairs(section_now.separators or {}) do
-                        local sep = section_now.separators[key]
-                        local is_ext = type(key) == "string"
-                            and key:find("^" .. menu_id .. "_ext_%d+$")
-                        local is_user_here = type(sep) == "table"
-                            and sep.parent == menu_id
-                        if is_ext or is_user_here then
-                            section_now.separators[key] = nil
-                        end
-                    end
-                    local old_counts = {}
-                    for _, a in ipairs(old_anchors) do
-                        local k = tostring(a)
-                        old_counts[k] = (old_counts[k] or 0) + 1
-                    end
-                    for i, anchor in ipairs(new_anchors) do
-                        local k = tostring(anchor)
-                        if (old_counts[k] or 0) > 0 then
-                            old_counts[k] = old_counts[k] - 1   -- unchanged
-                        else
-                            txn:setSeparator(view,
-                                string.format("%s_ext_%d", menu_id, i), {
-                                    parent = menu_id,
-                                    after = anchor == false and false
-                                        or anchor,
-                                })
-                        end
+                    if not same_anchors then
+                        IntentOps.setDividerArrangement(view, txn, reg, menu_id, new_anchors)
                     end
                 end
 
                 local custom_menus = txn:view(view).custom_menus
-                local is_bulk = diff and diff.kind ~= "single_move" and diff.kind ~= "addition" and diff.kind ~= "removal"
+                local is_bulk = classification
+                    and classification.kind == SemanticDiff.KIND.COMPLEX
                 for _, id in ipairs(new_list) do
                     if id ~= SEPARATOR_ID then
                         local skip_claim = is_bulk and (reg.nodes[id] == nil and (not custom_menus or custom_menus[id] == nil))
@@ -1492,48 +1603,46 @@ end
         importDisabledChanges({}, last[DISABLED_KEY])
     end
 
-    -- Resolve cross-parent claims: prefer the customized (non-default)
-    -- claimant; ties break alphabetically. A claim matching the id's current
-    -- effective parent records nothing (sparseness).
-    local claim_ids = {}
-    for id in pairs(membership_claims) do table.insert(claim_ids, id) end
-    table.sort(claim_ids)
-    for _, id in ipairs(claim_ids) do
-        local claimants = membership_claims[id]
-        table.sort(claimants)
-        local node = reg.nodes[id]
-        local default_parent = node and node.default_parent or nil
-        local non_default = {}
-        for _, m in ipairs(claimants) do
-            if m ~= default_parent and m ~= id then table.insert(non_default, m) end
-        end
-        local valid_claimants = {}
-        for _, m in ipairs(claimants) do
-            if m ~= id then table.insert(valid_claimants, m) end
-        end
-        local chosen = non_default[1] or valid_claimants[1] or claimants[1]
-        if #claimants > 1 then
-            logger.warn("ReorderingMenus:", id, "listed under",
-                table.concat(claimants, ", "), "in the edited", view,
-                "order; keeping", chosen)
-        end
-        if not disabled_ids[id] and chosen ~= id then
-            local section_now = txn:view(view)
-            -- Centralized placement gate: never record an unsupported
-            -- STRUCTURAL claim (tab_nesting etc.). Vanished containers stay
-            -- recordable (dormancy); the resolve fallback + validator keep
-            -- the world render-safe; the hand edit stays on disk.
-            local ok_claim, claim_reason = Placement.canPlace(reg, section_now, id, chosen)
-            if not ok_claim and claim_reason ~= Placement.REASONS.UNKNOWN_PARENT then
-                logger.warn("ReorderingMenus: ignoring unsupported membership claim",
-                    id, "->", chosen)
-            else
+    -- Shared membership policy (§1): customized-destination-wins, alphabetical
+    -- tie-break, self-claims excluded. A claim matching current effective
+    -- parent records nothing (sparseness). Structural violations refused;
+    -- vanished containers recorded for dormancy.
+    do
+        local chosen_by_id = IntentOps.resolveMembershipClaims(reg, membership_claims)
+        local claim_ids = {}
+        for id in pairs(chosen_by_id) do claim_ids[#claim_ids+1] = id end
+        table.sort(claim_ids, function(a, b) return tostring(a) < tostring(b) end)
+        for _, id in ipairs(claim_ids) do
+            local chosen = chosen_by_id[id]
+            -- Warn on genuine ambiguity (multiple distinct claimants).
+            do
+                local claimants = membership_claims[id] or {}
+                if #claimants > 1 then
+                    local sorted = {}
+                    for _, m in ipairs(claimants) do sorted[#sorted+1] = m end
+                    table.sort(sorted, function(a, b) return tostring(a) < tostring(b) end)
+                    logger.warn("ReorderingMenus:", id, "listed under",
+                        table.concat(sorted, ", "), "in the edited", view,
+                        "order; keeping", chosen)
+                end
+            end
+            if not disabled_ids[id] and chosen ~= id then
+                local section_now = txn:view(view)
                 local current = Materializer.effectiveParent(reg, section_now, id)
                 if current ~= chosen then
-                    txn:setParentOverride(view, id, {
-                        provider = node and node.provider or nil,
-                        parent = chosen,
-                    })
+                    local node = reg.nodes[id]
+                    local ok_claim = IntentOps.setMembership(view, txn, reg, id, chosen)
+                    if not ok_claim then
+                        logger.warn("ReorderingMenus: ignoring unsupported membership claim",
+                            id, "->", chosen)
+                    else
+                        -- setMembership with UNKNOWN_PARENT records dormancy;
+                        -- with sparse-noop (already correct) it records nothing.
+                        -- Count only actual changes? Imported counter already
+                        -- incremented per changed level above; membership
+                        -- records ride along without extra counting.
+                        _ = node
+                    end
                 end
             end
         end

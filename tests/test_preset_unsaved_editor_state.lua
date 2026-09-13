@@ -271,10 +271,12 @@ do
         "T1-pre: drag registers as unsaved change")
 
     -- Apply through the REAL editor entry path: the hamburger handler passes
-    -- the editor's CURRENT model as staged_items. Documented semantics: for
-    -- THIS level the staged (dirty) model governs the applied arrangement;
-    -- the unsaved drag therefore lands in the SAME atomic save instead of
-    -- being silently dropped or resurrected from the capture.
+    -- the editor's CURRENT model as staged_items. P0 Bug8 semantics: the
+    -- SAVED fragment governs the root order and divider state; staged rows
+    -- only assist reconciliation for post-capture arrivals (tail merge).
+    -- A dirty reorder of ids the preset governs is therefore discarded in
+    -- favour of the capture (saved c,b,a wins over current a,b,c).
+    local saved_pos = pos_of("more_tools", items_of("tools"))
     local rows = {}
     for _, row in ipairs(editor.item_table) do
         table.insert(rows, row.item_id)
@@ -282,9 +284,9 @@ do
     local ok = MenuOrderManager:loadSubmenuPreset(view, "tools", "T1Sub",
         rows_without_separators(rows))
     assert_true(ok, "T1: submenu preset applies over dirty editor")
-    assert_eq(pos_of("more_tools", items_of("tools")), 1,
-        "T1: DECISION - dirty editor drag is CARRIED into the atomic save"
-        .. " (staged model governs its level)")
+    assert_eq(pos_of("more_tools", items_of("tools")), saved_pos,
+        "T1: DECISION - saved preset governs root order over dirty drag"
+        .. " (P0 Bug8: saved c,b,a wins over current a,b,c)")
     -- Uncaptured resident survives the merge.
     assert_eq(parent_of("t1_plugin_item"), "tools",
         "T1: uncaptured resident carried by the submenu merge")

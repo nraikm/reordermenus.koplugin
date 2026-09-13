@@ -255,8 +255,12 @@ do
     end
     assert_true(had, "G6: setup - user divider present")
     hand_edit("filemanager", function(o)
+        -- Remove the USER divider (first divider: the duplicate after
+        -- quickstart_guide inserted above), not a stock divider. P0 Bug7:
+        -- removing the user divider resumes stock flow (0 records); removing
+        -- a stock divider instead must preserve the user divider (1 record).
         local lst = o.help or {}
-        for i = #lst, 1, -1 do
+        for i = 1, #lst do
             if lst[i] == "----------------------------" then
                 table.remove(lst, i)
                 break

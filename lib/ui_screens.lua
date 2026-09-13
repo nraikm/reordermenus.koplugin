@@ -102,7 +102,6 @@ end
 
 local function resetEditorPaging(widget)
     if not widget then return end
-    widget.orig_item_table = nil
     widget.marked = 0
     refreshPaging(widget)
 end
@@ -251,7 +250,8 @@ function UIScreens:reconcileRegisteredItems(plugin, view, persist)
     MenuOrderManager:setLiveRegistrations(view, items, providers, self._collisions)
     -- The materializer anchors newcomers implicitly; this only refreshes the
     -- ephemeral base registry so projections reflect current contributions.
-    local changed = MenuOrderManager:reconcileRegisteredItems(view, items, providers)
+    local changed = MenuOrderManager:reconcileRegisteredItems(
+        view, items, providers, self._collisions)
     if changed and persist then return MenuOrderManager:saveOrder(view) end
     return changed
 end
@@ -890,7 +890,6 @@ local function attachEditorCloseLifecycle(self, sort_widget, spec)
     return {
         mark_saved = function()
             sort_widget.marked = 0
-            sort_widget.orig_item_table = nil
             pcall(refreshDirtyIndicator)
         end,
         close_after_commit = function()
@@ -1245,7 +1244,6 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
         if not self:saveAndApply(plugin, view) then return false end
         if sort_widget then
             sort_widget.marked = 0
-            sort_widget.orig_item_table = nil
         end
         mark_tabs_saved()
         if lifecycle then pcall(function() lifecycle.refresh_indicator() end) end
@@ -2185,6 +2183,20 @@ function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, 
     }
     sort_widget.syncMovedIn = function(_, id) syncMovedIn(id) end
     sort_widget.syncMovedOut = function(_, id) syncMovedOut(id) end
+    -- Draft-immediacy boundary (deliberate): same-menu free-drag arrangement
+    -- stays widget INTERACTION state until save (save_editor_model stages via
+    -- stageList, then commits). It is staged on save — not per keypress —
+    -- because a same-menu drag is invisible to every other level (membership
+    -- elsewhere never depends on this menu's row order), while staging it
+    -- early would widen every co-open editor's save blast radius across the
+    -- shared view section (a nested save would silently commit the parent's
+    -- unconfirmed drags, and a later Discard could no longer drop them).
+    -- Every ordering verb that affects other levels/views stages immediately
+    -- instead: cross-menu moves (chooser time), tabs (reorderTabs verb),
+    -- menu-action moves (stage+save per action), visibility, customs,
+    -- resets, presets. Stock SortWidget offers no reorder-completion hook
+    -- (only row mutation + the save callback used here), so there is no
+    -- narrower immediate-staging point that preserves per-editor Discard.
     UIEditorRegistry:register(view, menu_id, sort_widget)
 
     lifecycle = attachEditorCloseLifecycle(self, sort_widget, {
@@ -2435,13 +2447,16 @@ function UIScreens:showItemActionDialog(plugin, view, menu_id, item_id, idx_hint
 
     if not is_sep then
         -- Re-resolve by stable id immediately before mutating.
+        -- _currentIndexOfItem returns (index, total); both must be
+        -- forwarded so Move down / Move to bottom compare against a real
+        -- total instead of nil.
         local function currentPosOrFail()
-            local cur = self:_currentIndexOfItem(view, menu_id, item_id)
+            local cur, total = self:_currentIndexOfItem(view, menu_id, item_id)
             if not cur then
                 self:showStaleResultNotice(item_title)
                 if on_update_callback then on_update_callback() end
             end
-            return cur
+            return cur, total
         end
         if current_idx > 1 then
             table.insert(actions, {
@@ -2548,12 +2563,12 @@ _("%1 cannot be hidden."),
         -- re-derived at click time; in multi-separator menus the first
         -- occurrence acts.
         local function currentSepOrFail()
-            local cur = self:_currentIndexOfItem(view, menu_id, MenuOrderManager.SEPARATOR_ID)
+            local cur, total = self:_currentIndexOfItem(view, menu_id, MenuOrderManager.SEPARATOR_ID)
             if not cur then
                 self:showStaleResultNotice(item_title)
                 if on_update_callback then on_update_callback() end
             end
-            return cur
+            return cur, total
         end
         if current_idx > 1 then
             table.insert(actions, {

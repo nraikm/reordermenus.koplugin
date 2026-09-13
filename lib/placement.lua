@@ -200,13 +200,10 @@ function Placement.firstValidContainer(reg, intent, exclude_id)
         end
     end
     table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
-    for _, menu_id in ipairs(ids) do
-        -- Customs may live under any ordinary container; tabs never park here.
-        if not Placement.isTab(reg, menu_id) or true then
-            return menu_id
-        end
-    end
-    return nil
+    -- Customs may live under any menu level, tabs included (a tab id names a
+    -- real menu list; only the BAR itself is restricted to tabs). First
+    -- sorted id wins deterministically.
+    return ids[1]
 end
 
 --- Deterministic safe migration for one view's intent section.

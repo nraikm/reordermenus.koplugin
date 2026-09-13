@@ -504,11 +504,33 @@ end
 -- refused outright: discovery happens through listUserPresets(), which
 -- enumerates the known directory itself, so every user_file resolution is
 -- constructed here from a validated name and cannot escape the directory.
+-- Built-in lookup is scoped by (view, id): view-local ids (e.g.
+-- builtin_power_user exists in BOTH views) must resolve to the requested
+-- view's fragment, not to whichever view happens to come first globally.
+local function findBuiltin(view, key)
+    if type(key) ~= "string" then return nil, nil end
+    local cross_view_match
+    for _, b in ipairs(buildBuiltinPresets()) do
+        if b.id == key or b.name == key then
+            if b.is_default then
+                return b, nil
+            end
+            if b.view == view then
+                return b, nil
+            end
+            if cross_view_match == nil then cross_view_match = b end
+        end
+    end
+    return nil, cross_view_match
+end
+
 function Presets.resolve(view, preset)
     local builtin_match
     if type(preset) == "string" then
-        for _, b in ipairs(buildBuiltinPresets()) do
-            if b.id == preset or b.name == preset then builtin_match = b break end
+        local cross_view
+        builtin_match, cross_view = findBuiltin(view, preset)
+        if cross_view ~= nil and builtin_match == nil then
+            builtin_match = cross_view
         end
         if builtin_match then
             -- P1B ingress gate: built-in fragments are view-typed. Applying
@@ -531,8 +553,10 @@ function Presets.resolve(view, preset)
     elseif type(preset) == "table" then
         local pid = preset.id
         if type(pid) == "string" then
-            for _, b in ipairs(buildBuiltinPresets()) do
-                if b.id == pid then builtin_match = b break end
+            local cross_view
+            builtin_match, cross_view = findBuiltin(view, pid)
+            if cross_view ~= nil and builtin_match == nil then
+                builtin_match = cross_view
             end
         end
         if builtin_match then
@@ -735,7 +759,34 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
     result.position_override = util.tableDeepCopy(preset_intent.position_override or {})
     result.order_override = util.tableDeepCopy(preset_intent.order_override or {})
     result.separators = util.tableDeepCopy(preset_intent.separators or {})
-    result.raw_override = {} -- raw passthroughs never survive a semantic apply
+    -- Symmetric with capture (saveViewPreset stores raw_override verbatim):
+    -- opaque levels survive the apply. A level the preset governs semantically
+    -- keeps its semantic form; only ungoverned levels carry their raw bytes.
+    result.raw_override = util.tableDeepCopy(preset_intent.raw_override or {})
+    for menu_id, raw in pairs(current.raw_override or {}) do
+        if result.raw_override[menu_id] == nil
+                and (result.order_override or {})[menu_id] == nil then
+            local governed = false
+            for _, sep in pairs(result.separators or {}) do
+                if type(sep) == "table" and sep.parent == menu_id then
+                    governed = true break
+                end
+            end
+            if not governed then
+                result.raw_override[menu_id] = util.tableDeepCopy(raw)
+            end
+        end
+    end
+    -- Raw owns its level exclusively: no semantic sequence or divider
+    -- records may survive beside a raw passthrough for the same menu.
+    for menu_id in pairs(result.raw_override or {}) do
+        if result.order_override then result.order_override[menu_id] = nil end
+        for key, sep in pairs(result.separators or {}) do
+            if type(sep) == "table" and sep.parent == menu_id then
+                result.separators[key] = nil
+            end
+        end
+    end
     result.tab_order = preset_intent.tab_order
         and util.tableDeepCopy(preset_intent.tab_order) or nil
     result.custom_menus = {}
@@ -796,7 +847,9 @@ end
 local function collectSubtree(reg, intent, menu_id, include_nested)
     local menus = {}
     local visited = {}
-    local graph = Materializer.resolve(reg, intent)
+    -- Preset capture reads the EFFECTIVE arrangement (repaired), i.e. what
+    -- the user sees — not the pre-validation graph. Single source via Resolver.
+    local graph = require("lib.resolver").resolve(reg, intent)
 
     local function children_of(mid)
         local kids = {}
@@ -911,28 +964,16 @@ function Presets.saveSubmenuPreset(view, menu_id, menu_title, preset_name,
     return true, file_path
 end
 
--- P1B: listing memo. Opening the preset picker re-lists on every redraw;
--- each listing used to re-execute every stored file (restricted loader, but
--- still parse+allocation work). The memo is keyed by the directory's
--- (mtime, size) fingerprint: any write/delete changes the key and forces a
--- re-scan; identical state reuses the parsed descriptors. Transient process-
--- local state with no invalidation API to get wrong - no filesystem watcher.
-local submenu_listing_memo = {}
-
+-- Submenu-preset listing is deliberately UNCACHED (Prompt 5 §5): the previous
+-- (mtime, size) directory-fingerprint memo could serve stale descriptors
+-- after an in-place content edit that preserved size and fell inside mtime
+-- granularity. Preset files are small and listings are infrequent (picker
+-- opens, not redraws); correctness beats the micro-optimization. Always scan.
 function Presets.listSubmenuPresets(view, menu_id)
     -- Pure discovery: no directory is created, absent storage = no presets.
     local dir = Presets.findSubmenuPresetsDir(view, menu_id)
     local presets = {}
     if not dir then return presets end
-    local dir_attr = lfs.attributes(dir)
-    local memo_key = view .. "/" .. tostring(menu_id)
-    local fingerprint = string.format("%s|%s",
-        tostring(dir_attr and dir_attr.modification),
-        tostring(dir_attr and dir_attr.size))
-    local cached = submenu_listing_memo[memo_key]
-    if cached and cached.fingerprint == fingerprint then
-        return util.tableDeepCopy(cached.list)
-    end
     for file in lfs.dir(dir) do
         if file:sub(-4) == ".lua" and file:sub(1, 1) ~= "." then
             local path = string.format("%s/%s", dir, file)
@@ -961,8 +1002,6 @@ function Presets.listSubmenuPresets(view, menu_id)
         end
     end
     table.sort(presets, function(a, b) return UnicodeFold.key(a.name) < UnicodeFold.key(b.name) end)
-    submenu_listing_memo[memo_key] = { fingerprint = fingerprint,
-        list = util.tableDeepCopy(presets) }
     return presets
 end
 
@@ -1001,8 +1040,20 @@ function Presets.loadSubmenuPreset(view, menu_id, preset_ref, reg, txn, staged_i
         return false, version_err
     end
 
-    -- Current residents per affected level come from the live graph.
-    local graph = Materializer.resolve(reg, txn:view(view))
+    -- Current residents per affected level come from the live EFFECTIVE graph
+    -- (single source). Unsaved editor rows (staged_items) for the root level
+    -- also count as current residents so post-capture arrivals survive the
+    -- tail merge.
+    local graph = require("lib.resolver").resolve(reg, txn:view(view))
+    local staged_root_members
+    if type(staged_items) == "table" then
+        staged_root_members = {}
+        for _, id in ipairs(staged_items) do
+            if id ~= SEPARATOR_ID and type(id) == "string" then
+                staged_root_members[#staged_root_members + 1] = id
+            end
+        end
+    end
     local function currentMembers(target)
         local members, seen = {}, {}
         local function add(id)
@@ -1012,9 +1063,12 @@ function Presets.loadSubmenuPreset(view, menu_id, preset_ref, reg, txn, staged_i
             end
         end
         for _, id in ipairs(graph.lists[target] or {}) do add(id) end
+        if target == menu_id and staged_root_members then
+            for _, id in ipairs(staged_root_members) do add(id) end
+        end
         -- Hidden members belong here too when their origin says so.
         for hid, record in pairs(txn:view(view).hidden or {}) do
-            if record.origin == target then add(hid) end
+            if type(record) == "table" and record.origin == target then add(hid) end
         end
         return members
     end
@@ -1027,13 +1081,9 @@ function Presets.loadSubmenuPreset(view, menu_id, preset_ref, reg, txn, staged_i
         end
     end
 
-    if staged_items then
-        local seq = {}
-        for _, id in ipairs(staged_items) do
-            if id ~= SEPARATOR_ID then table.insert(seq, id) end
-        end
-        captured_menus[menu_id] = { sequence = seq }
-    end
+    -- The saved fragment governs the root order and divider state. The
+    -- editor's current rows (staged_items) only assist reconciliation via
+    -- currentMembers above; they never replace the saved sequence.
 
     -- Bug 7 ordering: required custom submenu definitions must exist BEFORE
     -- captured child sequences are applied. The application loop below gates
@@ -1043,27 +1093,16 @@ function Presets.loadSubmenuPreset(view, menu_id, preset_ref, reg, txn, staged_i
     -- Recreate the definitions first (from the capture), then apply
     -- membership/order, then validation + projection happen in saveOrder.
     local customs = data.custom_menus or {}
-    for cid, custom in pairs(customs) do
-        if type(custom) == "table" and not txn:getCustomMenus(view)[cid]
-                and graph.lists[cid] == nil then
-            -- Step 1-2 of the application ordering: recreate container
-            -- definitions AND their homes before any child sequence is
-            -- applied. A nested custom's parent may itself be a custom
-            -- created in this same loop - placement is data, resolved at
-            -- materialization, so creation order between siblings of the
-            -- chain does not matter.
-            txn:setCustomMenu(view, cid, {
-                title = custom.title,
-                parent = custom.parent,
-            })
-            if type(custom.parent) == "string"
-                    and (txn:view(view).parent_override[cid] == nil
-                        or not graph.lists[cid]) then
-                local node = reg.nodes[cid]
-                txn:setParentOverride(view, cid, {
-                    provider = node and node.provider or nil,
-                    parent = custom.parent,
-                })
+    do
+        local IntentOps = require("lib.intent_ops")
+        for cid, custom in pairs(customs) do
+            if type(custom) == "table" and not txn:getCustomMenus(view)[cid]
+                    and graph.lists[cid] == nil then
+                -- Shared container semantics: definition + home (dormant when
+                -- parent vanished; structural violations refused downstream
+                -- via sanitize, never recorded here as panics).
+                IntentOps.defineCustomContainer(view, txn, cid,
+                    custom.title, custom.parent)
             end
         end
     end
@@ -1079,23 +1118,17 @@ function Presets.loadSubmenuPreset(view, menu_id, preset_ref, reg, txn, staged_i
                     table.insert(merged, id)
                 end
             end
-            -- Bug 7: captured MEMBERSHIP travels with the captured ORDER.
-            -- The materializer only honors sequence entries that are members
-            -- of the level; after the container was deleted/reset its saved
-            -- children fell back to their default homes, so the captured
-            -- sequence would render empty and minimize away. Give every
-            -- captured child whose resolved parent differs an explicit
-            -- parent_override (provider-stamped like any manual move), so
-            -- the recreated submenu regains exactly its saved contents.
-            for _, id in ipairs(frag.sequence) do
-                if type(id) == "string" and id ~= SEPARATOR_ID then
-                    local node = reg.nodes[id]
-                    if Materializer.effectiveParent(reg, txn:view(view), id)
-                            ~= captured_id then
-                        txn:setParentOverride(view, id, {
-                            provider = node and node.provider or nil,
-                            parent = captured_id,
-                        })
+            -- Shared membership semantics: captured children rejoin the level
+            -- via the same parent gate as editor/import moves (dormant for
+            -- vanished homes, refused for structural violations).
+            do
+                local IntentOps = require("lib.intent_ops")
+                for _, id in ipairs(frag.sequence) do
+                    if type(id) == "string" and id ~= SEPARATOR_ID then
+                        if Materializer.effectiveParent(reg, txn:view(view), id)
+                                ~= captured_id then
+                            IntentOps.setMembership(view, txn, reg, id, captured_id)
+                        end
                     end
                 end
             end
@@ -1105,36 +1138,60 @@ function Presets.loadSubmenuPreset(view, menu_id, preset_ref, reg, txn, staged_i
                     table.insert(merged, id)
                 end
             end
-            -- Era-stamp the applied sequence like any bulk write.
-            local seq_eras = {}
-            for _, id in ipairs(merged) do
-                local node = reg.nodes[id]
-                seq_eras[id] = node and node.provider or nil
-            end
-            txn:setOrderOverride(view, captured_id, merged, seq_eras)
-            -- Divider anchoring travels with the capture.
-            local section = txn:view(view)
-            for key in pairs(section.separators or {}) do
-                local sep = section.separators[key]
-                if sep and sep.parent == captured_id then
-                    section.separators[key] = nil
+            -- Era-stamped bulk, like every complete arrangement write.
+            do
+                local IntentOps = require("lib.intent_ops")
+                local seq_eras = {}
+                for _, id in ipairs(merged) do
+                    seq_eras[id] = IntentOps.providerOf(reg, id)
                 end
+                txn:setOrderOverride(view, captured_id, merged, seq_eras)
             end
-            for key, sep in pairs(frag.separators or {}) do
-                txn:setSeparator(view, "cap_" .. tostring(key), {
-                    parent = sep.parent,
-                    after = sep.after,
-                })
-            end
-            -- Anchors staged from the current arrangement map positionally.
-            local idx, prev = 0, false
-            for _, anchor in ipairs(frag.sep_anchors or {}) do
-                idx = idx + 1
-                txn:setSeparator(view,
-                    string.format("captured_%s_%d", captured_id, idx), {
-                        parent = captured_id,
-                        after = anchor == false and false or anchor,
-                    })
+            -- Divider anchoring travels with the capture (replacement, same
+            -- semantics as editor/import: clear the level, record complete).
+            -- Written with the unified __sep_ key scheme like every other
+            -- divider writer (Prompt 5: cap_/captured_ generation removed);
+            -- readers are key-agnostic, and the recorded (parent, after)
+            -- multiset is unchanged, so effective behavior is identical.
+            -- Deliberately NOT routed through setDividerArrangement: a
+            -- capture is an explicit complete arrangement (including
+            -- stock-coinciding anchors and the historical separators +
+            -- sep_anchors overlap), never default-compared or pruned.
+            do
+                local section = txn:view(view)
+                for key in pairs(section.separators or {}) do
+                    local sep = section.separators[key]
+                    if sep and sep.parent == captured_id then
+                        section.separators[key] = nil
+                    end
+                end
+                local idx = 0
+                local function emit(parent, after)
+                    idx = idx + 1
+                    txn:setSeparator(view,
+                        string.format("%s__sep_%d", captured_id, idx), {
+                            parent = parent,
+                            after = after,
+                        })
+                end
+                -- Deterministic: sort fragment separator keys (pairs() order
+                -- is unspecified); then staged anchors in row order.
+                local frag_keys = {}
+                for key in pairs(frag.separators or {}) do
+                    frag_keys[#frag_keys + 1] = key
+                end
+                table.sort(frag_keys, function(a, b)
+                    return tostring(a) < tostring(b)
+                end)
+                for _, key in ipairs(frag_keys) do
+                    local sep = frag.separators[key]
+                    if type(sep) == "table" then
+                        emit(sep.parent, sep.after)
+                    end
+                end
+                for _, anchor in ipairs(frag.sep_anchors or {}) do
+                    emit(captured_id, anchor == false and false or anchor)
+                end
             end
         end
     end

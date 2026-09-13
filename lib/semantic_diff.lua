@@ -10,18 +10,30 @@ become the MINIMAL user action, not a frozen snapshot of the whole list:
 not "order_override = [A D B C E]", which would shadow every future KOReader
 reorder of untouched neighbours.
 
+Prompt 2 unification (§1, §7):
+  AUTHORITATIVE order inference is now detect_relocation /
+  classify_permutation (pure, separator-aware, provider-stamp aware) consumed
+  through IntentOps.setOrderingFromSequence by editor, import, and preset
+  paths alike. Membership claims resolve through
+  IntentOps.resolveMembershipClaims (same customized-destination-wins policy).
+  The older helpers below (lcs / infer_list_change / find_block_relocation /
+  resolve_claims) are RETAINED ONLY for old-format migration decoding and
+  existing unit probes that exercise them directly; new mutation paths must
+  NOT call them (they duplicate the authoritative classification with
+  different single_move/block/reversal vocabularies).
+
 Algorithms (all deterministic; ties break on the lexicographically smallest
 id, never on pairs() iteration order):
 
-  lcs(a, b)          - longest common subsequence via dynamic programming
-  infer_list_change  - classifies one menu's old->new as a minimal action:
+  lcs(a, b)          - [LEGACY] longest common subsequence via DP
+  infer_list_change  - [LEGACY] classifies one menu's old->new as minimal:
                          identical            -> nil (no information)
                          single_move          -> { id, after } anchor
                          reversal             -> { reversed = true } (bulk)
                          block_move           -> { block = ids, after }
                          unrepresentable      -> full sequence (explicit bulk)
-  infer_membership   - cross-parent claims -> per-id destination choice with
-                         customized-destination-wins and alphabetical tie-break
+  infer_membership   - [LEGACY] cross-parent claims -> per-id destination
+                         (use IntentOps.resolveMembershipClaims instead)
 
 The caller decides what to do with an explicit bulk sequence; this module only
 guarantees that anything representable as a smaller action IS returned as the

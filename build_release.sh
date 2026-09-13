@@ -13,25 +13,45 @@
 #   4. every runtime module is referenced by an exact require() literal in
 #      the tracked tree (catches stale require strings / manifest drift)
 #
-# Layout: archive root IS the plugin directory (<Plugin>.koplugin/), which is
-# what a KOReader install expects next to other *.koplugin directories.
-# File order and metadata are normalized for reproducible listings.
-#
 # Usage:
 #   ./build_release.sh                  # -> dist/reorderingmenus-<version>.zip
 #   ./build_release.sh -o /tmp/out.zip  # explicit output path
 #   VERIFY=1 ./build_release.sh         # additionally run the clean-install
 #                                       # smoke test (tests/test_release_install_smoke.lua)
+#
+# Provenance (Prompt 5 §10): release contents AND the manifest that classifies
+# them come from the SAME commit. The manifest is read from the HEAD
+# extraction ($SCRATCH/head), never from the working tree — a dirty manifest
+# (e.g. listing files HEAD does not have, or omitting files it does) fails
+# closed below instead of mixing a HEAD archive with checkout metadata.
+# `git status` dirt is shown for information only and never ships.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-MANIFEST="packaging/release-manifest.conf"
 
 command -v git >/dev/null || { echo "FAIL: git not found" >&2; exit 2; }
 command -v zip >/dev/null  || { echo "FAIL: zip not found" >&2;  exit 2; }
-[ -f "$MANIFEST" ] || { echo "FAIL: manifest missing: $MANIFEST" >&2; exit 2; }
+
+fail() { echo "BUILD FAILED: $*" >&2; exit 1; }
+
+if [ -n "$(git status --porcelain=v1 2>/dev/null)" ]; then
+    echo "NOTE: working tree is dirty; release is built from HEAD only." >&2
+    git status --porcelain=v1 >&2 || true
+fi
+
+# --- 0. extract HEAD first; everything below reads from it -------------------
+PLUGIN_NAME="reorderingmenus.koplugin"
+VERSION="$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --short=12 HEAD)"
+STAGE="$(mktemp -d)"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$STAGE" "$SCRATCH"' EXIT
+mkdir -p "$STAGE/$PLUGIN_NAME" "$SCRATCH/head"
+git archive HEAD | tar -x -C "$SCRATCH/head"
+
+MANIFEST="$SCRATCH/head/packaging/release-manifest.conf"
+[ -f "$MANIFEST" ] || fail "manifest missing from HEAD: packaging/release-manifest.conf"
 
 # shellcheck source=packaging/release-manifest.conf
 source "$MANIFEST"
@@ -39,14 +59,15 @@ source "$MANIFEST"
 PLUGIN_NAME="reorderingmenus.koplugin"
 VERSION="$(git describe --tags --abbrev=0 2>/dev/null || git rev-parse --short=12 HEAD)"
 
-fail() { echo "BUILD FAILED: $*" >&2; exit 1; }
+# HEAD tree listing: the index/working tree NEVER participate below (a staged
+# but uncommitted file must neither satisfy checks nor leak in).
+TRACKED="$(git ls-tree -r --name-only HEAD | sort)"
+tracked_has() { git cat-file -e "HEAD:$1" 2>/dev/null; }
 
-TRACKED="$(git ls-files | sort)"
-
-# --- 1. required runtime must be tracked ------------------------------------
+# --- 1. required runtime must be in HEAD --------------------------------------
 for f in $REQUIRED_RUNTIME; do
-    git ls-files --error-unmatch "$f" >/dev/null 2>&1 || \
-        fail "required runtime file NOT tracked in git: $f"
+    tracked_has "$f" || \
+        fail "required runtime file NOT in HEAD: $f"
 done
 
 # --- 2. every tracked file must be classified --------------------------------
@@ -91,19 +112,14 @@ fi
 # --- 3. forbidden files must not ship ----------------------------------------
 SHIPPING="$REQUIRED_RUNTIME $OPTIONAL_DISTRIBUTABLE"
 for f in $SHIPPING; do
-    git ls-files --error-unmatch "$f" >/dev/null 2>&1 || continue   # optional & untracked: skip
+    tracked_has "$f" || continue   # optional & absent from HEAD: skip
     case "$f" in
         tests/*|docs/*|patches/*|packaging/*|.commandcode/*|scripts/*)
             fail "shippable file inside a development-only directory: $f" ;;
     esac
 done
 
-# --- 4. require-literal sanity against the tracked tree ----------------------
-STAGE="$(mktemp -d)"
-SCRATCH="$(mktemp -d)"
-trap 'rm -rf "$STAGE" "$SCRATCH"' EXIT
-mkdir -p "$STAGE/$PLUGIN_NAME" "$SCRATCH/head"
-git archive HEAD | tar -x -C "$SCRATCH/head"
+# --- 4. require-literal sanity against the HEAD tree -------------------------
 
 for f in $REQUIRED_RUNTIME; do
     base="${f%.lua}"
@@ -134,8 +150,8 @@ for dep in $LOCAL_DEPS; do
         [ "$depfile" = "$c" ] && { known=1; break; }
     done
     [ "$known" = "1" ] || fail "runtime dependency require(\"$dep\") is not classified REQUIRED_RUNTIME"
-    git ls-files --error-unmatch "$depfile" >/dev/null 2>&1 || \
-        fail "runtime dependency $depfile is not tracked in HEAD"
+    tracked_has "$depfile" || \
+        fail "runtime dependency $depfile is not in HEAD"
 done
 
 # --- stage ONLY the shipping set from the HEAD extraction ---------------------

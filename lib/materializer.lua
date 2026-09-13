@@ -178,6 +178,31 @@ function Materializer.effectiveParent(reg, intent, id)
             if type(park) == "string" then return park end
         end
     end
+    -- Live hintless contributions (no default slot, no usable hint) follow
+    -- stock MenuSorter's orphan fallback: the first tab's content, not
+    -- disabled. Dormant/absent ids (no live node) stay unplaced so provider
+    -- return can reactivate them; tabs themselves live in the bar. Prefer the
+    -- first VISIBLE tab so a hidden first tab does not drag orphans into
+    -- cascading invisibility.
+    if node ~= nil then
+        local place_ok, Placement = pcall(require, "lib.placement")
+        local is_tab = place_ok and Placement and Placement.isTab
+            and Placement.isTab(reg, id) or false
+        if not is_tab and reg.tab_list and #reg.tab_list > 0 then
+            local first_visible, first_any
+            for _, tab_id in ipairs(reg.tab_list) do
+                if type(tab_id) == "string" and tab_id ~= id then
+                    if first_any == nil then first_any = tab_id end
+                    if not Materializer.hiddenApplies(reg, intent, tab_id) then
+                        first_visible = tab_id
+                        break
+                    end
+                end
+            end
+            local chosen = first_visible or first_any
+            if type(chosen) == "string" then return chosen end
+        end
+    end
     return nil
 end
 
@@ -273,15 +298,32 @@ local function positionHintFor(reg, intent, id, customs)
     return nil
 end
 
-local function countSeparatorRecords(intent, menu_id)
-    local count = 0
+-- Divider ownership (Prompts 2 §4 + 4): one explicit per-menu model.
+--   no records          -> stock flow (follow current defaults)
+--   zero sentinel       -> explicit EMPTY (suppress stock, render none)
+--   >=1 normal records  -> explicit REPLACEMENT (stock suppressed entirely;
+--                          render exactly the recorded anchors). Replacement
+--                          keeps item drags across stock slots exact.
+--   only removal marks  -> stock flow MINUS the marked slots (one mark
+--                          suppresses one stock occurrence anchored there).
+-- The setter (IntentOps.setDividerArrangement) never mixes normal records
+-- with removal marks; if both are somehow present, normals win (replacement).
+local function dividerRecords(intent, menu_id)
+    local normals, removals, zero = 0, {}, false
     for _, separator in pairs(type(intent.separators) == "table"
             and intent.separators or {}) do
         if type(separator) == "table" and separator.parent == menu_id then
-            count = count + 1
+            if separator.zero_dividers == true then
+                zero = true
+            elseif separator.removed == true then
+                local k = tostring(separator.after)
+                removals[k] = (removals[k] or 0) + 1
+            else
+                normals = normals + 1
+            end
         end
     end
-    return count
+    return normals, removals, zero
 end
 
 -- Seed a menu from its explicit sequence, if any. Membership and provider-
@@ -344,21 +386,38 @@ local function restoreStockSeparators(ctx, seq)
     end
     rewriteSeq(seq, items)
 
-    if ctx.separator_record_count ~= 0 then
+    local normals, removals, zero = dividerRecords(ctx.intent, ctx.menu_id)
+    if zero or normals > 0 then
+        -- Explicit empty / replacement own divider placement entirely
+        -- (applyUserSeparators renders below); stock slots stay out.
         return
     end
+    local has_removals = next(removals) ~= nil
 
     local last_placed_at
+    local default_prev = false -- unconditional stock-slot identity for markers
     for _, id in ipairs(ctx.default_list) do
         if id == SEPARATOR_ID then
             -- A divider slot with no live predecessor (everything before it
             -- hidden) stays absent: the fresh-session rebuild drops it too.
             if last_placed_at then
-                table.insert(seq, last_placed_at + 1, SEPARATOR_ID)
+                if has_removals then
+                    local k = tostring(default_prev)
+                    if (removals[k] or 0) > 0 then
+                        removals[k] = removals[k] - 1
+                    else
+                        table.insert(seq, last_placed_at + 1, SEPARATOR_ID)
+                    end
+                else
+                    table.insert(seq, last_placed_at + 1, SEPARATOR_ID)
+                end
             end
-        elseif not ctx.hidden[id] then
-            local at = indexOf(seq, id)
-            if at then last_placed_at = at end
+        else
+            default_prev = id
+            if not ctx.hidden[id] then
+                local at = indexOf(seq, id)
+                if at then last_placed_at = at end
+            end
         end
     end
 end
@@ -411,7 +470,12 @@ local function applyUserSeparators(ctx, seq)
             and ctx.intent.separators or {})) do
         local separator = ctx.intent.separators[key]
         if type(separator) == "table" and separator.parent == ctx.menu_id then
-            if separator.after == false then
+            -- Explicit-zero sentinel and per-slot removal marks render no
+            -- row of their own (zero suppresses stock via restoreStock above;
+            -- removals suppress their stock slot there too).
+            if separator.zero_dividers == true or separator.removed == true then
+                -- no row
+            elseif separator.after == false then
                 table.insert(seq, 1, SEPARATOR_ID)
             else
                 local anchor_at = type(separator.after) == "string"
@@ -421,6 +485,15 @@ local function applyUserSeparators(ctx, seq)
             end
         end
     end
+end
+
+-- Explicit-zero divider marker: suppresses stock dividers while rendering
+-- none. Distinguishes "no divider override" (no records) from "user removed
+-- all dividers" (one sentinel). Keyed per menu so repeated clears do not
+-- accumulate. Per-slot removals use { parent, after, removed = true } records
+-- (see dividerRecords above); IntentOps owns key generation for both.
+function Materializer.explicitZeroKey(menu_id)
+    return tostring(menu_id) .. "__explicit_empty"
 end
 
 local function assembleMenuList(reg, intent, menu_id, members, hidden, customs)
@@ -491,7 +564,6 @@ local function assembleMenuList(reg, intent, menu_id, members, hidden, customs)
         default_list = default_list,
         default_set = default_set,
         default_index = default_index,
-        separator_record_count = countSeparatorRecords(intent, menu_id),
     }
 
     local seq, present = {}, {}

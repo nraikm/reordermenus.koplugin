@@ -90,33 +90,15 @@ function KoreaderAdapter.getDefaultOrder(view, force_reload)
     if default_orders[view] and not force_reload then
         return util.tableDeepCopy(default_orders[view])
     end
+    -- Cold path: SHIPPED stock only, no live_mod merge. Live plugin tabs,
+    -- menu trees, and stock-level insertions are adopted exclusively by the
+    -- warm path (refreshLivePluginOrder -> captureNativeSnapshot, filtered by
+    -- live registrations). Merging live_mod here unfiltered previously let
+    -- MenuSorter's overlay of OUR OWN previous emissions (plus any hand edit
+    -- present at first load) pollute the "stock" baseline, so sparse emission
+    -- gradually mistook its own output for upstream defaults. Stock comparisons
+    -- (restore-to-default, reorderTabs baseline, pristine) want shipped bytes.
     local loaded = loadStockOrder(view)
-
-    -- Merge plugin-contributed tabs and menu definitions from live module in package.loaded
-    local live_mod = package.loaded[string.format("ui/elements/%s_menu_order", view)]
-    if type(live_mod) == "table" then
-        local stock_tabs = {}
-        for _, t in ipairs(loaded[MenuSchema.MENU_BUTTONS_KEY] or {}) do
-            stock_tabs[t] = true
-        end
-        if type(live_mod[MenuSchema.MENU_BUTTONS_KEY]) == "table" then
-            for idx, tab_id in ipairs(live_mod[MenuSchema.MENU_BUTTONS_KEY]) do
-                if type(tab_id) == "string" and not stock_tabs[tab_id]
-                        and not KoreaderAdapter.isInReservedNamespace(tab_id) then
-                    local target_idx = math.min(idx, #(loaded[MenuSchema.MENU_BUTTONS_KEY]) + 1)
-                    table.insert(loaded[MenuSchema.MENU_BUTTONS_KEY], target_idx, tab_id)
-                    stock_tabs[tab_id] = true
-                end
-            end
-        end
-        for menu_id, list in pairs(live_mod) do
-            if type(menu_id) == "string" and not loaded[menu_id]
-                    and not KoreaderAdapter.isInReservedNamespace(menu_id)
-                    and type(list) == "table" then
-                loaded[menu_id] = util.tableDeepCopy(list)
-            end
-        end
-    end
 
     if not pristine_defaults[view] or force_reload then
         pristine_defaults[view] = util.tableDeepCopy(loaded)
@@ -126,25 +108,66 @@ function KoreaderAdapter.getDefaultOrder(view, force_reload)
     return util.tableDeepCopy(default_orders[view])
 end
 
--- Reconcile provider-backed menu-order mutations made after our first
--- defaults snapshot. Bookshelf is the canonical example: its init() requires
--- ui/elements/filemanager_menu_order, inserts bookshelf_tab into the shared
--- KOMenu:menu_buttons array, and adds a bookshelf_tab list. Plugin load order
--- is not an API, so this may happen before OR after Reordering Menus cached
--- the stock module.
+-- -------------------------------------------------------------------------
+-- Native snapshot (Prompt 4 §2–§3): ONE definition of KOReader's current
+-- arrangement before this plugin's customization.
 --
--- Never copy arbitrary unknown keys from package.loaded here. MenuSorter
--- overlays user native files onto that same process-lifetime table, so it may
--- also contain stale custom submenus or hand-authored keys. A root is adopted
--- only when a currently registered widget supplies that root id and provider;
--- descendant menu levels are followed only through likewise-live entries.
-function KoreaderAdapter.refreshLivePluginOrder(view, registrations, providers)
+--   snapshot = captureNativeSnapshot(shipped, live_mod, regs, providers)
+--     -> { order, providers }
+--
+--   order     full menu/tab layout: shipped stock + live-adopted plugin
+--             tabs, reachable provider-backed menu trees, and third-party
+--             insertions into stock levels at their live-relative slots.
+--   providers per-id stock/plugin stamps for adopted rows (dormancy eras).
+--
+-- Contamination boundary: live_mod (package.loaded ui/elements/*_menu_order)
+-- is READ-ONLY here — order arrays only, never item tables — because
+-- MenuSorter overlays native override files (including OUR OWN previous
+-- emissions) onto that same process-lifetime table. Stock-row order and
+-- stock dividers always stay shipped; only live-REGISTERED non-stock rows
+-- are adopted, so our output can never feed back as default. The one hole
+-- in that rule is our own echo: a live-registered row that WE placed (a
+-- cross-menu move, a restored-then-moved plugin row) is re-overlaid into
+-- live_mod by MenuSorter, where it is indistinguishable from a genuine
+-- runtime insertion — adopting it would shift its default_parent onto the
+-- echoed slot and prune the very intent that produced it (N3 generation
+-- churn, R hint-home loss, Q6 divider-slot drift). Callers therefore pass
+-- `own_rows` (our last emission per menu, from the materialization
+-- checkpoint); echoed rows are skipped as adoption candidates while genuine
+-- runtime insertions (absent from our emission) still adopt. Callback replay
+-- (collectLiveRegistrations) runs against an empty captured table, never
+-- against live_mod. invalidateNativeModuleCache scrubs emission pollution by
+-- resetting live_mod to the last snapshot.
+--
+-- Caches: pristine_defaults = shipped stock file bytes, captured once and
+-- NEVER overwritten by adoption (previously the warm path overwrote it,
+-- destroying the untouched copy). default_orders = current snapshot
+-- (shipped + adopted). defaults_revision bumps only when the snapshot or
+-- provider map actually changes. Manager.default_orders[view] remains a
+-- TEST-ONLY injection of replacement shipped bytes (the manager routes it
+-- through captureNativeSnapshot too, so simulated updates get the same
+-- adoption semantics); production always flows through here.
+-- -------------------------------------------------------------------------
+
+-- Pure snapshot constructor: no caches touched, no I/O. Shared by the cold
+-- path (empty regs: stock tabs/menus visible in live_mod are still adopted
+-- as structural roots? No — cold passes no regs so nothing is adopted; see
+-- getDefaultOrder) and the warm path below.
+--
+-- own_rows (optional): { [menu_id] = { [id] = true } } rows of OUR OWN last
+-- emission (checkpoint structure). Echoed rows are skipped as adoption
+-- candidates (see contamination boundary above); nil/empty disables the
+-- exclusion (legacy first contact has no checkpoint to consult).
+local function captureNativeSnapshot(stock, live_mod, registrations, providers,
+        own_rows)
     registrations = type(registrations) == "table" and registrations or {}
     providers = type(providers) == "table" and providers or {}
-
-    local loaded = loadStockOrder(view)
-    local live_mod = package.loaded[string.format(
-        "ui/elements/%s_menu_order", view)]
+    local function is_own_echo(menu_id, id)
+        return type(own_rows) == "table"
+            and type(own_rows[menu_id]) == "table"
+            and own_rows[menu_id][id] == true
+    end
+    local loaded = util.tableDeepCopy(stock)
     local live_tabs = type(live_mod) == "table"
         and live_mod[MenuSchema.MENU_BUTTONS_KEY] or nil
     local loaded_tabs = loaded[MenuSchema.MENU_BUTTONS_KEY]
@@ -198,7 +221,7 @@ function KoreaderAdapter.refreshLivePluginOrder(view, registrations, providers)
         qindex = qindex + 1
         if not visited[menu_id] then
             visited[menu_id] = true
-            local source = live_mod[menu_id]
+            local source = type(live_mod) == "table" and live_mod[menu_id] or nil
             if type(source) == "table" then
                 local copied = {}
                 for _, id in ipairs(source) do
@@ -223,10 +246,136 @@ function KoreaderAdapter.refreshLivePluginOrder(view, registrations, providers)
         end
     end
 
+    -- Third-party insertions into EXISTING stock levels: a live plugin that
+    -- mutates a stock menu's array (e.g. inserting a row into Tools) leaves
+    -- that row in live_mod[menu_id] but not in the shipped stock file. Adopt
+    -- ONLY the non-stock live-registered rows, spliced into the SHIPPED stock
+    -- order at their live-relative slots. Stock-row order and stock dividers
+    -- always stay shipped: live_mod also carries OUR OWN previous emissions
+    -- (MenuSorter overlays native files onto it), and adopting those would
+    -- feed our output back as default and prune the very intent that
+    -- produced it. Anything else (stale customs, hand edits) is ignored.
+    if type(live_mod) == "table" then
+        for menu_id, stock_list in pairs(loaded) do
+            if type(menu_id) == "string" and type(stock_list) == "table"
+                    and not KoreaderAdapter.isInReservedNamespace(menu_id)
+                    and menu_id ~= MenuSchema.MENU_BUTTONS_KEY
+                    and menu_id ~= MenuSchema.DISABLED_KEY
+                    and menu_id ~= MenuSchema.CUSTOM_SUBMENUS_KEY
+                    and not visited[menu_id] then
+                local live_list = live_mod[menu_id]
+                if type(live_list) == "table" then
+                    -- Collect genuinely new plugin rows in live order,
+                    -- excluding our own echoed emission rows (which would
+                    -- otherwise feed back as defaults and prune their intent).
+                    local newcomers = {}
+                    local seen_new = {}
+                    for _, id in ipairs(live_list) do
+                        if type(id) == "string" and not seen_new[id]
+                                and not stock_ids[id]
+                                and not KoreaderAdapter.isInReservedNamespace(id)
+                                and not is_own_echo(menu_id, id)
+                                and registrations[id] ~= nil
+                                and providers[id] ~= nil then
+                            seen_new[id] = true
+                            newcomers[#newcomers + 1] = id
+                        end
+                    end
+                    if #newcomers > 0 then
+                        -- Splice each newcomer before its next live stock
+                        -- neighbour (or at the end when none follows), so the
+                        -- live slot is preserved without reordering stock.
+                        local live_pos = {}
+                        for idx, id in ipairs(live_list) do
+                            if type(id) == "string" and live_pos[id] == nil then
+                                live_pos[id] = idx
+                            end
+                        end
+                        local merged = {}
+                        for _, id in ipairs(stock_list) do
+                            merged[#merged + 1] = id
+                        end
+                        local function stock_index_of(sid)
+                            for i, v in ipairs(merged) do
+                                if v == sid then return i end
+                            end
+                            return nil
+                        end
+                        for _, nid in ipairs(newcomers) do
+                            local at = nil
+                            local npos = live_pos[nid] or math.huge
+                            local best_after, best_pos = nil, math.huge
+                            for idx = npos + 1, #live_list do
+                                local cand = live_list[idx]
+                                if type(cand) == "string" and stock_ids[cand] then
+                                    local si = stock_index_of(cand)
+                                    if si and si < best_pos then
+                                        best_pos, best_after = si, cand
+                                    end
+                                    break
+                                end
+                            end
+                            if best_after then
+                                at = stock_index_of(best_after)
+                            else
+                                -- No stock successor live: trail the nearest
+                                -- live stock predecessor, else append.
+                                local pred = nil
+                                for idx = (live_pos[nid] or 1) - 1, 1, -1 do
+                                    local cand = live_list[idx]
+                                    if type(cand) == "string" and stock_ids[cand] then
+                                        pred = cand break
+                                    end
+                                end
+                                at = pred and ((stock_index_of(pred) or #merged) + 1)
+                                    or (#merged + 1)
+                            end
+                            table.insert(merged, math.min(at, #merged + 1), nid)
+                            adopted_providers[nid] =
+                                pluginProviderStamp(providers[nid])
+                        end
+                        if not util.tableEquals(stock_list, merged) then
+                            loaded[menu_id] = merged
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return loaded, adopted_providers
+end
+
+KoreaderAdapter.captureNativeSnapshot = captureNativeSnapshot
+KoreaderAdapter._captureNativeSnapshotForTests = captureNativeSnapshot
+
+-- Reconcile provider-backed menu-order mutations made after our first
+-- defaults snapshot. Bookshelf is the canonical example: its init() requires
+-- ui/elements/filemanager_menu_order, inserts bookshelf_tab into the shared
+-- KOMenu:menu_buttons array, and adds a bookshelf_tab list. Plugin load order
+-- is not an API, so this may happen before OR after Reordering Menus cached
+-- the stock module. Warm path: shipped stock + live adoption via the single
+-- snapshot constructor above (pristine is NEVER overwritten here — it stays
+-- the untouched shipped copy; only default_orders advances).
+--
+-- Never copy arbitrary unknown keys from package.loaded here. MenuSorter
+-- overlays user native files onto that same process-lifetime table, so it may
+-- also contain stale custom submenus or hand-authored keys. A root is adopted
+-- only when a currently registered widget supplies that root id and provider;
+-- descendant menu levels are followed only through likewise-live entries.
+-- `own_rows` (our last emission, checkpoint structure) excludes our echo
+-- from newcomer candidacy; see the contamination boundary above.
+function KoreaderAdapter.refreshLivePluginOrder(view, registrations, providers,
+        own_rows)
+    local stock = loadStockOrder(view)
+    local live_mod = package.loaded[string.format(
+        "ui/elements/%s_menu_order", view)]
+    local loaded, adopted_providers = captureNativeSnapshot(
+        stock, live_mod, registrations, providers, own_rows)
+
     local changed = not util.tableEquals(default_orders[view] or {}, loaded)
         or not util.tableEquals(external_default_providers[view] or {},
             adopted_providers)
-    pristine_defaults[view] = util.tableDeepCopy(loaded)
     default_orders[view] = util.tableDeepCopy(loaded)
     external_default_providers[view] = adopted_providers
     if changed or defaults_revision[view] == nil then
@@ -373,6 +522,13 @@ function KoreaderAdapter.collectLiveRegistrations(ui)
                 widget:addToMainMenu(captured)
                 for id, item in pairs(captured) do
                     if KoreaderAdapter.isInReservedNamespace(id) then
+                        -- Quarantined AND dropped (not recorded anywhere):
+                        -- ids under our namespace are plugin-synthesized
+                        -- structures, never provider contributions. The build
+                        -- layer (Registry) enforces the same refusal as a
+                        -- second gate. Previously the registration record was
+                        -- still inserted here after logging, and only the
+                        -- provider attribution was skipped.
                         logger.warn("ReorderingMenus: quarantined contribution",
                             tostring(id), "from", tostring(name),
                             "- ids under", NAMESPACE_PREFIX, "are reserved")
@@ -403,7 +559,8 @@ function KoreaderAdapter.collectLiveRegistrations(ui)
                             end
                         end
                     end
-                    if not registrations[id] then
+                    if not KoreaderAdapter.isInReservedNamespace(id)
+                            and not registrations[id] then
                         registrations[id] = {
                             id = id,
                             provider = widget_name and ("plugin:" .. tostring(widget_name)) or nil,
@@ -931,6 +1088,25 @@ function KoreaderAdapter.canRestart()
         and UIManager.event_handlers.Restart ~= nil
 end
 
+-- Live reload (Prompt 4 §6): architecturally one production path.
+--
+-- Production path — in-place rebuild, controller identity preserved:
+-- KOReader retains references and closures (touch-zone handlers, key
+-- dispatch, ReaderUI fields) bound to the EXISTING menu instance, so the
+-- derived tree is re-derived from the updated native order on the same table
+-- through the SUPPORTED setUpdateItemTable lifecycle hook. Replacing ui.menu
+-- would orphan those routes on the old object while the new one never
+-- receives them (the Prompt 1 stale-controller bug).
+--
+-- Test-compat fallback — fresh-instance construction: unit mocks (and any
+-- menu whose in-place rebuild cannot produce a valid tree, e.g. a mock
+-- without real stock menu_items) cannot rebuild in place, so a fresh
+-- instance is built to keep compatibility surfaces working. Production
+-- KOReader menus never take this branch (their in-place rebuild yields a
+-- valid tree); it exists so tests can exercise save/apply without a full UI.
+-- Total-failure last resort (neither path yields a tree) keeps the previous
+-- renderable tree so routing stays alive — safety, not stale-reference
+-- repair: nothing references the discarded table afterwards.
 function KoreaderAdapter.applyLiveReload(ui, sanitize_tree_fn)
     if not ui then return false, "UI is unavailable" end
     KoreaderAdapter.invalidateNativeModuleCache()
@@ -939,22 +1115,67 @@ function KoreaderAdapter.applyLiveReload(ui, sanitize_tree_fn)
         or "apps/filemanager/filemanagermenu"
     if package.loaded[mod_name] ~= nil then
         local ok_call, ok_reload, reload_err = pcall(function()
-            local MenuCls = require(mod_name)
-            if MenuCls and MenuCls.new then
-                local old_menu = ui.menu
-                local old_widgets = old_menu and old_menu.registered_widgets or {}
-                local new_menu = is_reader and MenuCls:new{ ui = ui, view = ui.view }
+            -- Test-compat constructor (see header): fresh instance carrying
+            -- over registered widgets, used ONLY when in-place rebuild below
+            -- cannot produce a valid tree.
+            local function build_fresh_for_mocks()
+                local MenuCls = require(mod_name)
+                if not (MenuCls and MenuCls.new) then return nil end
+                local fresh = is_reader and MenuCls:new{ ui = ui, view = ui.view }
                     or MenuCls:new{ ui = ui }
-                for k, w in pairs(old_widgets) do
-                    new_menu.registered_widgets[k] = w
+                if ui.menu and ui.menu.registered_widgets then
+                    for k, w in pairs(ui.menu.registered_widgets) do
+                        fresh.registered_widgets[k] = w
+                    end
                 end
-                if new_menu and new_menu.setUpdateItemTable then
-                    new_menu:setUpdateItemTable()
+                if fresh.setUpdateItemTable then
+                    fresh:setUpdateItemTable()
                 end
-                if type(sanitize_tree_fn) == "function" and new_menu.tab_item_table then
-                    sanitize_tree_fn(new_menu.tab_item_table)
+                if type(sanitize_tree_fn) == "function" and fresh.tab_item_table then
+                    sanitize_tree_fn(fresh.tab_item_table)
                 end
-                ui.menu = new_menu
+                return fresh
+            end
+            -- Production path: rebuild the derived tree in place on the
+            -- SAME controller through its supported lifecycle hook.
+            local function rebuild_in_place(menu)
+                local saved_table = menu.tab_item_table
+                local ok_inplace = pcall(function()
+                    menu.tab_item_table = nil
+                    menu:setUpdateItemTable()
+                end)
+                local valid = ok_inplace and type(menu.tab_item_table) == "table"
+                    and #menu.tab_item_table > 0
+                if valid then
+                    if type(sanitize_tree_fn) == "function" and menu.tab_item_table then
+                        sanitize_tree_fn(menu.tab_item_table)
+                    end
+                    return true
+                end
+                menu.tab_item_table = saved_table
+                return false
+            end
+            local menu = ui.menu
+            if menu and type(menu.setUpdateItemTable) == "function"
+                    and rebuild_in_place(menu) then
+                return true
+            elseif menu and type(menu.setUpdateItemTable) == "function" then
+                -- In-place rebuild failed (e.g. mock menu without real
+                -- stock menu_items): test-compat fallback so the live tree
+                -- still reflects the saved order.
+                local saved_table = menu.tab_item_table
+                local fresh = build_fresh_for_mocks()
+                if fresh and type(fresh.tab_item_table) == "table"
+                        and #fresh.tab_item_table > 0 then
+                    ui.menu = fresh
+                elseif menu.tab_item_table == nil then
+                    -- Neither path produced a tree; keep the saved table
+                    -- so routing stays on the old (still renderable) tree.
+                    menu.tab_item_table = saved_table
+                end
+            else
+                local fresh = build_fresh_for_mocks()
+                if fresh then ui.menu = fresh end
             end
             return true
         end)

@@ -29,8 +29,6 @@ loop over the transaction's own changed views.
 local logger = require("logger")
 
 local IntentStore = require("lib.intent_store")
-local Materializer = require("lib.materializer")
-local Validator = require("lib.validator")
 local NativeWriter = require("lib.native_writer")
 local KoreaderAdapter = require("lib.koreader_adapter")
 local MenuSchema = require("lib.menu_schema")
@@ -99,8 +97,7 @@ end
 --- Returns ok(bool), err.
 local function materializeView(view, reg)
     local section = IntentStore.view(view)
-    local graph = Materializer.resolve(reg, section)
-    local _, repaired = Validator.validate(graph, reg, section)
+    local repaired = require("lib.resolver").resolve(reg, section)
 
     -- Canonical emptiness is decided on INTENT, not on the projection: a
     -- deliberate reset / pristine world must end with NO derived file even

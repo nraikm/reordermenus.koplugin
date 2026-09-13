@@ -279,6 +279,12 @@ end
 -- Backups use their own atomic temp+rename, prune older backups to stay within
 -- the retention limit, and never overwrite an earlier recovery artifact.
 local function writeBackupBytes(path, suffix, body)
+    -- Unreadable originals have no bytes to preserve: refusing here (instead
+    -- of writing an empty file) keeps the "backup succeeded" signal truthful
+    -- so callers never overwrite bytes they failed to read.
+    if type(body) ~= "string" then
+        return nil, "no original bytes to preserve"
+    end
     backup_seq = backup_seq + 1
     local backup
     if suffix == "unsupported" then
@@ -290,7 +296,7 @@ local function writeBackupBytes(path, suffix, body)
     local tmp = backup .. ".tmp"
     local file, open_err = io.open(tmp, "wb")
     if not file then return nil, open_err end
-    local ok_write, write_err = file:write(body or "")
+    local ok_write, write_err = file:write(body)
     local ok_close, close_err = file:close()
     if not ok_write or not ok_close then
         pcall(os.remove, tmp)

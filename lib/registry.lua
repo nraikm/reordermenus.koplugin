@@ -14,11 +14,27 @@ Nothing here is persisted. Each entry records:
     default_parent  -- menu the CURRENT defaults place it in (hint-resolved)
     default_index   -- 1-based slot inside that parent's default list
     sorting_hint    -- provider-requested anchor, when unanchored by defaults
-    node_type       -- "tab" | "submenu" | "item"
-    available       -- true: served by the running installation
+    node_type       -- "tab" | "submenu" | "item" (the node's OWN role:
+                      "tab" for bar members, "submenu" when the id itself is
+                      a menu level, else "item" — never derived from the
+                      parent's kind)
+    collides        -- true when >1 widget contributes the id right now
+                      (deterministic smallest-name attribution; unstable)
 
-Items whose provider disappeared are simply absent; their persisted intent
-survives in the intent store until they return.
+Separation of concerns (Prompt 4 §7):
+  known-from-baseline vs currently-live: membership IN this table means
+    currently live (served by stock defaults or a live registration right
+    now). Dormant intent ids (provider absent) are ABSENT, never present
+    with a flag — provider absence is observed as absence, and intent
+    stamps reactivate on return.
+  container vs tab: isContainer/isTab live in Placement (registry + intent);
+    node_type is descriptive only.
+  provider: stock vs plugin:<name> attribution; collisions flagged, never
+    silently merged.
+
+Reserved ids (`reorderingmenus:*`): quarantined at collection AND at build —
+neither layer inserts them, even though collection logs the attempt (defense
+in depth; previously the build re-inserted them after the collection log).
 --]]
 
 local MenuSchema = require("lib.menu_schema")
@@ -56,9 +72,15 @@ function Registry.buildFromData(defaults, registrations, providers, collisions,
         nodes = {},
     }
 
+    local function isReservedNamespace(id)
+        return type(id) == "string"
+            and id:sub(1, #"reorderingmenus:") == "reorderingmenus:"
+    end
+
     local menu_ids = {}
     for menu_id, list in pairs(defaults) do
-        if not RESERVED_KEYS[menu_id] and type(list) == "table" then
+        if not RESERVED_KEYS[menu_id] and type(list) == "table"
+                and not isReservedNamespace(menu_id) then
             table.insert(menu_ids, menu_id)
         end
     end
@@ -86,7 +108,6 @@ function Registry.buildFromData(defaults, registrations, providers, collisions,
             default_index = default_index,
             sorting_hint = hint,
             node_type = node_type,
-            available = true,
         }
         return reg.nodes[id]
     end
@@ -119,8 +140,11 @@ function Registry.buildFromData(defaults, registrations, providers, collisions,
     -- P1B (#2/#8): collision metadata arrives via the SEPARATE `collisions`
     -- map ({ [id] = { sorted widget names } }) and is stored only on registry
     -- nodes - never written back into provider-owned entry tables.
+    -- Reserved-namespace ids are refused here even if a caller passes them
+    -- through (collection already refuses + logs; this is the second gate).
     for id, item in pairs(registrations or {}) do
-        if type(id) == "string" and not RESERVED_KEYS[id] then
+        if type(id) == "string" and not RESERVED_KEYS[id]
+                and not isReservedNamespace(id) then
             local hint = item and item.sorting_hint or nil
             local existing = reg.nodes[id]
             if existing then

@@ -87,18 +87,26 @@ local function getDefaultOrder(view)
     return KoreaderAdapter.getDefaultOrder(view)
 end
 
--- Identity of the effective defaults: injected tables are compared by
--- reference, stock defaults by the adapter's load revision, so a simulated
--- update transparently rebuilds the ephemeral registry.
+-- Identity of the effective defaults: injected stock is fingerprinted by
+-- CONTENT (an in-place mutation is a simulated update too — reference
+-- comparison silently ignored those), stock defaults by the adapter's load
+-- revision, so a simulated update transparently rebuilds the ephemeral
+-- registry. Fingerprinting a few dozen menu rows per session touch is cheap
+-- next to a resolve.
 local function defaultsIdentity(view)
     local injected = MenuOrderManager.default_orders[view]
-    if injected ~= nil then return injected end
+    if injected ~= nil then
+        local ok_fp, fp = pcall(NativeWriter.fingerprint, injected)
+        if ok_fp and type(fp) == "string" then return "injected:" .. fp end
+        return injected
+    end
     return KoreaderAdapter.getDefaultsRevision(view)
 end
 
 local sessions = {}            -- [view] = { reg = registry, graph, order }
 local active_txn               -- long-lived IntentTransaction (staged intent)
 local synced_views = {}        -- [view] = true after three-way startup sync
+local last_sync_result = {}    -- [view] = last structured sync result (observability)
 local live_registrations = {}  -- [view] = { items, providers } last collected
 local backups = {}             -- [view] = staged section snapshot
 local in_commit = false        -- reentrancy guard for CommitPipeline
@@ -148,6 +156,7 @@ local function invalidate(view)
     if s then
         s.graph = nil
         s.order = nil
+        s.effective = nil
     end
     MenuOrderManager.orders[view] = nil
 end
@@ -238,14 +247,125 @@ local function buildRegistry(view, ui)
     local defaults
     local default_providers
     if MenuOrderManager.default_orders[view] then
-        defaults = getDefaultOrder(view)
+        -- TEST-ONLY injection with production shape: injected stock flows
+        -- through the same adoption pipeline as shipped stock (live tabs and
+        -- menu trees filtered by live registrations, third-party insertions
+        -- at live slots, per-row provider stamps) instead of being used raw.
+        -- Injected tabs/menus are structural stock (always kept); only
+        -- genuinely live extras adopt on top, so injected fixtures stay
+        -- hermetic against the real live module table. Own-emission echo
+        -- exclusion does not apply here (see refreshLivePluginOrder): test
+        -- baselines are replaced wholesale per assignment, never overlaid.
+        local live_mod = package.loaded[string.format(
+            "ui/elements/%s_menu_order", view)]
+        defaults, default_providers =
+            KoreaderAdapter.captureNativeSnapshot(
+                MenuOrderManager.default_orders[view], live_mod,
+                registrations, providers)
     else
+        -- Our last emission per menu (checkpoint structure), so live_mod rows
+        -- that merely echo it are not re-adopted as defaults (feedback would
+        -- shift default_parent underneath intent and prune it on save).
+        local own_rows
+        do
+            local ok_rec, record = pcall(NativeWriter.getRecord, view)
+            local structure = ok_rec and type(record) == "table"
+                and record.structure or nil
+            if type(structure) == "table" then
+                own_rows = {}
+                for menu_id, list in pairs(structure) do
+                    if type(list) == "table" then
+                        local set = {}
+                        for _, id in ipairs(list) do
+                            if type(id) == "string" then set[id] = true end
+                        end
+                        own_rows[menu_id] = set
+                    end
+                end
+            end
+        end
         defaults = KoreaderAdapter.refreshLivePluginOrder(view,
-            registrations, providers)
+            registrations, providers, own_rows)
         default_providers = KoreaderAdapter.getExternalDefaultProviders(view)
     end
     return Registry.buildFromData(defaults, registrations, providers, collisions,
         default_providers)
+end
+
+-- Startup synchronization boundary (Prompt 4 §1): exactly one import /
+-- regenerate / revert decision per process per view, with a structured
+-- result. Runs lazily on first session touch (sessionFor) so KOReader's own
+-- startup needs no extra hook, and explicitly via Manager:startupSync (same
+-- function — plugin init, tests, and diagnostics call it directly instead of
+-- relying on the lazy trigger). After it reports synced, all reads are pure
+-- (cached effective model, no I/O, no intent writes) until an explicit
+-- external refresh (reloadFromDisk/refreshRegistry/dropSessionState),
+-- commit (saveOrder/commitStaged), or projection refresh (invalidate).
+--
+-- Returns { changed=bool, mode=string, committed=bool|nil, error=string|nil,
+-- failed_views={...} }. changed=false means the native file already matches
+-- our last emission (or was converged without new user data); changed=true
+-- with committed=true means an external edit/revert was imported AND
+-- durably committed through the normal funnel (exactly ONE canonical commit
+-- + ONE derived emission — never a sidecar guess).
+local function startupSyncView(view)
+    ensureTxn()
+    local changed, mode = NativeWriter.syncView(view, sessions[view].reg, active_txn)
+    local result = { changed = changed, mode = mode,
+        committed = nil, error = nil, failed_views = {} }
+    if mode == "regeneration_failed" or mode == "remove_failed"
+            or mode == "record_clear_failed" then
+        synced_views[view] = nil
+        result.error = mode
+        logger.err("ReorderingMenus: startup synchronization failed for",
+            view, "(" .. mode .. ")")
+        return result
+    end
+    if changed then
+        logger.info(string.format(
+            "ReorderingMenus: synchronized %s configuration for %s",
+            tostring(mode), view))
+        invalidate(view)
+        -- The import is durable user data discovered at startup. Commit it
+        -- immediately: leaving it staged in the shared active transaction
+        -- loses the external edit if the session ends without an unrelated
+        -- save (or if another writer's stale commit refuses first).
+        --
+        -- P0-2/P0-3: exactly ONE canonical commit, then ONE derived
+        -- emission through the same funnel as every other save. The old
+        -- flow ran adoptObservedNative() first - a sidecar write that
+        -- GUESSED intent_gen = generation()+1 for a commit that had not
+        -- happened yet - and then wrote the sidecar AGAIN inside
+        -- writeView. Now the sidecar is written once, bound to the
+        -- generation that actually persisted; a crash before the derived
+        -- write leaves the lagging (intent_gen mismatch) pair, which the
+        -- next startup regenerates from canonical intent alone.
+        if active_txn and active_txn:isOpen() then
+            local outcome = commitWithGuard(active_txn,
+                { get_session = function(v)
+                    return v == view and sessions[v] or nil end,
+                  prepare = minimizeIntent })
+            result.failed_views = outcome.failed_views or {}
+            if not outcome.committed then
+                synced_views[view] = nil
+                active_txn:discard()
+                active_txn = nil
+                result.error = outcome.error
+                logger.err("ReorderingMenus: failed persisting startup",
+                    "synchronization for", view, outcome.error)
+            else
+                result.committed = true
+                ensureTxn() -- fresh staging for UI edits
+                for failed_view, write_err in pairs(outcome.failed_views) do
+                    synced_views[failed_view] = nil
+                    logger.err("ReorderingMenus: imported intent was",
+                        "saved, but its derived checkpoint failed for",
+                        failed_view, write_err)
+                end
+            end
+        end
+    end
+    return result
 end
 
 local function sessionFor(view, ui)
@@ -264,6 +384,7 @@ local function sessionFor(view, ui)
         s.defaults_identity = defaultsIdentity(view)
         registry_dirty[view] = true
         synced_views[view] = nil
+        last_sync_result[view] = nil
         -- No healing history to drop: the projection is derived from the
         -- NEW registry + unchanged canonical intent, exactly as a fresh
         -- process would.
@@ -272,57 +393,33 @@ local function sessionFor(view, ui)
     end
     if not synced_views[view] and not in_commit then
         synced_views[view] = true
-        ensureTxn()
-        local changed, mode = NativeWriter.syncView(view, s.reg, active_txn)
-        if mode == "regeneration_failed" or mode == "remove_failed"
-                or mode == "record_clear_failed" then
-            synced_views[view] = nil
-            logger.err("ReorderingMenus: startup synchronization failed for",
-                view, "(" .. mode .. ")")
-        end
-        if changed then
-            logger.info(string.format(
-                "ReorderingMenus: synchronized %s configuration for %s",
-                tostring(mode), view))
-            invalidate(view)
-            -- The import is durable user data discovered at startup. Commit it
-            -- immediately: leaving it staged in the shared active transaction
-            -- loses the external edit if the session ends without an unrelated
-            -- save (or if another writer's stale commit refuses first).
-            --
-            -- P0-2/P0-3: exactly ONE canonical commit, then ONE derived
-            -- emission through the same funnel as every other save. The old
-            -- flow ran adoptObservedNative() first - a sidecar write that
-            -- GUESSED intent_gen = generation()+1 for a commit that had not
-            -- happened yet - and then wrote the sidecar AGAIN inside
-            -- writeView. Now the sidecar is written once, bound to the
-            -- generation that actually persisted; a crash before the derived
-            -- write leaves the lagging (intent_gen mismatch) pair, which the
-            -- next startup regenerates from canonical intent alone.
-            if active_txn and active_txn:isOpen() then
-                local outcome = commitWithGuard(active_txn,
-                    { get_session = function(v)
-                        return v == view and sessions[v] or nil end,
-                      prepare = minimizeIntent })
-                if not outcome.committed then
-                    synced_views[view] = nil
-                    active_txn:discard()
-                    active_txn = nil
-                    logger.err("ReorderingMenus: failed persisting startup",
-                        "synchronization for", view, outcome.error)
-                else
-                    ensureTxn() -- fresh staging for UI edits
-                    for failed_view, write_err in pairs(outcome.failed_views) do
-                        synced_views[failed_view] = nil
-                        logger.err("ReorderingMenus: imported intent was",
-                            "saved, but its derived checkpoint failed for",
-                            failed_view, write_err)
-                    end
-                end
-            end
-        end
+        last_sync_result[view] = startupSyncView(view)
     end
     return s
+end
+
+-- Explicit startup-synchronization entry point (Prompt 4 §1): same boundary
+-- the lazy session trigger uses. Returns the structured sync result; when
+-- already synced, returns the stored result of the sync that ran (pure —
+-- no re-classification, no writes).
+function MenuOrderManager:startupSync(view)
+    local s = sessionFor(view)
+    if synced_views[view] then
+        local last = last_sync_result[view]
+        if type(last) == "table" then return last end
+        return { changed = false, mode = "already_synced",
+            committed = nil, error = nil, failed_views = {} }
+    end
+    synced_views[view] = true
+    last_sync_result[view] = startupSyncView(view)
+    return last_sync_result[view]
+end
+
+-- Query: has the one-time startup synchronization completed for this view?
+-- Pure (never triggers the sync itself); session touches still run the lazy
+-- boundary on first access by design.
+function MenuOrderManager:isSynced(view)
+    return synced_views[view] == true
 end
 
 function MenuOrderManager:refreshRegistry(view, ui)
@@ -331,6 +428,7 @@ function MenuOrderManager:refreshRegistry(view, ui)
     if not util.tableEquals(s.reg, refreshed) then
         registry_dirty[view] = true
         synced_views[view] = nil
+        last_sync_result[view] = nil
     end
     s.reg = refreshed
     s.defaults_identity = defaultsIdentity(view)
@@ -355,16 +453,36 @@ local function getGraph(view)
     local s = sessionFor(view)
     if not s.graph then
         local txn = ensureTxn()
-        -- History-independence (P0): the projection is a pure function of
-        -- (current registry, canonical intent). No previous projection and
-        -- no persisted sidecar structure may seed it - a prior arrangement
-        -- is not intent. Un-pinned positions follow current defaults by
-        -- construction, which is exactly what a restarted process computes.
-        local graph = Materializer.resolve(s.reg, txn:view(view))
-        local _, repaired = Validator.validate(graph, s.reg, txn:view(view))
-        s.graph = repaired
+        -- Single effective source (Prompt 3 Part B): every projection is
+        -- Resolver.resolve(registry, draft_or_saved intent). History-
+        -- independence (P0) holds by construction: pure function of current
+        -- inputs, no previous projection or sidecar seeding.
+        local Resolver = require("lib.resolver")
+        local effective = Resolver.resolve(s.reg, txn:view(view))
+        s.graph = {
+            tabs = effective.tabs,
+            lists = effective.lists,
+            disabled = effective.disabled,
+            custom_titles = effective.custom_titles,
+            unplaced = effective.unplaced,
+        }
+        -- Cache the full effective model alongside for visibility/diagnostics
+        -- without re-deriving (single source, not separate truths).
+        s.effective = effective
     end
     return s.graph
+end
+
+-- Full effective model (Prompt 3): ordered lists + owner/indexes + visibility
+-- reasons + diagnostics, resolved once. Editors, native projection,
+-- visibility explanations, and validation diagnostics share this (not
+-- separate placement/materializer/validator/visibility reconstructions).
+local function getEffective(view)
+    local s = sessionFor(view)
+    if not s.effective then
+        getGraph(view)
+    end
+    return s.effective
 end
 
 local function getOrderTable(view)
@@ -456,15 +574,17 @@ local function minimizeIntent(view, txn, reg)
     end
 
     -- 2. Local pruning for position_override
+    -- A destination order_override never invalidates a position anchor by
+    -- itself: anchors for ids omitted from that sequence are the supported
+    -- insertion mechanism into an already-reordered level (preview = saved =
+    -- restarted). Only provably default-redundant anchors are dropped.
     if has_pos then
         for id, record in pairs(section.position_override) do
             if type(record) == "table" and record.provider ~= nil and dormantReason(id, record) then
                 -- Dormant intent: keep
             else
                 local target_parent = Materializer.effectiveParent(reg, section, id)
-                if section.order_override and section.order_override[target_parent] then
-                    section.position_override[id] = nil
-                else
+                do
                     local menu_def = reg.menus and reg.menus[target_parent]
                     local def_list = menu_def and menu_def.list
                     if def_list and #def_list > 0 then
@@ -486,20 +606,19 @@ local function minimizeIntent(view, txn, reg)
     end
 
     -- 3. Local pruning for order_override
+    -- Durable ordering survives hiding: a sequence whose every entry is
+    -- currently hidden still governs the restored order on unhide, so the
+    -- all-hidden shape is never pruned here (only default-equality is).
     if has_orders then
         for menu_id, override in pairs(section.order_override) do
             local def_menu = reg.menus and reg.menus[menu_id]
             if type(override) == "table" and type(override.entries) == "table" then
                 local seq = {}
-                local has_non_hidden_entry = false
                 for _, ent in ipairs(override.entries) do
                     if MenuSchema.isSeparatorEntry(ent) then
                         seq[#seq + 1] = MenuSchema.SEPARATOR_ID
                     else
                         seq[#seq + 1] = ent.id
-                        if not (section.hidden and section.hidden[ent.id]) then
-                            has_non_hidden_entry = true
-                        end
                     end
                 end
                 local default_items = {}
@@ -508,19 +627,80 @@ local function minimizeIntent(view, txn, reg)
                         default_items[#default_items + 1] = id
                     end
                 end
-                if not has_non_hidden_entry
-                        or (def_menu and def_menu.list
-                            and Materializer.listEquals(seq, default_items)) then
+                if def_menu and def_menu.list
+                            and Materializer.listEquals(seq, default_items) then
                     section.order_override[menu_id] = nil
                 end
             end
         end
     end
 
-    -- If any manual ordering remains, check if full group is redundant with baseline
+    -- If any manual ordering remains, check if full group is redundant with baseline.
+    -- The visible-graph comparison cannot prove future equivalence while any
+    -- ordering record is currently inapplicable-but-durable (hidden member or
+    -- provider-dormant stamp): unhide / provider return would diverge. Skip
+    -- the whole-group prune in that case rather than deleting revivable intent.
     if (section.order_override and next(section.order_override) ~= nil)
             or (section.position_override and next(section.position_override) ~= nil)
             or (section.separators and next(section.separators) ~= nil) then
+        local has_hidden = section.hidden and next(section.hidden) ~= nil
+        local has_future_intent = has_hidden and true or false
+        if not has_future_intent then
+            for _, override in pairs(section.order_override or {}) do
+                if type(override) == "table" and type(override.entries) == "table" then
+                    for _, entry in ipairs(override.entries) do
+                        if not MenuSchema.isSeparatorEntry(entry) then
+                            local eid = entry.id
+                            if section.hidden and section.hidden[eid] then
+                                has_future_intent = true break
+                            end
+                            local stamp = type(entry) == "table" and entry.provider or nil
+                            if stamp ~= nil then
+                                local live = reg.nodes and reg.nodes[eid]
+                                    and reg.nodes[eid].provider or nil
+                                if live ~= stamp then
+                                    has_future_intent = true break
+                                end
+                            elseif reg.nodes and reg.nodes[eid] == nil then
+                                -- Unstamped unknown id: dormant-capable reference
+                                -- that a later provider registration applies.
+                                -- Its ordering must survive unrelated saves.
+                                has_future_intent = true break
+                            end
+                        end
+                    end
+                    if has_future_intent then break end
+                end
+            end
+        end
+        if not has_future_intent then
+            for pid, prec in pairs(section.position_override or {}) do
+                if section.hidden and section.hidden[pid] then
+                    has_future_intent = true break
+                end
+                if type(prec) == "table" and prec.provider ~= nil then
+                    local live = reg.nodes and reg.nodes[pid]
+                        and reg.nodes[pid].provider or nil
+                    if live ~= prec.provider then
+                        has_future_intent = true break
+                    end
+                end
+            end
+        end
+        if has_future_intent then
+            return
+        end
+        -- Proven-no-op check on projections (HEAD semantics preserved green:
+        -- unresolved Materializer graphs, not repaired effective models.
+        -- Rationale: minimization compares what ordering intent ALONE
+        -- contributes (placement/ordering/dividers), before validator repairs
+        -- (duplicate ownership, cycles, cascades, protected, empty-bar) which
+        -- are render-safety concerns, not ordering-intent concerns. Comparing
+        -- effective (repaired) graphs here made no-op saves look dirty when
+        -- repairs apply (N3 generation churn) and dropped hint-home restores
+        -- (R) by conflating repair with intent. Resolver remains the single
+        -- source for DISPLAY/effective/visibility/diagnostics; minimization
+        -- stays a pure intent-level proven-no-op gate.
         local current_graph = Materializer.resolve(reg, section)
         local without_manual = util.tableDeepCopy(section)
         without_manual.order_override = {}
@@ -550,6 +730,15 @@ local function minimizeIntent(view, txn, reg)
     end
 end
 
+-- Save (truthful contract): validates + commits the shared draft through
+-- the funnel (minimize -> ONE canonical commit -> derived native files +
+-- checkpoint), then reports whether the change is fully applied, needs
+-- regeneration, or requires a restart (see CommitPipeline.STATUS). What the
+-- user previewed is what commits: staging and projection share the draft.
+-- On failure NOTHING durable is half-written and the draft is restaged into
+-- a fresh transaction below, so the work stays recoverable in-session.
+-- Preferences independent of layout (mirroring toggle with no open txn,
+-- hidden-row presentation) persist outside this path and never ride along.
 function MenuOrderManager:saveOrder(view)
     sessionFor(view)
 
@@ -733,6 +922,7 @@ function MenuOrderManager:reloadFromDisk(view)
     -- The native file may have changed externally while we were not looking;
     -- force a fresh three-way comparison against the last materialization.
     synced_views[view] = nil
+    last_sync_result[view] = nil
     invalidate(view)
     return true
 end
@@ -744,6 +934,7 @@ function MenuOrderManager:dropSessionState(view)
     discardViewStaging(view)
     sessions[view] = nil
     synced_views[view] = nil
+    last_sync_result[view] = nil
     live_registrations[view] = nil
     registry_dirty[view] = nil
     backups[view] = nil
@@ -762,6 +953,79 @@ function MenuOrderManager:peekTransaction()
         return active_txn
     end
     return nil
+end
+
+-- -------------------------------------------------------------------------
+-- Single draft ownership (Prompt 3 Part A).
+-- -------------------------------------------------------------------------
+-- One editing session owns: base_revision (canonical generation + store epoch
+-- at staging time), one draft_intent (active_txn staged sections for both
+-- views), minimal lifecycle (open/dirty/conflicted). Widgets own only
+-- interaction state (selection/scroll/drag/search/filter); authoritative
+-- layout truth lives here, observed by nested and top-level editors alike
+-- (single active_txn). Cross-menu moves stage into the shared draft
+-- immediately (moveItemToMenu); save validates+commits, discard drops,
+-- failure leaves the draft recoverable (saveOrder restages spent work).
+-- Provider refresh (refreshRegistry) marks registry_dirty for re-emission
+-- without rewriting the draft (applicability, not persistence).
+--
+-- Backups (backupOrder/restoreOrder) are per-editor Cancel snapshots (copies
+-- of draft sections), not separate layout truths. recent_moves are
+-- stale-widget healing hints (interaction state), not authoritative
+-- membership (draft parent_override is). Manager.orders is a deprecated
+-- alias mirroring sessions order (invalidated together).
+--
+-- Returns { base_generation, store_epoch, generation, view_generations } or
+-- nil when no draft is open (no txn). Never creates staging as a side effect.
+function MenuOrderManager:draftBaseRevision()
+    local txn = self:peekTransaction()
+    if not txn then return nil end
+    return {
+        base_generation = txn.base_generation,
+        store_epoch = txn.store_epoch,
+        generation = IntentStore.generation(),
+        view_generations = {
+            reader = IntentStore.generation("reader"),
+            filemanager = IntentStore.generation("filemanager"),
+        },
+    }
+end
+
+-- Dirty: staged draft differs from canonical (per view or any). Pure read,
+-- never creates staging.
+function MenuOrderManager:draftDirty(view)
+    local txn = self:peekTransaction()
+    if not txn then return false end
+    local ok, changed = pcall(function() return txn:changedViews() end)
+    if not ok or type(changed) ~= "table" then return false end
+    if view ~= nil then return changed[view] == true end
+    return changed.reader == true or changed.filemanager == true
+end
+
+-- Conflicted: draft staged from a superseded world (wholesale reload swapped
+-- canonical underneath: store_epoch mismatch) or another writer advanced
+-- canonical generation past the draft base (optimistic-concurrency stale).
+-- A conflicted draft cannot commit (commit refuses stale_transaction);
+-- callers must rebase (discard + restage) like a restart would.
+function MenuOrderManager:draftConflicted()
+    local txn = self:peekTransaction()
+    if not txn then return false end
+    if txn.store_epoch ~= nil and txn.store_epoch ~= IntentStore.storeEpoch() then
+        return true
+    end
+    if txn.base_generation ~= nil and txn.base_generation ~= IntentStore.generation() then
+        return true
+    end
+    return false
+end
+
+-- Discard draft staging for one view (per-editor Cancel), preserving the
+-- other view's staged work (rebase onto latest canonical). Thin wrapper over
+-- the view-local discard; invalidates the view's effective model.
+function MenuOrderManager:discardDraft(view)
+    discardViewStaging(view)
+    invalidate(view)
+    return true
 end
 
 -- -------------------------------------------------------------------------
@@ -878,16 +1142,31 @@ end
 --- unplaced | provider_absent. Never raises: unknown ids report
 --- provider_absent/unplaced rather than erroring.
 function MenuOrderManager:getVisibilityStatus(view, item_id)
+    -- Single source (Prompt 3 Part D): visibility reasons come from the
+    -- resolver's effective model, never reconstructed downstream. The queried
+    -- id is forced into the visibility map so cross-view absent ids (no
+    -- references in this view) correctly report provider_absent rather than
+    -- falling back to unplaced.
     local s = sessionFor(view)
     local txn = ensureTxn()
-    local section = txn:view(view)
-    local graph = Materializer.resolve(s.reg, section)
-    local _, validated = Validator.validate(graph, s.reg, section)
-    local ok, st = pcall(function()
-        return Visibility.status(s.reg, section, graph, validated, item_id)
+    local ok, eff = pcall(function()
+        local Resolver = require("lib.resolver")
+        return Resolver.resolve(s.reg, txn:view(view), { include_ids = { item_id } })
     end)
-    if ok and type(st) == "table" and st.state then return st end
+    if ok and type(eff) == "table" then
+        local Resolver = require("lib.resolver")
+        local st = Resolver.visibilityOf(eff, item_id)
+        if type(st) == "table" and st.state then return st end
+    end
     return { state = Visibility.STATES.UNPLACED, id = item_id }
+end
+
+-- Effective-model accessor for editors/diagnostics (Prompt 3): ordered
+-- lists + owner/indexes + visibility + diagnostics, resolved once per
+-- (registry, draft) pair. Prefer this over separate getGraph/getOrderTable
+-- + ad-hoc Visibility.status reconstructions for new code.
+function MenuOrderManager:getEffectiveModel(view)
+    return getEffective(view)
 end
 
 --- Deliberate reveal-path for an item hidden by an ancestor: unhides ONLY
@@ -1046,18 +1325,13 @@ end
 -- -------------------------------------------------------------------------
 -- Editor staging: translate a desired list into minimal intent operations
 -- -------------------------------------------------------------------------
-
-local function nextSeparatorKey(section)
-    local max_used = 0
-    for key in pairs(section.separators or {}) do
-        local num = tostring(key):match("^sep_(%d+)$")
-        if num then
-            num = tonumber(num)
-            if num > max_used then max_used = num end
-        end
-    end
-    return "sep_" .. (max_used + 1)
-end
+-- NOTE: divider key generation (sep_N) and the full replaceSeparatorIntent
+-- below were deleted in the Prompt 2 unification: editor, import, and preset
+-- dividers now share IntentOps.setDividerArrangement (replacement, unified
+-- __sep_ keys, default-equality prune + zero sentinel). The local
+-- separatorAnchors helper below is kept ONLY for the baseline-change check
+-- (observed vs last emission); the canonical anchor computation lives in
+-- IntentOps.separatorAnchorsOf.
 
 local function collectStagedRows(staged_items)
     local sequence, separator_anchors = {}, {}
@@ -1082,15 +1356,10 @@ local function collectStagedRows(staged_items)
 end
 
 local function separatorAnchors(list)
-    local anchors, previous = {}, false
-    for _, id in ipairs(list or {}) do
-        if id == SEPARATOR_ID then
-            table.insert(anchors, previous)
-        else
-            previous = id
-        end
-    end
-    return anchors
+    -- Thin alias for the shared helper (kept for call-site stability;
+    -- canonical implementation is IntentOps.separatorAnchorsOf).
+    local IntentOps = require("lib.intent_ops")
+    return IntentOps.separatorAnchorsOf(list)
 end
 
 
@@ -1127,10 +1396,12 @@ local function reconcileMembership(view, menu_id, sequence, session, txn, sectio
                 -- converted into an explicit move back by an editor whose
                 -- snapshot predates the move.
                 --
-                -- EXCEPTION: a CREATED SUBMENU is never anyone's default
-                -- home (it starts empty and stock ids cannot resolve to
-                -- it), so a row staged into one is there by deliberate user
-                -- action only - record the placement instead of dropping it.
+    -- EXCEPTION: a CREATED SUBMENU is never anyone's default
+    -- home (it starts empty and stock ids cannot resolve to
+    -- it), so a row staged into one is there by deliberate user
+    -- action only - record the placement instead of dropping it.
+    -- Returns true when any staged row was dropped as stale residue, so
+    -- callers know the snapshot is untrustworthy for divider authorship.
                 table.remove(sequence, i)
                 stale_rows = true
                 goto continue_row
@@ -1154,23 +1425,6 @@ local function reconcileMembership(view, menu_id, sequence, session, txn, sectio
     return stale_rows
 end
 
-local function replaceSeparatorIntent(view, menu_id, anchors, baseline,
-                                     txn, section)
-    if Materializer.listEquals(anchors, separatorAnchors(baseline)) then return end
-    for key in pairs(section.separators or {}) do
-        if section.separators[key]
-                and section.separators[key].parent == menu_id then
-            section.separators[key] = nil
-        end
-    end
-    for _, anchor in ipairs(anchors) do
-        txn:setSeparator(view, nextSeparatorKey(section), {
-            parent = menu_id,
-            after = anchor,
-        })
-    end
-end
-
 -- The single funnel through which editors persist a whole-menu arrangement.
 -- Differences against the freshly materialized baseline become explicit
 -- intent: parent overrides for relocated rows, one order override for the
@@ -1191,7 +1445,9 @@ function MenuOrderManager:stageList(view, menu_id, staged_items)
     -- the id but resolves elsewhere follows its provider's new home instead
     -- of being converted into an explicit move back; (c) a row with no user
     -- record whose default moved is likewise a stale snapshot and drops out.
-    reconcileMembership(view, menu_id, seq, s, txn, section)
+    -- The return tells the divider gate below whether this snapshot is
+    -- trustworthy for divider authorship (stale residue must never author).
+    local stale_rows = reconcileMembership(view, menu_id, seq, s, txn, section)
 
     -- Ordering intent takes one of two deliberate, mutually exclusive forms
     -- (never a snapshot pretending to be both):
@@ -1216,6 +1472,13 @@ function MenuOrderManager:stageList(view, menu_id, staged_items)
     -- previous anchor - otherwise an away-then-back drag would compare
     -- against the away pin and freeze a bulk sequence for a no-op.
     trial.position_override = {}
+    -- Ordering baseline is the DEFAULT derivation (HEAD semantics preserved
+    -- green): unresolved Materializer graph, not repaired effective model.
+    -- Inference asks "what would this level look like with no manual ordering
+    -- for it?" — a placement/ordering question, before render-safety repairs.
+    -- Using effective (repaired) here made no-op saves freeze bulk when
+    -- repairs apply (N3) by comparing displayed (repaired) rows against a
+    -- repaired baseline that already reflects the manual move.
     local expected_full = Materializer.resolve(s.reg, trial).lists[menu_id]
     -- seq is separator-stripped (dividers travel as sep_anchors); the
     -- comparison baseline must be stripped identically, otherwise menus with
@@ -1228,107 +1491,77 @@ function MenuOrderManager:stageList(view, menu_id, staged_items)
         end
     end
 
-    -- Anchor-form eligibility: the user did not touch dividers relative to
-    -- the derived baseline. Menus whose DEFAULT list contains stock
-    -- separators always carry those dividers in `seq` (assembleMenuList
-    -- re-interleaves them), so gating on `#sep_anchors == 0` alone used to
-    -- disqualify EVERY single drag on such menus and freeze an eight-row
-    -- era-stamped bulk sequence for what the user experienced as one row
-    -- move. Compare divider anchors against the baseline instead: only
-    -- genuinely added/moved dividers force bulk form.
-    local dividers_unchanged = Materializer.listEquals(
-        sep_anchors, separatorAnchors(expected_full))
-
-    -- stageList receives the editor's complete arrangement for this menu.
-    -- Replace, rather than layer onto, earlier position anchors from the same
-    -- menu; multiple independently-applied anchors can cancel a new drag or
-    -- make its inverse non-invertible.  The branches below then encode the
-    -- final arrangement as either one anchor, one bulk sequence, or no record.
-    local old_position_ids = {}
-    for id in pairs(section.position_override or {}) do
-        if Materializer.effectiveParent(s.reg, section, id) == menu_id then
-            old_position_ids[#old_position_ids + 1] = id
+    -- Shared ordering semantics (Prompt 2 §1-§2): ONE classification decides
+    -- the staged form (anchor vs bulk vs noop vs pure-membership), independent
+    -- of divider arrangement. Ordering and dividers are separate operations;
+    -- a single item move across stock dividers stays an anchor (minimal) with
+    -- dividers recorded separately below — dividers never force a bulk freeze.
+    -- Same-menu anchor replacement (dropping earlier anchors for the final
+    -- arrangement, while preserving inapplicable-but-durable ones per
+    -- Prompt 2 §3) lives inside setOrderingFromSequence — the single owner
+    -- of the ordering-ownership rule.
+    do
+        local IntentOps = require("lib.intent_ops")
+        local res, res_err = IntentOps.setOrderingFromSequence(
+            view, txn, s.reg, menu_id, expected, seq)
+        if res == nil then
+            logger.warn("ReorderingMenus: stageList refused for", view, "/",
+                tostring(menu_id), "-", tostring(res_err and res_err.code or res_err))
+            invalidate(view)
+            return false
         end
     end
-    for _, id in ipairs(old_position_ids) do
-        txn:setPositionOverride(view, id, nil)
-    end
 
-    -- P1A: ONE pure classification decides the staged form. The old flow
-    -- re-materialized hypothetical worlds here - a candidate-by-candidate
-    -- probe loop (up to L resolves) hunting a reproducing anchor, a
-    -- pure-default probe, and per-anchor redundancy probes. All replaced by
-    -- SemanticDiff over (baseline, proposed); determinism is a property of
-    -- the argument pair, never of iteration luck or history.
-    local provider_of = function(id) return Registry.getProvider(s.reg, id) end
-    local descriptors = {}
-    for _, id in ipairs(seq) do descriptors[id] = { provider = provider_of(id) } end
-    local classification, cls_err = SemanticDiff.classify_permutation(
-        expected, seq,
-        { separator_aware = false, descriptors = descriptors })
-
-    if cls_err then
-        -- Structural invalidity (duplicate identities etc.): refuse the
-        -- stage loudly rather than writing partial intent (stale-editor
-        -- guard discipline).
-        logger.warn("ReorderingMenus: stageList refused for", view, "/",
-            tostring(menu_id), "-", tostring(cls_err.code or cls_err))
-        invalidate(view)
-        return false
-    end
-
-    local anchor_allowed = #sep_anchors == 0 or dividers_unchanged
-
-    if classification.kind == SemanticDiff.KIND.ONE_RELOCATION
-            and anchor_allowed then
-        -- Manual anchor form: ONE canonical record. Equivalent final
-        -- arrangements always yield the identical anchor (canonical-candidate
-        -- choice), so no probing and no iteration-order dependence.
-        -- A relocation landing at the slot the DEFAULT derivation already
-        -- gives the row is a semantic no-op: drop any stale record so
-        -- untouched-follows-default keeps holding.
-        local move = classification.move
-        local noop_move = SemanticDiff.is_noop_move(expected, move)
-        txn:setOrderOverride(view, menu_id, nil)
-        if not noop_move then
-            txn:setPositionOverride(view, move.item, {
-                after = move.type == "move_before" and false or move.after,
-                before = move.type == "move_before" and move.before or nil,
-                provider = move.provider or provider_of(move.item),
-            })
+    -- Divider statements vs ordering statements (Prompt 2 §4): divider
+    -- records are written ONLY when the staged list carries divider rows.
+    -- Rationale: an items-only staged list (bulk A-Z sorts, reversals) says
+    -- nothing about dividers — its missing dividers are stripped transport,
+    -- not a removal (recording explicit-empty there would freeze every bulk
+    -- sort divider-free and break era-tracking: Q6). Conversely an
+    -- items-only list whose items match the current arrangement IS a divider
+    -- statement about an empty arrangement (B7 explicit clear -> zero).
+    -- Concretely:
+    --   staged has divider rows + anchors differ from baseline -> record the
+    --     complete observed arrangement (insert/remove/SEP-row drags; also
+    --     item drags whose sep-inclusive indices shifted dividers as a side
+    --     effect — recorded, matching import).
+    --   staged divider-free + items match current AND default items ->
+    --     explicit clear (B7 -> zero sentinel when stock had dividers). The
+    --     default-equality half matters: re-freezing an identical bulk order
+    --     via an items-only list must not wipe that menu's dividers as a
+    --     side effect.
+    --   staged divider-free otherwise -> ordering statement only; dividers
+    --     stay env-governed (Q6 bulk reversal keeps tracking stock).
+    -- Stale snapshots never author dividers: when membership reconciliation
+    -- dropped rows as stale residue, divider anchors from that snapshot are
+    -- untrustworthy and left untouched.
+    -- (Import keeps recording both halves when a hand file changes both —
+    -- a file has no verb channel, so dropping either half would destroy user
+    -- bytes. Documented asymmetry, Prompt 2 §4.)
+    local baseline_anchors = separatorAnchors(baseline)
+    if #sep_anchors > 0 then
+        if not stale_rows
+                and not Materializer.listEquals(sep_anchors, baseline_anchors) then
+            local IntentOps = require("lib.intent_ops")
+            IntentOps.setDividerArrangement(view, txn, s.reg, menu_id, sep_anchors)
         end
-    elseif classification.kind == SemanticDiff.KIND.UNCHANGED then
-        -- The arrangement matches default derivation: any record would be
-        -- redundant bookkeeping. Clear the level's sequence record (a stale
-        -- bulk freeze from an earlier stage must not survive the restore);
-        -- stale anchors on this level's rows were already dropped above.
-        txn:setOrderOverride(view, menu_id, nil)
-    elseif classification.kind == SemanticDiff.KIND.PURE_ADDITION
-            or classification.kind == SemanticDiff.KIND.PURE_REMOVAL then
-        -- Ordering-neutral; reconcileMembership already owns the membership
-        -- claims. Never freeze a sequence for world state - and never keep
-        -- an older frozen one beside the reconciled membership.
-        txn:setOrderOverride(view, menu_id, nil)
     else
-        -- COMPLEX_PERMUTATION (A-Z sorts, multi-item drags, swaps): one
-        -- era-stamped curated sequence; stamps ride ON their entries
-        -- (schema v3) so a later provider claiming one of these ids starts
-        -- at its own default slot and the original slot reactivates on
-        -- return. classification.sequence is ALREADY the item projection -
-        -- do not strip again.
-        local eras = {}
-        for _, id in ipairs(seq) do
-            eras[id] = provider_of(id)
+        local current_items = {}
+        for _, id in ipairs(baseline) do
+            if id ~= SEPARATOR_ID then current_items[#current_items + 1] = id end
         end
-        txn:setOrderOverride(view, menu_id, classification.sequence, eras)
+        local def_menu = s.reg.menus and s.reg.menus[menu_id]
+        local default_items = {}
+        for _, id in ipairs(def_menu and def_menu.list or {}) do
+            if id ~= SEPARATOR_ID then default_items[#default_items + 1] = id end
+        end
+        if #baseline_anchors > 0
+                and Materializer.listEquals(seq, current_items)
+                and Materializer.listEquals(seq, default_items) then
+            local IntentOps = require("lib.intent_ops")
+            IntentOps.setDividerArrangement(view, txn, s.reg, menu_id, sep_anchors)
+        end
     end
-
-    -- Separator records are a complete per-menu representation once the user
-    -- customizes divider placement: the materializer suppresses stock
-    -- dividers whenever any record exists. Leave the records untouched when
-    -- the editor did not change their anchors; otherwise replace them with
-    -- every observed anchor so adding one cannot erase stock dividers.
-    replaceSeparatorIntent(view, menu_id, sep_anchors, baseline, txn, section)
 
     invalidate(view)
     return true
@@ -1353,15 +1586,9 @@ function MenuOrderManager:setItemHidden(view, item_id, is_hidden, current_menu_i
     if is_hidden then
         local source_menu = current_menu_id
             or findParentInProjection(order, item_id)
-        txn:setHidden(view, item_id, {
-            provider = providerStamp(s.reg, item_id),
-            origin = source_menu
-                or Materializer.effectiveParent(s.reg, txn:view(view), item_id),
-            -- Re-hiding an ALREADY hidden id must be a no-op for the hide
-            -- sequence (Y3 byte-stability): preserve its existing ordinal.
-            ordinal = txn:getHidden(view, item_id)
-                and txn:getHidden(view, item_id).ordinal or nil,
-        })
+            or Materializer.effectiveParent(s.reg, txn:view(view), item_id)
+        local IntentOps = require("lib.intent_ops")
+        IntentOps.setVisibility(view, txn, s.reg, item_id, true, source_menu)
     else
         local hidden_record = txn:getHidden(view, item_id)
         txn:setHidden(view, item_id, nil)
@@ -1456,46 +1683,27 @@ function MenuOrderManager:moveItemToMenu(view, item_id, from_menu_id, to_menu_id
     local txn = ensureTxn()
     local dest_list = self:getMenuItems(view, to_menu_id)
 
-    txn:setHidden(view, item_id, nil)
-    txn:setParentOverride(view, item_id, {
-        provider = providerStamp(s.reg, item_id),
-        parent = to_menu_id,
-    })
-    -- Single-parent discipline + position/sequence exclusivity: the row
-    -- leaves every recorded arrangement; its destination membership comes
-    -- from the override alone. A cross-menu move is a single-item relocation:
-    -- any bulk sequence of the SOURCE level loses its claim on this row.
-    local touched = {}
-    for menu_id in pairs(txn:view(view).order_override or {}) do
-        table.insert(touched, menu_id)
-    end
-    local overrides = txn.staged[view].order_override
-    for _, menu_id in ipairs(touched) do
-        local override = overrides and overrides[menu_id]
-        if type(override) == "table" and type(override.entries) == "table" then
-            local kept = {}
-            for _, entry in ipairs(override.entries) do
-                if not MenuSchema.isSeparatorEntry(entry)
-                        and entry.id ~= item_id then
-                    table.insert(kept, entry)
-                end
-            end
-            overrides[menu_id] = #kept > 0 and { entries = kept } or nil
-        end
+    do
+        local IntentOps = require("lib.intent_ops")
+        IntentOps.setVisibility(view, txn, s.reg, item_id, false, nil)
+        IntentOps.setMembership(view, txn, s.reg, item_id, to_menu_id)
+        -- Single-parent discipline: the row leaves every recorded bulk
+        -- arrangement; destination membership comes from the override plus an
+        -- optional insertion anchor below.
+        IntentOps.stripItemFromSequences(view, txn, item_id)
     end
 
     if target_idx and target_idx >= 1 and target_idx <= #dest_list + 1 then
+        local IntentOps = require("lib.intent_ops")
         if target_idx == 1 then
-            txn:setPositionOverride(view, item_id,
-                { after = false, provider = providerStamp(s.reg, item_id) })
+            IntentOps.setInsertionAnchor(view, txn, s.reg, item_id, false)
         else
             local anchor = dest_list[target_idx - 1]
             if anchor == SEPARATOR_ID then
                 anchor = dest_list[target_idx - 2]
             end
-            txn:setPositionOverride(view, item_id,
-                { after = anchor == nil and false or anchor,
-                  provider = providerStamp(s.reg, item_id) })
+            IntentOps.setInsertionAnchor(view, txn, s.reg, item_id,
+                anchor == nil and false or anchor)
         end
     else
         -- Appended at the end: no slot constraint needed.
@@ -1528,6 +1736,24 @@ function MenuOrderManager:removeSeparator(view, menu_id, idx)
     if not items[idx] then return false end
     if items[idx] ~= SEPARATOR_ID then return false end
     table.remove(items, idx)
+    -- This verb KNOWS it removed a divider (stageList's joint rule cannot
+    -- tell a last-divider removal on a reordered menu from a bulk sort's
+    -- stripped transport, so it would skip recording). Record the observed
+    -- post-removal arrangement directly; the stageList below then handles
+    -- ordering (and agrees on dividers: same observed anchors).
+    do
+        local IntentOps = require("lib.intent_ops")
+        local observed, previous = {}, false
+        for _, id in ipairs(items) do
+            if id == SEPARATOR_ID then
+                observed[#observed + 1] = previous
+            else
+                previous = id
+            end
+        end
+        local s = sessionFor(view)
+        IntentOps.setDividerArrangement(view, ensureTxn(), s.reg, menu_id, observed)
+    end
     self:stageList(view, menu_id, items)
     return true
 end
@@ -1831,8 +2057,11 @@ end
 
 -- Register a hand-authored menu level verbatim (raw passthrough). Used for
 -- levels that exist outside stock defaults and outside created submenus.
+-- Goes through the shared opaque-fragment vocabulary (raw owns the level
+-- exclusively by construction there).
 function MenuOrderManager:stageRawLevel(view, menu_id, list)
-    ensureTxn():setRawOverride(view, menu_id, list)
+    local IntentOps = require("lib.intent_ops")
+    IntentOps.preserveOpaqueLevel(view, ensureTxn(), menu_id, list)
     invalidate(view)
     return true
 end
@@ -1945,6 +2174,9 @@ local function mirrorDestinationKnown(other_view, dest_menu)
 end
 
 function MenuOrderManager:_mirrorVisibility(view, item_id, is_hidden)
+    -- Mirrored visibility reuses the SAME validated command (setItemHidden,
+    -- with its protected-item gate and unhide-migration) against the second
+    -- view — never a direct record write (Prompt 4 §8).
     if not IntentStore.meta().mirror_changes then return end
     local other_view = getMirrorContext(view)
     if not other_view then return end
@@ -1969,17 +2201,38 @@ function MenuOrderManager:_mirrorMove(view, item_id, to_menu_id)
             "or its destination", to_menu_id, "is not known to", other_view)
         return
     end
-    local old_parent = self:getParentMenu(other_view, item_id)
+    -- Validated against the SECOND view with the same semantic command as
+    -- the primary move (Prompt 4 §8): ancestry can diverge per view (a move
+    -- valid in Reader can be cyclic in File Manager), so the mirror is
+    -- gated on the other view's effective containment, never staged blind.
+    -- A skipped mirror leaves the other view untouched (no partial state).
+    if type(to_menu_id) == "string" and type(item_id) == "string" then
+        if to_menu_id == item_id
+                or self:isMenuDescendant(other_view, item_id, to_menu_id) then
+            logger.info("ReorderingMenus: mirror skipped,", item_id, "->",
+                to_menu_id, "is cyclic in", other_view)
+            return
+        end
+    end
+    local s_other = sessionFor(other_view)
     local txn = ensureTxn()
-    txn:setHidden(other_view, item_id, nil)
-    txn:setParentOverride(other_view, item_id, {
-        provider = providerStamp(sessionFor(other_view).reg, item_id),
-        parent = to_menu_id,
-    })
+    local IntentOps = require("lib.intent_ops")
+    -- Same command shape as moveItemToMenu: unhide on move, validated
+    -- membership, single-parent sequence discipline, append slot (index
+    -- mapping across divergent views is meaningless, so mirrors append).
+    IntentOps.setVisibility(other_view, txn, s_other.reg, item_id, false, nil)
+    local ok_place = IntentOps.setMembership(other_view, txn, s_other.reg,
+        item_id, to_menu_id)
+    if not ok_place then
+        logger.info("ReorderingMenus: mirror skipped: unsupported placement",
+            item_id, "->", to_menu_id, "in", other_view)
+        return
+    end
+    IntentOps.stripItemFromSequences(other_view, txn, item_id)
     txn:setPositionOverride(other_view, item_id, nil)
     MenuOrderManager.recent_moves[other_view] = MenuOrderManager.recent_moves[other_view] or {}
     MenuOrderManager.recent_moves[other_view][item_id] =
-        { from = old_parent, to = to_menu_id }
+        { from = self:getParentMenu(other_view, item_id), to = to_menu_id }
     invalidate(other_view)
 end
 
@@ -2051,12 +2304,17 @@ end
 -- startup sync in-process and regenerate the files we just withdrew.
 -- Best-effort per view; returns a per-view summary. Never raises.
 function MenuOrderManager:suspendForDisable()
+    -- Durability first: the suspended marker (sidecar, atomic) must be
+    -- durable BEFORE the native file is withdrawn. A crash between the two
+    -- steps must leave "marked + file present" (safe: next startup sees our
+    -- bytes) rather than "unmarked + file absent" (fatal: next startup reads
+    -- a deliberate user revert and wipes canonical intent).
     local summary = {}
     for _, view in ipairs(MenuSchema.VIEWS) do
-        local removed, remove_err = KoreaderAdapter.removeNativeOrder(view)
-        local marked, mark_err = true, nil
-        if removed then
-            marked, mark_err = NativeWriter.markSuspended(view)
+        local marked, mark_err = NativeWriter.markSuspended(view)
+        local removed, remove_err = true, nil
+        if marked then
+            removed, remove_err = KoreaderAdapter.removeNativeOrder(view)
         end
         summary[view] = {
             removed = removed,
@@ -2124,10 +2382,14 @@ function MenuOrderManager:applyLiveReload(ui, _view)
     return KoreaderAdapter.applyLiveReload(ui, sanitizer)
 end
 
-function MenuOrderManager:reconcileRegisteredItems(view, menu_items, providers)
+function MenuOrderManager:reconcileRegisteredItems(view, menu_items, providers, collisions)
     local s0 = sessions[view]
     local prev_reg = s0 and s0.reg or nil
-    self:setLiveRegistrations(view, menu_items, providers)
+    -- Collisions ride along (may be nil for legacy/test callers): dropping
+    -- them here used to wipe the deterministic smallest-name attribution that
+    -- setLiveRegistrations had just stored, losing contested-identity
+    -- metadata during every reconciliation.
+    self:setLiveRegistrations(view, menu_items, providers, collisions)
     self:refreshRegistry(view)
     local s = sessions[view]
     -- A refreshed registry can change the derived graph without changing
@@ -2198,11 +2460,13 @@ end
 
 function MenuOrderManager:loadSubmenuPreset(view, menu_id, preset, current_menu_items)
     -- P1B CONTRACT (one commit per apply): a SUBMENU preset is a FRAGMENT
-    -- applied into the OPEN transaction so it composes with the surrounding
-    -- editor's pending edits; the enclosing editor surface owns the single
-    -- P0 commit through its normal Save. Full-view presets are different:
-    -- loadPreset commits through saveOrder itself. Neither path writes
-    -- native output directly or re-runs reconciliation behind the UI's back.
+    -- staged into the OPEN transaction (so placement/membership validation
+    -- sees the surrounding draft), then committed ONCE via saveOrder below.
+    -- Governed levels are replaced wholesale (saved fragment wins over both
+    -- previously staged intent AND un-staged widget rows for those levels —
+    -- P0 Bug8); ungoverned levels and post-capture arrivals survive via tail
+    -- merge. Full-view presets (loadPreset) likewise commit once via
+    -- saveOrder. Neither path writes native output directly.
     local s = sessionFor(view)
     local txn = ensureTxn()
     local ok, err = Presets.loadSubmenuPreset(view, menu_id, preset, s.reg, txn,
