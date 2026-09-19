@@ -134,55 +134,41 @@ function Visibility.status(reg, intent, graph, validated, id)
         reachable = true
     else
         for _, list in pairs(validated.lists or {}) do
-            for _, row in ipairs(list or {}) do
-                if row == id then reachable = true break end
+            if contains(list, id) then
+                reachable = true
+                break
             end
-            if reachable then break end
         end
     end
     if reachable and not in_disabled then
         return { state = Visibility.STATES.VISIBLE, id = id }
     end
-    if not reachable or in_disabled then
-        -- Find the nearest hidden/unreachable ancestor for an actionable path.
-        local chain = ancestorChain(reg, intent, id)
-        for _, anc in ipairs(chain) do
-            if anc == MENU_BUTTONS_KEY then break end
-            if Materializer.hiddenApplies(reg, intent, anc) then
-                return {
-                    state = Visibility.STATES.HIDDEN_BY_ANCESTOR,
-                    id = id,
-                    ancestor = anc,
-                    path = chain,
-                }
-            end
-            -- Level pruned as unreachable (hidden tab dragged its subtree, or
-            -- a vanished intermediate container).
-            if validated.lists and validated.lists[anc] == nil then
-                -- Ancestor level itself gone: still an ancestor problem, with
-                -- the missing level as the blocker when no explicit hide found.
-                return {
-                    state = Visibility.STATES.HIDDEN_BY_ANCESTOR,
-                    id = id,
-                    ancestor = anc,
-                    path = chain,
-                }
-            end
-        end
-        -- No ancestor hide found but still not reachable: treat as unplaced
-        -- (e.g., tab filtered from bar by an invalid override that resolve
-        -- already migrated, or a level that validator pruned).
-        if contains(validated.disabled, id) then
+    -- Find the nearest hidden/unreachable ancestor for an actionable path.
+    local chain = ancestorChain(reg, intent, id)
+    for _, anc in ipairs(chain) do
+        if anc == MENU_BUTTONS_KEY then break end
+        -- Either an explicit hide or a pruned menu level blocks the path.
+        if Materializer.hiddenApplies(reg, intent, anc)
+                or (validated.lists and validated.lists[anc] == nil) then
             return {
                 state = Visibility.STATES.HIDDEN_BY_ANCESTOR,
                 id = id,
-                ancestor = chain[1],
+                ancestor = anc,
                 path = chain,
             }
         end
-        return { state = Visibility.STATES.UNPLACED, id = id }
     end
-    return { state = Visibility.STATES.VISIBLE, id = id }
+    -- No ancestor hide found but still not reachable: disabled rows retain
+    -- their ancestor context; otherwise the item is unplaced.
+    if in_disabled then
+        return {
+            state = Visibility.STATES.HIDDEN_BY_ANCESTOR,
+            id = id,
+            ancestor = chain[1],
+            path = chain,
+        }
+    end
+    return { state = Visibility.STATES.UNPLACED, id = id }
 end
 
 return Visibility

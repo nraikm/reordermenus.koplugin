@@ -110,14 +110,7 @@ local function find_block_relocation(old, new)
                         local in_block = i >= nstart and i < nstart + len
                         if not in_block then table.insert(rest_new, new[i]) end
                     end
-                    local same = true
-                    for k = 1, #rest_old do
-                        if rest_old[k] ~= rest_new[k] then
-                            same = false
-                            break
-                        end
-                    end
-                    if same and #rest_old == #rest_new then
+                    if SemanticDiff.sequence_equal(rest_old, rest_new) then
                         local anchor = nstart > 1 and new[nstart - 1] or false
                         return {
                             block = block,
@@ -351,13 +344,11 @@ function SemanticDiff.multiset_diff(baseline, proposed, opts)
             added[#added + 1] = id
         end
     end
-    local leftover = {}
-    for id, c in pairs(counts) do leftover[id] = c end
     local removed = {}
     for _, id in ipairs(ba) do
-        if leftover[id] and leftover[id] > 0 then
+        if counts[id] and counts[id] > 0 then
             removed[#removed + 1] = id
-            leftover[id] = leftover[id] - 1
+            counts[id] = counts[id] - 1
         end
     end
     return { added = added, removed = removed }, nil
@@ -416,23 +407,17 @@ local function relocation_candidates(a, b)
                 rest_a[#rest_a + 1] = a[i]
             end
         end
-        if taken and #rest_a == #rest_b then
-            local same = true
-            for i = 1, #rest_a do
-                if rest_a[i] ~= rest_b[i] then same = false break end
+        if taken and SemanticDiff.sequence_equal(rest_a, rest_b) then
+            local from_index = 1
+            for i = 1, #a do
+                if a[i] == item then from_index = i break end
             end
-            if same then
-                local from_index = 1
-                for i = 1, #a do
-                    if a[i] == item then from_index = i break end
-                end
-                cands[#cands + 1] = {
-                    item = item,
-                    from_index = from_index,
-                    to_index = to_index,
-                    distance = math.abs(from_index - to_index),
-                }
-            end
+            cands[#cands + 1] = {
+                item = item,
+                from_index = from_index,
+                to_index = to_index,
+                distance = math.abs(from_index - to_index),
+            }
         end
     end
     return cands

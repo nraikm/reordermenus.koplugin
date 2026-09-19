@@ -463,15 +463,13 @@ function Presets.listUserPresets(view)
         for file in lfs.dir(dir) do
             if file:sub(-4) == ".lua" and file:sub(1, 1) ~= "." then
                 local name = file:sub(1, -5)
-                if name ~= ".hidden_builtins" then
-                    table.insert(list, {
-                        id = "user_" .. name,
-                        name = name,
-                        description = _("Custom user preset"),
-                        path = string.format("%s/%s", dir, file),
-                        is_builtin = false,
-                    })
-                end
+                table.insert(list, {
+                    id = "user_" .. name,
+                    name = name,
+                    description = _("Custom user preset"),
+                    path = string.format("%s/%s", dir, file),
+                    is_builtin = false,
+                })
             end
         end
     end
@@ -525,59 +523,38 @@ local function findBuiltin(view, key)
 end
 
 function Presets.resolve(view, preset)
-    local builtin_match
-    if type(preset) == "string" then
-        local cross_view
-        builtin_match, cross_view = findBuiltin(view, preset)
-        if cross_view ~= nil and builtin_match == nil then
-            builtin_match = cross_view
+    local preset_type = type(preset)
+    local key
+    if preset_type == "string" then
+        key = preset
+    elseif preset_type == "table" then
+        key = preset.id
+    end
+    local builtin_match, cross_view = findBuiltin(view, key)
+    builtin_match = builtin_match or cross_view
+    if builtin_match then
+        -- Built-ins are view-typed for both string IDs and descriptors.
+        if builtin_match.view ~= nil and builtin_match.view ~= view then
+            return nil, T(
+                _("This built-in preset belongs to the %1 layout."),
+                builtin_match.view == "reader"
+                    and _("Book view") or _("File Manager"))
         end
-        if builtin_match then
-            -- P1B ingress gate: built-in fragments are view-typed. Applying
-            -- the reader's layout to the file manager would write reader tab
-            -- ids into FM canonical state - refuse before anything moves.
-            if builtin_match.view ~= nil and builtin_match.view ~= view then
-                return nil, T(
-                    _("This built-in preset belongs to the %1 layout."),
-                    builtin_match.view == "reader"
-                        and _("Book view") or _("File Manager"))
-            end
-            return { kind = builtin_match.is_default and "default" or "builtin",
-                     fragment = builtin_match }
-        end
+        return { kind = builtin_match.is_default and "default" or "builtin",
+                 fragment = builtin_match }
+    end
+    if preset_type == "string" then
         local clean_name, name_err = cleanPresetName(
             preset:gsub("^user_", ""))
         if not clean_name then return nil, name_err end
         return { kind = "user_file", path = presetPathIn(
             Presets.getPresetsDir(view), clean_name) }, preset
-    elseif type(preset) == "table" then
-        local pid = preset.id
-        if type(pid) == "string" then
-            local cross_view
-            builtin_match, cross_view = findBuiltin(view, pid)
-            if cross_view ~= nil and builtin_match == nil then
-                builtin_match = cross_view
-            end
-        end
-        if builtin_match then
-            if builtin_match.view ~= nil and builtin_match.view ~= view then
-                return nil, T(
-                    _("This built-in preset belongs to the %1 layout."),
-                    builtin_match.view == "reader"
-                        and _("Book view") or _("File Manager"))
-            end
-            return { kind = builtin_match.is_default and "default" or "builtin",
-                     fragment = builtin_match }
-        end
+    elseif preset_type == "table" then
         if preset.intent then
             -- P1B: an in-memory envelope may declare its origin view; honor
             -- the same compatibility gate as file-borne presets.
-            if preset.view ~= nil and preset.view ~= view then
-                return nil, T(
-                    _("This preset was saved for the %1 layout."),
-                    preset.view == "reader"
-                        and _("Book view") or _("File Manager"))
-            end
+            local compatible, err = Presets.checkViewCompatibility(view, preset)
+            if not compatible then return nil, err end
             return { kind = "user_v2", data = preset }
         end
         -- A table without intent whose only payload is a PATH is no longer
