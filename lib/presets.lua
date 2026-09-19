@@ -668,11 +668,28 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
         end
     end
 
-    -- Carry-over policy: records for ids the preset never mentioned are kept
-    -- ONLY when the id has no stock default home (plugin items / ghosts the
-    -- snapshot could not know about). An unmentioned STOCK-resident id must
-    -- follow the CURRENT defaults after apply - keeping its record would make
-    -- every post-capture customization of a stock row un-undoable by presets.
+    -- P0-2 footprint for menus: order keys, raw keys, separator parents.
+    -- A view preset governs only mentioned menus; ungoverned menus keep
+    -- current state verbatim (including stock anchors) so unrelated submenus
+    -- survive the apply. Computed early so per-id carry can consult it.
+    local governed_menus = {}
+    for menu_id in pairs(preset_intent.order_override or {}) do
+        governed_menus[menu_id] = true
+    end
+    for menu_id in pairs(preset_intent.raw_override or {}) do
+        governed_menus[menu_id] = true
+    end
+    for _, sep in pairs(preset_intent.separators or {}) do
+        if type(sep) == "table" and type(sep.parent) == "string" then
+            governed_menus[sep.parent] = true
+        end
+    end
+
+    -- Carry-over policy for per-id records (hidden/parent/position):
+    -- kept ONLY when the id has no stock default home (plugin/ghost).
+    -- Stock ids reset to defaults so presets remain undoable for their
+    -- footprint (C1). Per-menu state (order/separators/raw/tab, below) uses
+    -- the governed_menus footprint so unrelated submenus survive (P0-2/R2).
     local function carriedOver(id)
         if footprint[id] then return false end
         if reg == nil then return true end   -- legacy callers: keep old behavior
@@ -755,6 +772,14 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
             end
         end
     end
+    -- governed_menus computed above for per-id carry; reuse it here for
+    -- order/separators/raw verbatim carry of ungoverned menus.
+    -- NOTE: result aliases current (same table), so snapshot current state
+    -- BEFORE overwriting, otherwise the carry loops would read preset data.
+    local cur_order = util.tableDeepCopy(current.order_override or {})
+    local cur_seps = util.tableDeepCopy(current.separators or {})
+    local cur_raw = util.tableDeepCopy(current.raw_override or {})
+    local cur_tab = current.tab_order and util.tableDeepCopy(current.tab_order) or nil
     result.parent_override = util.tableDeepCopy(preset_intent.parent_override or {})
     result.position_override = util.tableDeepCopy(preset_intent.position_override or {})
     result.order_override = util.tableDeepCopy(preset_intent.order_override or {})
@@ -763,18 +788,29 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
     -- opaque levels survive the apply. A level the preset governs semantically
     -- keeps its semantic form; only ungoverned levels carry their raw bytes.
     result.raw_override = util.tableDeepCopy(preset_intent.raw_override or {})
-    for menu_id, raw in pairs(current.raw_override or {}) do
+    -- Carry ungoverned order sequences verbatim (P0-2).
+    for menu_id, rec in pairs(cur_order) do
+        if not governed_menus[menu_id]
+                and result.order_override[menu_id] == nil
+                and result.raw_override[menu_id] == nil then
+            result.order_override[menu_id] = util.tableDeepCopy(rec)
+        end
+    end
+    -- Carry ungoverned separator records verbatim, preserving full divider
+    -- semantics (removed / zero_dividers / provider); governed levels keep
+    -- only the preset's arrangement.
+    for key, sep in pairs(cur_seps) do
+        if type(sep) == "table" and type(sep.parent) == "string"
+                and not governed_menus[sep.parent]
+                and result.separators[key] == nil then
+            result.separators[key] = util.tableDeepCopy(sep)
+        end
+    end
+    for menu_id, raw in pairs(cur_raw) do
         if result.raw_override[menu_id] == nil
-                and (result.order_override or {})[menu_id] == nil then
-            local governed = false
-            for _, sep in pairs(result.separators or {}) do
-                if type(sep) == "table" and sep.parent == menu_id then
-                    governed = true break
-                end
-            end
-            if not governed then
-                result.raw_override[menu_id] = util.tableDeepCopy(raw)
-            end
+                and (result.order_override or {})[menu_id] == nil
+                and not governed_menus[menu_id] then
+            result.raw_override[menu_id] = util.tableDeepCopy(raw)
         end
     end
     -- Raw owns its level exclusively: no semantic sequence or divider
@@ -787,8 +823,13 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
             end
         end
     end
-    result.tab_order = preset_intent.tab_order
-        and util.tableDeepCopy(preset_intent.tab_order) or nil
+    -- Tab bar: nil in the preset means "not governed" — keep current bar so
+    -- an unrelated or dormant tab arrangement survives the apply (P0-2/P0-3).
+    if preset_intent.tab_order ~= nil then
+        result.tab_order = util.tableDeepCopy(preset_intent.tab_order)
+    else
+        result.tab_order = cur_tab and util.tableDeepCopy(cur_tab) or nil
+    end
     result.custom_menus = {}
     for id, record in pairs(preset_intent.custom_menus or {}) do
         -- Schema v3: custom-menu placement lives ONLY in parent_override; a
@@ -904,15 +945,26 @@ function Presets.saveSubmenuPreset(view, menu_id, menu_title, preset_name,
         subtree[menu_id] = { sequence = seq, sep_anchors = sep_anchors }
     end
     -- Divider records travel with their menus so a capture reproduces the
-    -- exact visual grouping on apply.
-    for menu_id in pairs(subtree) do
-        local seps = {}
-        for key, sep in pairs(intent.separators or {}) do
-            if type(sep) == "table" and sep.parent == menu_id then
-                seps[key] = { parent = sep.parent, after = sep.after }
+    -- exact visual grouping on apply. Full records are preserved verbatim
+    -- (removed / zero_dividers / provider), not stripped to parent/after.
+    -- When staged_items drives the root capture, its sep_anchors are the sole
+    -- divider representation for that level (no second separators copy) so
+    -- apply does not duplicate dividers.
+    do
+        local staged_root = subtree[menu_id] and subtree[menu_id].sep_anchors ~= nil
+        for mid in pairs(subtree) do
+            if not (staged_root and mid == menu_id) then
+                local seps = {}
+                for key, sep in pairs(intent.separators or {}) do
+                    if type(sep) == "table" and sep.parent == mid then
+                        seps[key] = util.tableDeepCopy(sep)
+                    end
+                end
+                subtree[mid].separators = next(seps) and seps or nil
+            else
+                subtree[mid].separators = nil
             end
         end
-        subtree[menu_id].separators = next(seps) and seps or nil
     end
     local any = false
     for _, frag in pairs(subtree) do
@@ -1147,50 +1199,52 @@ function Presets.loadSubmenuPreset(view, menu_id, preset_ref, reg, txn, staged_i
                 end
                 txn:setOrderOverride(view, captured_id, merged, seq_eras)
             end
-            -- Divider anchoring travels with the capture (replacement, same
-            -- semantics as editor/import: clear the level, record complete).
-            -- Written with the unified __sep_ key scheme like every other
-            -- divider writer (Prompt 5: cap_/captured_ generation removed);
-            -- readers are key-agnostic, and the recorded (parent, after)
-            -- multiset is unchanged, so effective behavior is identical.
-            -- Deliberately NOT routed through setDividerArrangement: a
-            -- capture is an explicit complete arrangement (including
-            -- stock-coinciding anchors and the historical separators +
-            -- sep_anchors overlap), never default-compared or pruned.
+            -- Divider arrangement is represented once (P0-4). Staged captures
+            -- (sep_anchors present, even empty) reconstruct semantically via
+            -- the shared divider gate so empty->zero, default->clear, and
+            -- pure-removal->marks round-trip exactly. Non-staged captures
+            -- restore full records verbatim (removed / zero / provider kept).
             do
-                local section = txn:view(view)
-                for key in pairs(section.separators or {}) do
-                    local sep = section.separators[key]
-                    if sep and sep.parent == captured_id then
-                        section.separators[key] = nil
+                local IntentOps = require("lib.intent_ops")
+                if frag.sep_anchors ~= nil then
+                    local observed = {}
+                    for _, anchor in ipairs(frag.sep_anchors or {}) do
+                        observed[#observed + 1] = anchor == false and false or anchor
                     end
-                end
-                local idx = 0
-                local function emit(parent, after)
-                    idx = idx + 1
-                    txn:setSeparator(view,
-                        string.format("%s__sep_%d", captured_id, idx), {
-                            parent = parent,
-                            after = after,
-                        })
-                end
-                -- Deterministic: sort fragment separator keys (pairs() order
-                -- is unspecified); then staged anchors in row order.
-                local frag_keys = {}
-                for key in pairs(frag.separators or {}) do
-                    frag_keys[#frag_keys + 1] = key
-                end
-                table.sort(frag_keys, function(a, b)
-                    return tostring(a) < tostring(b)
-                end)
-                for _, key in ipairs(frag_keys) do
-                    local sep = frag.separators[key]
-                    if type(sep) == "table" then
-                        emit(sep.parent, sep.after)
+                    IntentOps.setDividerArrangement(view, txn, reg,
+                        captured_id, observed)
+                elseif frag.separators ~= nil then
+                    local section = txn:view(view)
+                    for key in pairs(section.separators or {}) do
+                        local sep = section.separators[key]
+                        if sep and sep.parent == captured_id then
+                            section.separators[key] = nil
+                        end
                     end
-                end
-                for _, anchor in ipairs(frag.sep_anchors or {}) do
-                    emit(captured_id, anchor == false and false or anchor)
+                    local frag_keys = {}
+                    for key in pairs(frag.separators or {}) do
+                        frag_keys[#frag_keys + 1] = key
+                    end
+                    table.sort(frag_keys, function(a, b)
+                        return tostring(a) < tostring(b)
+                    end)
+                    for _, key in ipairs(frag_keys) do
+                        local sep = frag.separators[key]
+                        if type(sep) == "table" then
+                            txn:setSeparator(view, key, util.tableDeepCopy(sep))
+                        end
+                    end
+                else
+                    -- Non-staged capture with no divider records means stock
+                    -- flow at capture: clear the level so a previous custom
+                    -- arrangement reverts to stock (exact round-trip).
+                    local section = txn:view(view)
+                    for key in pairs(section.separators or {}) do
+                        local sep = section.separators[key]
+                        if sep and sep.parent == captured_id then
+                            section.separators[key] = nil
+                        end
+                    end
                 end
             end
         end

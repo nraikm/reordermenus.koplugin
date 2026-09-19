@@ -296,23 +296,60 @@ function Placement.sanitizeSection(reg, section)
             end
         end
     end
-    -- Tab order: only live tabs.
+    -- Tab order: durable intent preserves dormant (currently absent) ids.
+    -- Only ids provably live non-tabs are stripped here; unknown ids are
+    -- kept so a temporarily absent plugin tab reactivates on return.
+    -- Effective projection still filters via filterTabBar (Materializer).
     if type(section.tab_order) == "table" then
-        local filtered = Placement.filterTabBar(reg, section.tab_order)
-        -- Compare as sets ignoring order? Order matters, but any filtering is
-        -- a migration. Deterministic: filtered preserves input order.
-        local same = #filtered == #section.tab_order
-        if same then
-            for i = 1, #filtered do
-                if filtered[i] ~= section.tab_order[i] then same = false break end
+        local has_menus = type(reg.menus) == "table" and next(reg.menus) ~= nil
+        local has_tabs = type(reg.tab_list) == "table" and #reg.tab_list > 0
+        local has_tab_marks = false
+        if type(reg.menus) == "table" then
+            for _, info in pairs(reg.menus) do
+                if type(info) == "table" and info.is_tab == true then
+                    has_tab_marks = true break
+                end
             end
         end
-        if not same then
-            report.tab_order_filtered = true
-            if #filtered == 0 then
-                section.tab_order = nil
-            else
-                section.tab_order = filtered
+        if has_menus or has_tabs or has_tab_marks then
+            local customs = type(section.custom_menus) == "table"
+                and section.custom_menus or {}
+            local kept = {}
+            local stripped_here = false
+            local seen = {}
+            for _, id in ipairs(section.tab_order) do
+                if type(id) ~= "string" or seen[id] then
+                    if type(id) == "string" then stripped_here = true end
+                elseif Placement.isTab(reg, id) then
+                    seen[id] = true
+                    kept[#kept + 1] = id
+                else
+                    local node = reg.nodes and reg.nodes[id] or nil
+                    local menu = reg.menus and reg.menus[id] or nil
+                    local is_custom = customs[id] ~= nil
+                    -- Provably a live non-tab (or a custom container that can
+                    -- never render as a tab): strip. Unknown ids stay dormant.
+                    if node ~= nil or menu ~= nil or is_custom then
+                        stripped_here = true
+                    else
+                        seen[id] = true
+                        kept[#kept + 1] = id
+                    end
+                end
+            end
+            if stripped_here then
+                report.tab_order_filtered = true
+                if #kept == 0 then
+                    section.tab_order = nil
+                else
+                    section.tab_order = kept
+                end
+                -- Dormant-only bar (all remaining ids unknown): stripping
+                -- duplicates must not delete the dormant slots. If kept holds
+                -- only dormant ids and the original held the same set, the
+                -- assignment above already preserves them; nil only when every
+                -- entry was a provable non-tab/duplicate and no dormant id
+                -- survived (kept empty means no dormant id was kept).
             end
         end
     end

@@ -137,15 +137,4 @@ function DataLoader.loadTable(path)
     return loaded, nil
 end
 
---- pcall(dofile, path)-shaped drop-in for historical call sites.
---- Returns the table or nil (logging the reason once, like readNativeOrder did).
-function DataLoader.loadTableLogged(path, what)
-    local data, err = DataLoader.loadTable(path)
-    if not data then
-        logger.warn("ReorderingMenus: cannot load", what or "data file",
-            tostring(path), "-", tostring(err))
-    end
-    return data
-end
-
 return DataLoader

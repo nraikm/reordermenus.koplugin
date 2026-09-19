@@ -926,20 +926,10 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
         imported = imported + 1
     end
 
-    -- Tabs: the bar may only name live tabs. Filter legacy dense bars that
-    -- list ordinary submenu ids as tabs (unrenderable as tabs).
+    -- Tabs: durable intent keeps dormant ids; effective projection filters
+    -- via Materializer. sanitizeSection strips only provably live non-tabs.
     do
         local section = txn:view(view)
-        if type(section.tab_order) == "table" then
-            local filtered = Placement.filterTabBar(reg, section.tab_order)
-            if #filtered ~= #section.tab_order then
-                if #filtered == 0 then
-                    section.tab_order = nil
-                else
-                    section.tab_order = filtered
-                end
-            end
-        end
         pcall(function() return Placement.sanitizeSection(reg, section) end)
     end
 
@@ -1104,6 +1094,33 @@ function NativeWriter.syncView(view, reg, txn)
         native_fingerprint)
 
     if native_state == STATUS.LEGACY then
+        -- Sidecar loss must not turn our own output into a foreign legacy
+        -- import (P1): no checkpoint + native == preview(current canonical)
+        -- means converged, not foreign. Regenerate the checkpoint and report
+        -- clean so anchor customizations do not churn into bulk overrides.
+        do
+            local ok_prev, preview = pcall(function()
+                local Resolver = require("lib.resolver")
+                local section = txn:view(view)
+                local repaired = Resolver.resolve(reg, section)
+                return NativeWriter.previewEmission(view, reg, section, repaired)
+            end)
+            if ok_prev and preview ~= nil then
+                local ok_fp, preview_fp = pcall(function()
+                    return fingerprint(preview or {})
+                end)
+                if ok_fp and preview_fp == native_fingerprint then
+                    local ok_ckpt = setCheckpointRecord(view, {
+                        fingerprint = native_fingerprint,
+                        structure = preview,
+                    })
+                    if ok_ckpt then return false, STATUS.CLEAN end
+                elseif ok_prev and preview == nil and next(native) == nil then
+                    local ok_ckpt = NativeWriter.checkpointEmptyEmission(view)
+                    if ok_ckpt then return false, STATUS.CLEAN_EMPTY end
+                end
+            end
+        end
         local imported = NativeWriter.importAgainstDefaults(view, reg, txn, native)
         return imported > 0, STATUS.IMPORTED_LEGACY
     end
@@ -1139,6 +1156,15 @@ function NativeWriter.syncView(view, reg, txn)
                 "registry/defaults changed under committed intent; regenerating")
             return regenerateForStartup(view, reg, txn,
                 STATUS.REGENERATED_REGISTRY_DRIFT)
+        end
+        -- Stale suspension must not poison future deletion interpretation:
+        -- a CURRENT file proves the suspend-for-disable resume already
+        -- completed (or never applied), so clear the flag now. Bound to this
+        -- successful classification; a later genuine user-delete classifies
+        -- REVERTED, not REGENERATED_SUSPENDED.
+        if entry.suspended then
+            entry.suspended = nil
+            pcall(saveSidecar)
         end
         -- Startup convergence: the file matches our last emission AND that
         -- emission consists solely of EMPTY reserved maps. The elements

@@ -151,6 +151,14 @@ function Registry.buildFromData(defaults, registrations, providers, collisions,
                 if not existing.sorting_hint and hint then
                     existing.sorting_hint = hint
                 end
+                -- Stock-vs-plugin (or any pre-existing node) collisions must
+                -- also flag the node: identity is ambiguous while >1 widget
+                -- contributes the id, so customization stays dormant (P0-5).
+                if type(collisions) == "table"
+                        and type(collisions[id]) == "table"
+                        and #collisions[id] > 1 then
+                    existing.collides = true
+                end
             else
                 local widget_name = providers and providers[id] or nil
                 local prov = nil

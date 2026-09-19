@@ -69,6 +69,16 @@ function GhostGC.countStaleIds(view, reg)
             end
         end
     end
+    -- Stale tab slots: explicit Forget must also drop bar references to
+    -- unavailable ids, otherwise a reinstall resurrects forgotten placement.
+    -- Ordinary provider disappearance stays dormant; only Forget deletes.
+    if type(section.tab_order) == "table" then
+        for _, id in ipairs(section.tab_order) do
+            if type(id) == "string" and is_stale(id) then
+                stale[id] = true
+            end
+        end
+    end
     local out = {}
     for id in pairs(stale) do table.insert(out, id) end
     table.sort(out)
@@ -101,6 +111,24 @@ function GhostGC.forgetIds(view, txn, ids)
         -- raw_override levels keyed BY such ids (hand-authored submenus)
         -- also need removal:
         txn:setRawOverride(view, id, nil)
+        -- Stale bar slots: strip the forgotten id from durable tab_order so
+        -- a later reinstall starts from provider defaults.
+        do
+            local section = txn:view(view)
+            if type(section.tab_order) == "table" then
+                local kept = {}
+                for _, tab_id in ipairs(section.tab_order) do
+                    if tab_id ~= id then kept[#kept + 1] = tab_id end
+                end
+                if #kept ~= #section.tab_order then
+                    if #kept == 0 then
+                        txn:setTabOrder(view, nil)
+                    else
+                        txn:setTabOrder(view, kept)
+                    end
+                end
+            end
+        end
         forgotten = forgotten + 1
     end
     return forgotten

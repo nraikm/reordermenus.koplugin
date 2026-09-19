@@ -98,23 +98,39 @@ end
 -- Provider-aware record application
 -- -------------------------------------------------------------------------
 
--- A hidden record applies when the provider is present and matches the record stamp
--- (or for unstamped records on live nodes). Stamped records for absent providers are dormant.
-function Materializer.hiddenApplies(reg, intent, id)
-    local record = readHiddenRecord(intent, id)
-    if not record then return false end
+-- True when >1 live widget contributes this id right now. Attribution is
+-- deterministic (smallest name) but the identity is inherently unstable, so
+-- every customization for the id is dormant until one provider owns it
+-- again (P0-5). Single helper for the whole module: no scattered collides
+-- checks.
+function Materializer.isAmbiguous(reg, id)
+    return type(reg) == "table" and type(reg.nodes) == "table"
+        and type(id) == "string" and reg.nodes[id] ~= nil
+        and reg.nodes[id].collides == true
+end
+
+-- THE single applicability gate: every parent/position/sequence/hidden
+-- record funnels through here. Colliding ids are dormant (even when the
+-- stamp matches the deterministic winner); otherwise provider-era matching
+-- applies (unstamped always applies, stamped needs a live match).
+function Materializer.recordAppliesFor(reg, id, record)
+    if type(record) ~= "table" then return false end
+    if Materializer.isAmbiguous(reg, id) then return false end
     if record.provider == nil then return true end
-    local node = reg.nodes[id]
+    local node = type(reg) == "table" and type(reg.nodes) == "table"
+        and reg.nodes[id] or nil
     local current_provider = node and node.provider or nil
     if current_provider == nil then return false end
     return current_provider == record.provider
 end
 
-local function recordApplies(record, current_provider)
-    if type(record) ~= "table" then return false end
-    if record.provider == nil then return true end
-    if current_provider == nil then return false end
-    return record.provider == current_provider
+-- A hidden record applies when the provider is present and matches the record stamp
+-- (or for unstamped records on live nodes). Stamped records for absent providers are dormant.
+-- Colliding shared ids are dormant regardless of stamp (see recordAppliesFor).
+function Materializer.hiddenApplies(reg, intent, id)
+    local record = readHiddenRecord(intent, id)
+    if not record then return false end
+    return Materializer.recordAppliesFor(reg, id, record)
 end
 
 local function defaultParent(reg, id)
@@ -142,7 +158,7 @@ function Materializer.effectiveParent(reg, intent, id)
         if is_custom then
             applies = (record.provider == nil or record.provider == "custom")
         else
-            applies = recordApplies(record, current_provider)
+            applies = Materializer.recordAppliesFor(reg, id, record)
         end
     end
     if applies then
@@ -284,11 +300,10 @@ end
 local function positionHintFor(reg, intent, id, customs)
     local record = readPositionRecord(intent, id)
     if record and (record.after ~= nil or record.before ~= nil) then
-        -- Provider-gated: an anchor recorded under another provider's era of
-        -- this id must not drag the current provider's item around.
-        local node = reg and reg.nodes[id]
-        local current_provider = node and node.provider or nil
-        if recordApplies(record, current_provider) then
+        -- Single applicability gate (P0-5): colliding shared ids stay dormant
+        -- even when the stamp matches the deterministic winner; otherwise
+        -- provider-era matching applies.
+        if Materializer.recordAppliesFor(reg, id, record) then
             return record
         end
         return nil
@@ -341,10 +356,9 @@ local function seedSequence(ctx, seq, present)
             table.insert(seq, SEPARATOR_ID)
             present[SEPARATOR_ID] = true
         elseif not ctx.hidden[entry.id] and ctx.members[entry.id] then
-            -- Era gate: the entry applies only while its recorded provider
-            -- still serves the id (unstamped entries always apply).
-            if recordApplies(entry, ctx.reg.nodes[entry.id]
-                    and ctx.reg.nodes[entry.id].provider or nil) then
+            -- Single applicability gate (P0-5): colliding shared ids stay
+            -- dormant even when the stamp matches; otherwise era matching.
+            if Materializer.recordAppliesFor(ctx.reg, entry.id, entry) then
                 table.insert(seq, entry.id)
                 present[entry.id] = true
             end

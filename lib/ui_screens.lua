@@ -290,8 +290,7 @@ end
 function UIScreens:presentSaveOutcome(outcome)
     local status = outcome.status
     if status == CommitPipeline.STATUS.SAVED
-            or status == CommitPipeline.STATUS.SAVED_RESTART_REQUIRED
-            or status == CommitPipeline.STATUS.NEEDS_RESTART then
+            or status == CommitPipeline.STATUS.SAVED_RESTART_REQUIRED then
         self.needs_restart = true
         if not outcome.silent then
             self:showNotice(T(
@@ -2407,7 +2406,8 @@ end
 -- its stable id. Long-lived UI (search results, open dialogs) captures ids;
 -- menus can change between capture and action, so every mutation re-resolves
 -- immediately before touching anything. Returns nil when the id is gone.
--- Works for SEPARATOR_ID too (first occurrence) — used by the separator path.
+-- For SEPARATOR_ID this returns the FIRST occurrence only: never use it for
+-- separator actions (use the occurrence helpers below).
 function UIScreens:_currentIndexOfItem(view, menu_id, item_id)
     local items = MenuOrderManager:getMenuItems(view, menu_id)
     if type(items) ~= "table" then return nil, 0 end
@@ -2415,6 +2415,45 @@ function UIScreens:_currentIndexOfItem(view, menu_id, item_id)
         if id == item_id then return index, #items end
     end
     return nil, #items
+end
+
+-- P0-6: separators share SEPARATOR_ID, so id lookup always hits the first
+-- divider. UI actions on a tapped divider carry a positional handle
+-- (idx_hint = row index at tap time) which is converted here to a stable
+-- 1-based OCCURRENCE (nth separator) plus neighbor anchors. Mutations
+-- re-resolve that same occurrence at click time and refuse on any drift
+-- (count/anchor mismatch) instead of acting on the wrong divider.
+-- No manager/cache changes: pure re-resolution over getMenuItems.
+function UIScreens:_separatorOccurrenceAt(view, menu_id, idx)
+    local items = MenuOrderManager:getMenuItems(view, menu_id)
+    if type(items) ~= "table" then return nil end
+    if type(idx) ~= "number" then return nil end
+    if items[idx] ~= MenuOrderManager.SEPARATOR_ID then return nil end
+    local occurrence = 0
+    for i = 1, idx do
+        if items[i] == MenuOrderManager.SEPARATOR_ID then occurrence = occurrence + 1 end
+    end
+    return occurrence
+end
+
+function UIScreens:_currentIndexOfSeparatorOccurrence(view, menu_id, occurrence)
+    local items = MenuOrderManager:getMenuItems(view, menu_id)
+    if type(items) ~= "table" then return nil, 0, 0 end
+    local sep_count = 0
+    for _, id in ipairs(items) do
+        if id == MenuOrderManager.SEPARATOR_ID then sep_count = sep_count + 1 end
+    end
+    if type(occurrence) ~= "number" or occurrence < 1 or occurrence > sep_count then
+        return nil, #items, sep_count
+    end
+    local seen = 0
+    for index, id in ipairs(items) do
+        if id == MenuOrderManager.SEPARATOR_ID then
+            seen = seen + 1
+            if seen == occurrence then return index, #items, sep_count end
+        end
+    end
+    return nil, #items, sep_count
 end
 
 -- Stale-result behavior: the tapped entry no longer matches live state.
@@ -2432,20 +2471,19 @@ function UIScreens:showItemActionDialog(plugin, view, menu_id, item_id, idx_hint
     local is_sep = (item_id == MenuOrderManager.SEPARATOR_ID)
     local item_title = is_sep and _("Separator") or self:getDisplayTitle(view, item_id)
 
-    -- Search identity rule: results retain the stable ITEM ID; positions are
-    -- resolved from that id at action time. idx_hint is advisory only (it
-    -- shaped which affordances made sense when the entry was created) and
-    -- never drives a mutation.
-    local current_idx, total_items = self:_currentIndexOfItem(view, menu_id, item_id)
-    if not current_idx then
-        self:showStaleResultNotice(item_title)
-        if on_update_callback then on_update_callback() end
-        return
-    end
-
     local actions = {}
 
     if not is_sep then
+        -- Search identity rule: results retain the stable ITEM ID; positions
+        -- are resolved from that id at action time. idx_hint is advisory
+        -- only (it shaped which affordances made sense when the entry was
+        -- created) and never drives a mutation.
+        local current_idx, total_items = self:_currentIndexOfItem(view, menu_id, item_id)
+        if not current_idx then
+            self:showStaleResultNotice(item_title)
+            if on_update_callback then on_update_callback() end
+            return
+        end
         -- Re-resolve by stable id immediately before mutating.
         -- _currentIndexOfItem returns (index, total); both must be
         -- forwarded so Move down / Move to bottom compare against a real
@@ -2557,16 +2595,70 @@ _("%1 cannot be hidden."),
             })
         end
     else
-        -- Separators intentionally share one identity (SEPARATOR_ID): there
-        -- is no unique id to resolve, so this path stays POSITIONAL — kept
-        -- clearly separate from the id-resolved path above. Position is
-        -- re-derived at click time; in multi-separator menus the first
-        -- occurrence acts.
+        -- P0-6: separators share SEPARATOR_ID, so id lookup would always hit
+        -- the first divider. The tap-time row index (idx_hint) selects the
+        -- intended OCCURRENCE (nth separator); every mutation re-resolves
+        -- that same occurrence at click time and refuses on drift
+        -- (count/neighbor mismatch) instead of touching the wrong divider.
+        -- Ambiguous opens (no handle + several dividers) offer no moves:
+        -- the editor's positional drag is the deterministic workflow.
+        local live_items = MenuOrderManager:getMenuItems(view, menu_id)
+        local live_sep_count = 0
+        for _, id in ipairs(live_items) do
+            if id == MenuOrderManager.SEPARATOR_ID then live_sep_count = live_sep_count + 1 end
+        end
+        local sep_occurrence = self:_separatorOccurrenceAt(view, menu_id, idx_hint)
+        local anchor_before, anchor_after = nil, nil
+        if sep_occurrence == nil and idx_hint == nil and live_sep_count == 1 then
+            sep_occurrence = 1
+        end
+        if sep_occurrence ~= nil then
+            local open_idx = nil
+            if type(idx_hint) == "number" then
+                open_idx = idx_hint
+            else
+                open_idx = self:_currentIndexOfSeparatorOccurrence(view, menu_id, sep_occurrence)
+            end
+            anchor_before = live_items[(open_idx or 0) - 1]
+            anchor_after = live_items[(open_idx or 0) + 1]
+        end
+        if sep_occurrence == nil then
+            if live_sep_count == 0 or idx_hint ~= nil then
+                self:showStaleResultNotice(item_title)
+                if on_update_callback then on_update_callback() end
+                return
+            end
+            UIManager:show(InfoMessage:new{
+                text = _("Multiple separators here — open the menu editor to move the one you want."),
+            })
+            if on_update_callback then on_update_callback() end
+            return
+        end
+        local current_idx, total_items, open_sep_count =
+            self:_currentIndexOfSeparatorOccurrence(view, menu_id, sep_occurrence)
+        if not current_idx then
+            self:showStaleResultNotice(item_title)
+            if on_update_callback then on_update_callback() end
+            return
+        end
         local function currentSepOrFail()
-            local cur, total = self:_currentIndexOfItem(view, menu_id, MenuOrderManager.SEPARATOR_ID)
+            local cur, total, sep_count =
+                self:_currentIndexOfSeparatorOccurrence(view, menu_id, sep_occurrence)
             if not cur then
                 self:showStaleResultNotice(item_title)
                 if on_update_callback then on_update_callback() end
+                return nil
+            end
+            if sep_count ~= open_sep_count then
+                self:showStaleResultNotice(item_title)
+                if on_update_callback then on_update_callback() end
+                return nil
+            end
+            local now_items = MenuOrderManager:getMenuItems(view, menu_id)
+            if now_items[cur - 1] ~= anchor_before or now_items[cur + 1] ~= anchor_after then
+                self:showStaleResultNotice(item_title)
+                if on_update_callback then on_update_callback() end
+                return nil
             end
             return cur, total
         end

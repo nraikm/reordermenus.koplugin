@@ -158,7 +158,8 @@ local function invalidate(view)
         s.order = nil
         s.effective = nil
     end
-    MenuOrderManager.orders[view] = nil
+    -- Deprecated orders alias intentionally not maintained (no production
+    -- reader; sessions own the projection). Field retained for probe compat.
 end
 
 local function ensureTxn()
@@ -500,7 +501,6 @@ local function getOrderTable(view)
             order[menu_id] = list
         end
         s.order = order
-        MenuOrderManager.orders[view] = order
     end
     return s.order
 end
@@ -682,6 +682,60 @@ local function minimizeIntent(view, txn, reg)
                     local live = reg.nodes and reg.nodes[pid]
                         and reg.nodes[pid].provider or nil
                     if live ~= prec.provider then
+                        has_future_intent = true break
+                    end
+                end
+                -- Conservative dormancy: an anchor whose id, home, or target
+                -- is currently unplaced/unknown cannot be proven redundant
+                -- from the current projection. Preserve it.
+                do
+                    local custom_menus = section.custom_menus or {}
+                    local node = reg.nodes and reg.nodes[pid] or nil
+                    if node == nil and custom_menus[pid] == nil then
+                        has_future_intent = true break
+                    end
+                    local home = Materializer.effectiveParent(reg, section, pid)
+                    if home == nil then
+                        has_future_intent = true break
+                    elseif reg.menus and reg.menus[home] == nil
+                            and custom_menus[home] == nil then
+                        has_future_intent = true break
+                    end
+                    local target = type(prec) == "table"
+                        and (type(prec.after) == "string" and prec.after
+                            or (type(prec.before) == "string" and prec.before or nil))
+                        or nil
+                    if type(target) == "string" then
+                        if section.hidden and section.hidden[target] then
+                            has_future_intent = true break
+                        end
+                        local tnode = reg.nodes and reg.nodes[target] or nil
+                        if tnode == nil and custom_menus[target] == nil then
+                            has_future_intent = true break
+                        end
+                    end
+                end
+            end
+        end
+        -- Conservative pruning: only the current projection cannot prove
+        -- future redundancy for vanished levels or separators on vanished
+        -- levels. If any ordered level or separator home no longer exists,
+        -- preserve all durable intent; it reactivates on provider return.
+        if not has_future_intent then
+            local custom_menus = section.custom_menus or {}
+            for menu_id in pairs(section.order_override or {}) do
+                if reg.menus and reg.menus[menu_id] == nil
+                        and custom_menus[menu_id] == nil then
+                    has_future_intent = true break
+                end
+            end
+        end
+        if not has_future_intent then
+            local custom_menus = section.custom_menus or {}
+            for _, sep in pairs(section.separators or {}) do
+                if type(sep) == "table" and type(sep.parent) == "string" then
+                    if reg.menus and reg.menus[sep.parent] == nil
+                            and custom_menus[sep.parent] == nil then
                         has_future_intent = true break
                     end
                 end
@@ -1372,6 +1426,13 @@ local function reconcileMembership(view, menu_id, sequence, session, txn, sectio
             if session.reg.nodes[id] == nil and not section.custom_menus[id] then
                 -- (a) the CURRENT registry cannot account for this row at
                 -- all: stale-snapshot residue; it drops out of the save.
+                -- Editor rows only contain unknown ids via stale snapshots
+                -- (dormant intent is not rendered when its provider is
+                -- absent, so a fresh editor cannot deliberately stage it).
+                -- Deliberate unknown placement travels via import
+                -- (native_writer) and dormant preservation (minimize), not
+                -- via stale editor saves (D1b). Only Forget deletes dormant
+                -- intent; stale presence alone never creates it.
                 table.remove(sequence, i)
                 stale_rows = true
                 goto continue_row

@@ -193,6 +193,10 @@ function IntentOps.setOrderingFromSequence(view, txn, reg, menu_id,
             txn:setPositionOverride(view, move.item, nil)
             return "noop", { move = move }
         end
+        -- Ambiguous shared ids (P0-5): refuse new anchor pins while contested.
+        if Materializer.isAmbiguous(reg, move.item) then
+            return "ambiguous", { move = move }
+        end
         txn:setPositionOverride(view, move.item, {
             after = move.type == "move_before" and false or move.after,
             before = move.type == "move_before" and move.before or nil,
@@ -221,11 +225,14 @@ end
 
 -- Single-item insertion anchor (cross-menu moves, external additions).
 -- after=false means list head. Provider-stamped for dormancy.
+-- Ambiguous shared ids (P0-5) refuse new pins while identity is contested.
 function IntentOps.setInsertionAnchor(view, txn, reg, id, after)
+    if Materializer.isAmbiguous(reg, id) then return false, "ambiguous" end
     txn:setPositionOverride(view, id, {
         after = after,
         provider = IntentOps.providerOf(reg, id),
     })
+    return true
 end
 
 -- Strip one id from every bulk sequence containing it (single-parent
@@ -265,6 +272,11 @@ end
 -- dormancy — the row cascades to disabled and reappears when its home
 -- returns. Clearing (parent=nil) removes the record.
 function IntentOps.setMembership(view, txn, reg, id, parent)
+    -- Ambiguous shared ids (P0-5): no new provider-specific pins while
+    -- identity is contested. Clearing (parent=nil) is always allowed.
+    if parent ~= nil and Materializer.isAmbiguous(reg, id) then
+        return false, "ambiguous"
+    end
     local Placement
     do
         local ok, mod = pcall(require, "lib.placement")
@@ -342,6 +354,12 @@ end
 -- Visibility: one record shape for all paths.
 -- -------------------------------------------------------------------------
 function IntentOps.setVisibility(view, txn, reg, id, hidden, origin)
+    -- Ambiguous shared ids (P0-5): hiding the shared row would hide both
+    -- providers' rows; refuse new hide pins while contested. Unhide (clear)
+    -- is always allowed.
+    if hidden and Materializer.isAmbiguous(reg, id) then
+        return false, "ambiguous"
+    end
     if hidden then
         local existing = txn:getHidden(view, id)
         txn:setHidden(view, id, {

@@ -45,7 +45,6 @@ CommitPipeline.STATUS = {
     NEEDS_REGENERATION = "saved_needs_regeneration",
     -- Everything durable succeeded; native restart required to see changes.
     SAVED_RESTART_REQUIRED = "saved_restart_required",
-    NEEDS_RESTART = "saved_restart_required",
     -- Fully applied.
     SAVED = "saved",
 }
