@@ -20,6 +20,7 @@ local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local dump = require("dump")
 local Event = require("ui/event")
+local FocusManager = require("ui/widget/focusmanager")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local Menu = require("ui/widget/menu")
@@ -33,6 +34,7 @@ local _ = require("gettext")
 local MenuOrderManager = require("lib.menuorder_manager")
 local IntentStore = require("lib.intent_store")
 local MenuTitles = require("lib.menu_titles")
+local MenuSchema = require("lib.menu_schema")
 local KoreaderAdapter = require("lib.koreader_adapter")
 local CommitPipeline = require("lib.commit_pipeline")
 local Presets = require("lib.presets")
@@ -98,6 +100,20 @@ local function refreshPaging(widget, preferred_index)
         #widget.item_table, widget.items_per_page, widget.show_page,
         preferred_index)
     widget:_populateItems()
+end
+
+-- Search navigation uses focus, never `marked`: marked rows MOVE when the
+-- user pages through SortWidget. Resolve against final display rows so hidden
+-- entries and separators count toward pagination too.
+local function focusEditorItem(widget, item_id)
+    if not item_id then return end
+    local index = UIEditorModel.firstRowIndex(widget.item_table, function(row)
+        return row.item_id == item_id
+    end)
+    if not index then return end
+    refreshPaging(widget, index)
+    widget:moveFocusTo(1, index - (widget.show_page - 1) * widget.items_per_page,
+        FocusManager.FORCED_FOCUS)
 end
 
 local function resetEditorPaging(widget)
@@ -1094,7 +1110,7 @@ function UIScreens:_getManagedTabsFromCurrentProjection(view, source_items)
     return current
 end
 
-function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
+function UIScreens:showTabReorderDialog(plugin, view, on_close_callback, focus_item_id)
     if plugin then self.plugin = plugin end
     view = view or self:getCurrentView(plugin)
     -- P1B #13: same lazy, refcounted tap enhancement as the item editor;
@@ -1202,6 +1218,13 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
 
     -- Visible-order projection --------------------------------------------
     local sort_items = buildSortItems()
+    if focus_item_id and not UIEditorModel.firstRowIndex(sort_items, function(row)
+        return row.item_id == focus_item_id
+    end) then
+        UICompat.releaseSortWidgetSubmenuTap(SortWidget)
+        self:showStaleResultNotice(self:getDisplayTitle(view, focus_item_id))
+        return
+    end
     local last_saved_disabled = util.tableDeepCopy(MenuOrderManager:getDisabledItems(view))
     local function mark_tabs_saved()
         last_saved_disabled = util.tableDeepCopy(MenuOrderManager:getDisabledItems(view))
@@ -1436,6 +1459,7 @@ function UIScreens:showTabReorderDialog(plugin, view, on_close_callback)
         })
         return true
     end
+    focusEditorItem(sort_widget, focus_item_id)
     UIManager:show(sort_widget)
 end
 
@@ -1730,7 +1754,7 @@ local function moveRowInEditor(widget, entry, to_hidden, view, live_items_by_id)
     resetEditorPaging(widget)
 end
 
-function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, trail_ids)
+function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, trail_ids, focus_item_id)
     if plugin then self.plugin = plugin end
     local ui_self = self
     -- Support the legacy 4-arg call (trail omitted) and the breadcrumb-aware
@@ -2130,6 +2154,13 @@ function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, 
         table.insert(sort_items, emptyHintRow())
     end
 
+    if focus_item_id and not UIEditorModel.firstRowIndex(sort_items, function(row)
+        return row.item_id == focus_item_id
+    end) then
+        UICompat.releaseSortWidgetSubmenuTap(SortWidget)
+        self:showStaleResultNotice(self:getDisplayTitle(view, focus_item_id))
+        return
+    end
     last_saved_model = buildOrder(sort_items)
     local initial_txn = MenuOrderManager.peekTransaction
         and MenuOrderManager:peekTransaction() or nil
@@ -2394,12 +2425,12 @@ function UIScreens:showItemSortWidget(plugin, view, menu_id, on_close_callback, 
         return true
     end
 
+    focusEditorItem(sort_widget, focus_item_id)
     UIManager:show(sort_widget)
 end
 
 -- =========================================================================
--- Detailed Item Action Dialog (kept for search & compatibility)
--- Now streamlined: only used via search results or hold callback
+-- Detailed Item Action Dialog (kept for compatibility and hold callbacks)
 -- =========================================================================
 
 -- Resolve an item's CURRENT position (and current list length) in a menu by
@@ -3134,33 +3165,16 @@ function UIScreens:showSearchResults(plugin, view, query, on_close_callback)
         table.insert(result_items, {
             text = row_text,
             callback = function()
-                if match.is_hidden then
-                    -- Hidden items keep their stable id; showing is
-                    -- id-keyed and keeps the current placement. Truthful
-                    -- restoration: an item inside a hidden ancestor stays
-                    -- invisible until its path is revealed.
-                    MenuOrderManager:setItemHidden(view, item_id, false)
-                    if not self:saveAndApply(plugin, view) then return end
-                    local ok_st, st = pcall(function()
-                        return MenuOrderManager:getVisibilityStatus(view, item_id)
-                    end)
-                    local state = (ok_st and st and st.state) or nil
-                    if state == "hidden_by_ancestor" and st.ancestor then
-                        local anc_title = self:getDisplayTitle(view, st.ancestor)
-                        UIManager:show(InfoMessage:new{
-                            text = T(_("“%1” is no longer hidden by itself, but it is still inside hidden “%2” and stays invisible until that path is shown."),
-                                title, anc_title),
-                        })
-                    else
-                        self:showNotice(T(_("Shown “%1”."), title))
-                    end
-                    self:showSearchResults(plugin, view, query, on_close_callback)
+                -- Resolve the current host by ID, not the search-time menu.
+                -- Navigation never unhides, stages, saves, or executes a row.
+                local parent = MenuOrderManager:getParentMenu(view, item_id)
+                    or MenuOrderManager:getHiddenItemParent(view, item_id)
+                if parent == MenuSchema.MENU_BUTTONS_KEY then
+                    self:showTabReorderDialog(plugin, view, nil, item_id)
+                elseif parent and MenuOrderManager:isSubmenu(view, parent) then
+                    self:showItemSortWidget(plugin, view, parent, nil, nil, item_id)
                 else
-                    -- Position resolved from the stable id at action time;
-                    -- see showItemActionDialog.
-                    self:showItemActionDialog(plugin, view, match.menu_id, item_id, nil, function()
-                        self:showSearchResults(plugin, view, query, on_close_callback)
-                    end)
+                    self:showStaleResultNotice(title)
                 end
             end,
         })

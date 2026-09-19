@@ -43,6 +43,10 @@ Open **Tools → More tools → Reorder menus**.
 4. Tap the bottom-right checkmark to save. The title marks unsaved changes;
    closing a changed editor offers **Save / Discard / Cancel**.
 
+Tap a search result to open its containing menu on the correct page, with the
+item highlighted. This does not change its order or visibility; hidden items
+stay hidden until you explicitly show them in the editor.
+
 ## Presets
 
 **View presets** save the current Book view or File Manager layout. Open
