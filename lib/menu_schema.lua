@@ -156,6 +156,29 @@ end
 
 MenuSchema.newEmptyCanonicalState = MenuSchema.newCanonicalState
 
+-- Fill missing hide ordinals after the largest existing ordinal, in id order.
+-- Legacy presets number nil ordinals before repairing other invalid values.
+function MenuSchema.normalizeHiddenOrdinals(hidden, nil_only)
+    if type(hidden) ~= "table" then return end
+    local unnumbered, max_ordinal = {}, 0
+    for id, record in pairs(hidden) do
+        if type(record) == "table" then
+            if type(record.ordinal) == "number" then
+                if record.ordinal > max_ordinal then
+                    max_ordinal = record.ordinal
+                end
+            elseif not nil_only or record.ordinal == nil then
+                unnumbered[#unnumbered + 1] = id
+            end
+        end
+    end
+    table.sort(unnumbered)
+    for _, id in ipairs(unnumbered) do
+        max_ordinal = max_ordinal + 1
+        hidden[id].ordinal = max_ordinal
+    end
+end
+
 -- -------------------------------------------------------------------------
 -- Typed record constructors / predicates (the semantic accessor surface)
 -- -------------------------------------------------------------------------

@@ -17,20 +17,11 @@ Scenario covered end to end:
      by applying the updated preset brings everything back.
 --]]
 
-dofile("/Applications/KOReader.app/Contents/koreader/setupkoenv.lua")
-local test_path = debug.getinfo(1, "S").source:sub(2)
-local project_dir = assert(test_path:match("^(.*)/tests/[^/]+$"), "cannot locate plugin directory")
-package.path = project_dir .. "/?.lua;" .. package.path
-
-local LuaSettings = require("luasettings")
-local DataStorage = require("datastorage")
-
-G_reader_settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/settings.reader.lua")
-G_defaults = require("luadefaults"):open()
-
-local Device = require("device")
-local CanvasContext = require("document/canvascontext")
-CanvasContext:init(Device)
+local project_root = assert((debug.getinfo(1, "S").source:sub(2)):match("^(.*)/tests/"),
+    "cannot locate plugin directory")
+local RW = dofile(project_root .. "/tests/lib/runtime_world.lua")
+local env = RW.bootstrap()
+local DataStorage = env.DataStorage
 
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
 local UIManager = require("ui/uimanager")
@@ -49,51 +40,17 @@ local PRESET_FILE = settings_dir .. "/menu_order_presets/" .. view .. "/CustomLa
 local PLUGIN_ID = "late_custom_plugin"
 local PROTECTED_ID = "reordering_menus"
 
-local passed, failed = 0, 0
-local function assert_eq(actual, expected, msg)
-    if actual == expected then
-        passed = passed + 1
-        print("  [PASS] " .. (msg or ""))
-    else
-        failed = failed + 1
-        io.stdout:flush()
-        print("  [FAIL] " .. (msg or "") ..
-            string.format(" -> expected %s, got %s", tostring(expected), tostring(actual)))
-    end
-end
-local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
+local T = RW.assert_counter()
+local assert_eq, assert_true = T.assert_eq, T.assert_true
 
-local MenuOrderManager = require("lib.menuorder_manager")
-local UIScreens = require("lib.ui_screens")
-
-local mock_ui_fm = {
-    file_chooser = {
-        show_hidden = false,
-        show_unsupported = false,
-        items_per_page_default = 14,
-        collates = { filename = { text = _("Filename"), menu_order = 1 } },
-        getCollate = function() return nil, "filename" end,
-        refreshPath = function() end,
-        toggleShowFilesMode = function() end,
-    },
-    registerTouchZones = function() end,
-    onSetSortBy = function() end,
-    registerModule = function(self, name, mod) self[name] = mod end,
-}
+local mock_ui_fm = RW.mock_fm_ui(_)
 
 local function make_stub(item_id, hint)
-    return {
-        ui = nil,
-        addToMainMenu = function(self, menu_items)
-            if not self.ui.view then
-                menu_items[item_id] = {
-                    text = string.format(_("Stub %s"), item_id),
-                    sorting_hint = hint,
-                    callback = function() end,
-                }
-            end
-        end,
-    }
+    return RW.make_stub(item_id, {
+        text = string.format(_("Stub %s"), item_id),
+        hint = hint,
+        view_gate = "filemanager",
+    })
 end
 
 local function wipe_state()
@@ -109,14 +66,6 @@ end
 local function drop_session_caches()
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
     MenuOrderManager.orders[view] = nil
-end
-
-local function close_all_windows()
-    while #(UIManager._window_stack or {}) > 0 do
-        local entry = UIManager._window_stack[#UIManager._window_stack]
-        local w = entry and (entry.widget or entry)
-        UIManager:close(w)
-    end
 end
 
 -- attached: array of { key = ..., stub = ... }; removed plugins simply stay
@@ -203,7 +152,7 @@ do
 
     local ok = MenuOrderManager:savePreset(view, "CustomLayout")
     assert_true(ok, "C1: preset captured the custom layout")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- -------------------------------------------------------------------------
@@ -219,7 +168,7 @@ do
     assert_true(in_list(live_children(menu.tab_item_table, "setting"), "more_tools"),
         "C2: Settings still hosts the moved submenu")
     assert_eq(count_new_prefix(menu.tab_item_table), 0, "C2: no NEW: rows")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- -------------------------------------------------------------------------
@@ -250,7 +199,7 @@ do
         assert_eq(ghost_row, nil,
             "C3: removed plugin's entry is not offered as a working row")
     end
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- -------------------------------------------------------------------------
@@ -265,7 +214,7 @@ do
         "C4: single parent after reinstall")
     assert_true(in_list(live_children(menu.tab_item_table, "more_tools"), PLUGIN_ID),
         "C4: renders again inside More tools")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- -------------------------------------------------------------------------
@@ -294,7 +243,7 @@ do
     assert_true(in_list(live_children(menu.tab_item_table, "setting"), "more_tools"),
         "C5: moved submenu still hosted by Settings")
     assert_eq(count_new_prefix(menu.tab_item_table), 0, "C5: no NEW: rows")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- -------------------------------------------------------------------------
@@ -312,7 +261,7 @@ do
         "C6: hidden state of the plugin entry survived the preset application")
     assert_eq(MenuOrderManager:getHiddenItemParent(view, PLUGIN_ID), "more_tools",
         "C6: origin points at the custom-moved parent")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     -- Editor presents it as a dimmed hidden row (in-place default anchors it
     -- after its previous visible sibling inside More tools).
@@ -328,7 +277,7 @@ do
         if row.item_id == PLUGIN_ID and row.is_hidden_row then found_hidden = true end
     end
     assert_true(found_hidden, "C6: dimmed hidden row offered inside More tools")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     -- Leave clean state for the final section.
     MenuOrderManager:setItemHidden(view, PLUGIN_ID, false, "more_tools")
@@ -365,11 +314,10 @@ do
     assert_eq(MenuOrderManager:getParentMenu(view, PLUGIN_ID), "more_tools",
         "C7: plugin entry restored too")
     assert_eq(count_new_prefix(menu.tab_item_table), 0, "C7: no NEW: rows")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 wipe_state()
-close_all_windows()
+RW.close_all_windows(UIManager)
 
-print(string.format("\n=== %d passed, %d failed ===", passed, failed))
-if failed > 0 then os.exit(1) end
+T.summary("custom menu lifecycle")

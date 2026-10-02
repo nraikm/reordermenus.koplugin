@@ -13,20 +13,11 @@ were saved, and updating presets.
    USER preset file with the current layout and refuses built-ins.
 --]]
 
-dofile("/Applications/KOReader.app/Contents/koreader/setupkoenv.lua")
-local test_path = debug.getinfo(1, "S").source:sub(2)
-local project_dir = assert(test_path:match("^(.*)/tests/[^/]+$"), "cannot locate plugin directory")
-package.path = project_dir .. "/?.lua;" .. package.path
-
-local LuaSettings = require("luasettings")
-local DataStorage = require("datastorage")
-
-G_reader_settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/settings.reader.lua")
-G_defaults = require("luadefaults"):open()
-
-local Device = require("device")
-local CanvasContext = require("document/canvascontext")
-CanvasContext:init(Device)
+local project_root = assert((debug.getinfo(1, "S").source:sub(2)):match("^(.*)/tests/"),
+    "cannot locate plugin directory")
+local RW = dofile(project_root .. "/tests/lib/runtime_world.lua")
+local env = RW.bootstrap()
+local DataStorage = env.DataStorage
 
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
 local UIManager = require("ui/uimanager")
@@ -41,51 +32,20 @@ local ORDER_FILE = settings_dir .. "/" .. view .. "_menu_order.lua"
 local STATE_FILE = settings_dir .. "/reorderingmenus_state.lua"
 local PRESETS_DIR = settings_dir .. "/menu_order_presets/" .. view
 
-local passed, failed = 0, 0
-local function assert_eq(actual, expected, msg)
-    if actual == expected then
-        passed = passed + 1
-        print("  [PASS] " .. (msg or ""))
-    else
-        failed = failed + 1
-        io.stdout:flush()
-        print("  [FAIL] " .. (msg or "") ..
-            string.format(" -> expected %s, got %s", tostring(expected), tostring(actual)))
-    end
-end
-local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
+local T = RW.assert_counter()
+local assert_eq, assert_true = T.assert_eq, T.assert_true
 
 local MenuOrderManager = require("lib.menuorder_manager")
 local UIScreens = require("lib.ui_screens")
 
-local mock_ui_fm = {
-    file_chooser = {
-        show_hidden = false,
-        show_unsupported = false,
-        items_per_page_default = 14,
-        collates = { filename = { text = _("Filename"), menu_order = 1 } },
-        getCollate = function() return nil, "filename" end,
-        refreshPath = function() end,
-        toggleShowFilesMode = function() end,
-    },
-    registerTouchZones = function() end,
-    onSetSortBy = function() end,
-    registerModule = function(self, name, mod) self[name] = mod end,
-}
+local mock_ui_fm = RW.mock_fm_ui(_)
 
 local function make_stub(item_id, hint)
-    return {
-        ui = nil,
-        addToMainMenu = function(self, menu_items)
-            if not self.ui.view then
-                menu_items[item_id] = {
-                    text = string.format(_("Stub %s"), item_id),
-                    sorting_hint = hint,
-                    callback = function() end,
-                }
-            end
-        end,
-    }
+    return RW.make_stub(item_id, {
+        text = string.format(_("Stub %s"), item_id),
+        hint = hint,
+        view_gate = "filemanager",
+    })
 end
 
 local function wipe_state()
@@ -97,21 +57,6 @@ local function wipe_state()
 os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_intent.lua")
 os.remove(DataStorage:getSettingsDir() .. "/reorderingmenus_materialization.lua")
 MenuOrderManager:dropSessionState(view)
-end
-
-local function drop_session_caches()
-    package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
-    MenuOrderManager.orders[view] = nil
-    MenuOrderManager.default_orders[view] = nil
-    MenuOrderManager.recent_moves[view] = {}
-end
-
-local function close_all_windows()
-    while #(UIManager._window_stack or {}) > 0 do
-        local entry = UIManager._window_stack[#UIManager._window_stack]
-        local w = entry and (entry.widget or entry)
-        UIManager:close(w)
-    end
 end
 
 local function launch(stubs)
@@ -194,10 +139,10 @@ do
     MenuOrderManager:saveOrder(view)
     local ok, path = MenuOrderManager:savePreset(view, "Lifecycle")
     assert_true(ok, "P1: preset saved (" .. tostring(path) .. ")")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     -- A new plugin gets installed afterwards.
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
     launch({ make_stub("late_plugin_item", "search") })
 
     -- Apply the old preset WITHOUT any external reconciliation, proving the
@@ -209,15 +154,15 @@ do
     assert_eq(parents[1], "search", "P1: ...under its own hint menu")
     assert_eq(MenuOrderManager:getParentMenu(view, "terminal"), "tools",
         "P1: preset restores its captured customization (terminal in Tools)")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     -- Render check.
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
     local menu = launch({ make_stub("late_plugin_item", "search") })
     assert_true(in_list(live_children(menu.tab_item_table, "search"), "late_plugin_item"),
         "P1: surviving item renders under Search")
     assert_eq(count_new_prefix(menu.tab_item_table), 0, "P1: no NEW: orphans")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- -------------------------------------------------------------------------
@@ -227,7 +172,7 @@ do
     launch({})
     local ok = MenuOrderManager:savePreset(view, "Lifecycle")
     assert_true(ok, "P2: preset saved")
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
 
     -- New plugin appears, then the user hides it.
     launch({ make_stub("hidden_after_save", "more_tools") })
@@ -239,7 +184,7 @@ do
         "P2: hidden state of the post-save entry is preserved")
     assert_eq(MenuOrderManager:getHiddenItemParent(view, "hidden_after_save"), "more_tools",
         "P2: origin retained so unhiding lands correctly")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- -------------------------------------------------------------------------
@@ -248,7 +193,7 @@ do
     wipe_state()
     launch({})
     MenuOrderManager:savePreset(view, "Lifecycle")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     -- Update adds a core entry to Settings: the entry itself (registered by
     -- a core module) plus its default-order reference, like a real update.
@@ -263,7 +208,7 @@ do
             end
         end,
     }
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
     -- Re-require AFTER dropping caches: the fresh table is what both the
     -- manager and MenuSorter will read, mirroring a real KOReader update
     -- (new files on disk + restart).
@@ -281,9 +226,9 @@ do
     MenuOrderManager:loadPreset(view, "Lifecycle")
     assert_eq(MenuOrderManager:getParentMenu(view, "update_setting_entry"), "setting",
         "P3: applying the older preset keeps the update entry")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
     local refreshed = require("ui/elements/" .. view .. "_menu_order")
     if not refreshed._p3_update_applied then
         table.insert(refreshed["setting"], "update_setting_entry")
@@ -295,7 +240,7 @@ do
     assert_true(in_list(live_children(menu.tab_item_table, "setting"), "update_setting_entry"),
         "P3: update entry renders after preset application")
     assert_eq(count_new_prefix(menu.tab_item_table), 0, "P3: no NEW: orphans")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- -------------------------------------------------------------------------
@@ -306,17 +251,17 @@ do
     local ok = MenuOrderManager:saveSubmenuPreset(
         view, "search", _("Search"), "SubLife", false)
     assert_true(ok, "P4: submenu preset saved")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
     launch({ make_stub("submenu_late", "search") }) -- new plugin after capture
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     local ok2, err2 = MenuOrderManager:loadSubmenuPreset(view, "search", "SubLife")
     assert_true(ok2, "P4: submenu preset applies: " .. tostring(err2))
     assert_eq(MenuOrderManager:getParentMenu(view, "submenu_late"), "search",
         "P4: late plugin item kept by the submenu merge")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- -------------------------------------------------------------------------
@@ -329,7 +274,7 @@ do
 
     -- Update adds a core entry directly after Frontlight (curated slot).
     local update_provider = make_stub("curated_entry")
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
     local default_module = require("ui/elements/" .. view .. "_menu_order")
     if not default_module._p5_update_applied then
         table.insert(default_module["setting"], 2, "curated_entry")
@@ -346,9 +291,9 @@ do
     MenuOrderManager:loadPreset(view, "Lifecycle")
     assert_eq(list_positions("setting", "curated_entry")[1], 2,
         "P5: applying the old preset keeps the curated slot")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
     local refreshed = require("ui/elements/" .. view .. "_menu_order")
     if not refreshed._p5_update_applied then
         table.insert(refreshed["setting"], 2, "curated_entry")
@@ -360,7 +305,7 @@ do
     assert_true(in_list(live_children(menu.tab_item_table, "setting"), "curated_entry"),
         "P5: entry renders in its curated slot afterwards")
     assert_eq(count_new_prefix(menu.tab_item_table), 0, "P5: no NEW: rows")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 -- =========================================================================
@@ -391,7 +336,7 @@ do
         "U: same file name is reused")
 
     -- Round-trip: fresh session applies the UPDATED preset.
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
     local applied = MenuOrderManager:loadPreset(view, "Updatable")
     assert_true(applied, "U: updated preset applies")
     assert_eq(MenuOrderManager:getParentMenu(view, "terminal"), "tools",
@@ -405,7 +350,7 @@ do
     local lfs = require("libs/libkoreader-lfs")
     assert_eq(lfs.attributes(PRESETS_DIR .. "/Updatable.lua", "mode"), "file",
         "U: preset file still present")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 print("\n--- U2: hold-to-update from the presets screen ---")
@@ -413,7 +358,7 @@ do
     wipe_state()
     launch({})
     MenuOrderManager:savePreset(view, "Updatable")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     -- Change something that must show up in the updated file.
     MenuOrderManager:moveItemToMenu(view, "terminal", "more_tools", "tools")
@@ -449,17 +394,16 @@ do
     assert_true(confirm ~= nil, "hold opens an update confirmation")
     confirm.ok_callback()
     UIManager:close(confirm)
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
-    drop_session_caches()
+    RW.drop_session_caches(view, MenuOrderManager)
     MenuOrderManager:loadPreset(view, "Updatable")
     assert_eq(MenuOrderManager:getParentMenu(view, "terminal"), "tools",
         "UI hold-update captured the current layout")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 wipe_state()
-close_all_windows()
+RW.close_all_windows(UIManager)
 
-print(string.format("\n=== %d passed, %d failed ===", passed, failed))
-if failed > 0 then os.exit(1) end
+T.summary("presets over changing configurations")

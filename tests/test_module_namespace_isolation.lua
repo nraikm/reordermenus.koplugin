@@ -56,7 +56,8 @@ local MODULES = {
     "atomic_writer", "commit_pipeline", "data_loader", "ghost_gc",
     "intent_store", "koreader_adapter", "materializer", "menu_schema",
     "menu_titles", "menuorder_manager", "native_writer", "placement",
-    "plugin_prefs", "presets", "registry", "semantic_diff", "ui_compat",
+    "plugin_prefs", "presets", "registry", "semantic_diff",
+    "semantic_diff_legacy", "ui_compat",
     "ui_editor_model", "ui_editor_registry", "ui_screens", "unicode_fold",
     "validator", "visibility",
 }

@@ -10,8 +10,9 @@ Simulates a clean KOReader installation of the release ZIP:
       see frontend/pluginloader.lua:200 and :241)
   S4  main.lua executes as the plugin-loader dofile()s it
   S5  every production require resolves (load-time graph)
-  S6  deferred requires resolve too: prepareForPluginRemoval's lazy
-      menuorder_manager load and applyLiveReload's lazy ui_screens load
+  S6  deferred adapter dependencies resolve too: prepareForPluginRemoval
+      lazily loads menuorder_manager, and live-tree sanitation lazily loads
+      MenuTitles
   S7  no module resolved from the development checkout (dev tree absent
       from package.path; every loaded plugin module's source path is
       inside the extraction dir)

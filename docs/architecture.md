@@ -60,6 +60,7 @@ the plugin root.
 | Canonical state, transactions, and migrations | `lib/intent_store.lua` |
 | Commit, derived writes, and live reload | `lib/commit_pipeline.lua` |
 | Native output and external-edit reconciliation | `lib/native_writer.lua`, `lib/semantic_diff.lua` |
+| Historical ordering API compatibility | `lib/semantic_diff_legacy.lua` |
 | Safe loading and atomic file replacement | `lib/data_loader.lua`, `lib/atomic_writer.lua` |
 | View and submenu presets | `lib/presets.lua` |
 | Editor screens, helpers, and open-editor tracking | `lib/ui_screens.lua`, `lib/ui_editor_model.lua`, `lib/ui_editor_registry.lua` |

@@ -162,6 +162,25 @@ local function invalidate(view)
     -- reader; sessions own the projection). Field retained for probe compat.
 end
 
+local function clearMaterializedViewState(view)
+    invalidate(view)
+    backups[view] = nil
+end
+
+local function clearSuccessfulMaterializedViews(outcome)
+    for _, view in ipairs(MenuSchema.VIEWS) do
+        if outcome.changed_views[view] and not outcome.failed_views[view] then
+            clearMaterializedViewState(view)
+        end
+    end
+end
+
+local function clearResetViewState(view)
+    invalidate(view)
+    MenuOrderManager.recent_moves[view] = {}
+    backups[view] = nil
+end
+
 local function ensureTxn()
     -- A committed transaction's staged table ALIASES state.views (commit
     -- swaps them). Reusing it would let later edits silently mutate the
@@ -397,6 +416,14 @@ local function sessionFor(view, ui)
         last_sync_result[view] = startupSyncView(view)
     end
     return s
+end
+
+local function commitOptions(prepare)
+    return {
+        get_session = function(v) return sessionFor(v) end,
+        prepare = prepare,
+        invalidate = invalidate,
+    }
 end
 
 -- Explicit startup-synchronization entry point (Prompt 4 §1): same boundary
@@ -828,11 +855,7 @@ function MenuOrderManager:saveOrder(view)
         end
     end
     if not outcome then
-        outcome = commitWithGuard(txn, {
-        get_session = function(v) return sessionFor(v) end,
-        prepare = minimizeIntent,
-        invalidate = invalidate,
-        })
+        outcome = commitWithGuard(txn, commitOptions(minimizeIntent))
     end
     ensureTxn() -- committed transaction is spent; fresh staging either way
 
@@ -861,11 +884,10 @@ function MenuOrderManager:saveOrder(view)
             "file for", failed_view, "could not be written:", write_err)
         synced_views[failed_view] = nil
     end
+    clearSuccessfulMaterializedViews(outcome)
     for _, v in ipairs(MenuSchema.VIEWS) do
         if outcome.changed_views[v] and not outcome.failed_views[v] then
-            invalidate(v)
             local record = NativeWriter.getRecord(v)
-            backups[v] = nil
             logger.info("ReorderingMenus: materialized", v, "configuration;",
                 (record and record.structure) and "sparse overrides written"
                     or "stock layout restored")
@@ -882,19 +904,10 @@ end
 --- without naming a view. Used by semantic multi-view operations (plugin-
 --- removal preparation) that stage first and persist once.
 function MenuOrderManager:commitStaged()
-    local outcome = commitWithGuard(ensureTxn(), {
-        get_session = function(v) return sessionFor(v) end,
-        prepare = minimizeIntent,
-        invalidate = invalidate,
-    })
+    local outcome = commitWithGuard(ensureTxn(), commitOptions(minimizeIntent))
     ensureTxn()
     if outcome.committed then
-        for _, v in ipairs(MenuSchema.VIEWS) do
-            if outcome.changed_views[v] and not outcome.failed_views[v] then
-                invalidate(v)
-                backups[v] = nil
-            end
-        end
+        clearSuccessfulMaterializedViews(outcome)
     end
     return outcome
 end
@@ -908,10 +921,7 @@ function MenuOrderManager:resetOrder(view)
     -- (remove, then commit) crashed into a window where both files were gone
     -- but canonical intent still held every customization: a restart would
     -- resurrect it out of nowhere.
-    local outcome = commitWithGuard(txn, {
-        get_session = function(v) return sessionFor(v) end,
-        invalidate = invalidate,
-    })
+    local outcome = commitWithGuard(txn, commitOptions())
     ensureTxn() -- spent transaction replaced by fresh staging
 
     if not outcome.committed then
@@ -926,9 +936,7 @@ function MenuOrderManager:resetOrder(view)
     KoreaderAdapter.invalidateNativeModuleCache()
     -- Reset erases canonical intent; the next projection derives from the
     -- emptied state alone. No cached history to drop.
-    invalidate(view)
-    MenuOrderManager.recent_moves[view] = {}
-    backups[view] = nil
+    clearResetViewState(view)
     return true, nil, outcome
 end
 
@@ -942,10 +950,7 @@ function MenuOrderManager:resetAllOrders()
     for _, view in ipairs(MenuSchema.VIEWS) do
         txn:resetView(view)
     end
-    local outcome = commitWithGuard(txn, {
-        get_session = function(v) return sessionFor(v) end,
-        invalidate = invalidate,
-    })
+    local outcome = commitWithGuard(txn, commitOptions())
     ensureTxn()
 
     if not outcome.committed then
@@ -958,9 +963,7 @@ function MenuOrderManager:resetAllOrders()
     end
     KoreaderAdapter.invalidateNativeModuleCache()
     for _, view in ipairs(MenuSchema.VIEWS) do
-        invalidate(view)
-        MenuOrderManager.recent_moves[view] = {}
-        backups[view] = nil
+        clearResetViewState(view)
     end
     if next(outcome.failed_views) then
         for failed_view in pairs(outcome.failed_views) do
@@ -1545,12 +1548,7 @@ function MenuOrderManager:stageList(view, menu_id, staged_items)
     -- comparison baseline must be stripped identically, otherwise menus with
     -- stock dividers can never match the default derivation and every drag
     -- degrades into a whole-menu bulk freeze.
-    local expected = {}
-    if expected_full then
-        for _, id in ipairs(expected_full) do
-            if id ~= SEPARATOR_ID then table.insert(expected, id) end
-        end
-    end
+    local expected = SemanticDiff.items_projection(expected_full)
 
     -- Shared ordering semantics (Prompt 2 §1-§2): ONE classification decides
     -- the staged form (anchor vs bulk vs noop vs pure-membership), independent
@@ -1607,15 +1605,10 @@ function MenuOrderManager:stageList(view, menu_id, staged_items)
             IntentOps.setDividerArrangement(view, txn, s.reg, menu_id, sep_anchors)
         end
     else
-        local current_items = {}
-        for _, id in ipairs(baseline) do
-            if id ~= SEPARATOR_ID then current_items[#current_items + 1] = id end
-        end
+        local current_items = SemanticDiff.items_projection(baseline)
         local def_menu = s.reg.menus and s.reg.menus[menu_id]
-        local default_items = {}
-        for _, id in ipairs(def_menu and def_menu.list or {}) do
-            if id ~= SEPARATOR_ID then default_items[#default_items + 1] = id end
-        end
+        local default_items = SemanticDiff.items_projection(
+            def_menu and def_menu.list or nil)
         if #baseline_anchors > 0
                 and Materializer.listEquals(seq, current_items)
                 and Materializer.listEquals(seq, default_items) then
@@ -1804,16 +1797,9 @@ function MenuOrderManager:removeSeparator(view, menu_id, idx)
     -- ordering (and agrees on dividers: same observed anchors).
     do
         local IntentOps = require("lib.intent_ops")
-        local observed, previous = {}, false
-        for _, id in ipairs(items) do
-            if id == SEPARATOR_ID then
-                observed[#observed + 1] = previous
-            else
-                previous = id
-            end
-        end
         local s = sessionFor(view)
-        IntentOps.setDividerArrangement(view, ensureTxn(), s.reg, menu_id, observed)
+        IntentOps.setDividerArrangement(view, ensureTxn(), s.reg, menu_id,
+            separatorAnchors(items))
     end
     self:stageList(view, menu_id, items)
     return true
@@ -2436,11 +2422,8 @@ function MenuOrderManager:prepareForPluginRemoval()
 end
 
 function MenuOrderManager:applyLiveReload(ui, _view)
-    local sanitizer = function(tree)
-        local UIScreens = require("lib.ui_screens")
-        return UIScreens:sanitizeLiveMenuTree(tree)
-    end
-    return KoreaderAdapter.applyLiveReload(ui, sanitizer)
+    return KoreaderAdapter.applyLiveReload(ui,
+        KoreaderAdapter.sanitizeLiveMenuTree)
 end
 
 function MenuOrderManager:reconcileRegisteredItems(view, menu_items, providers, collisions)

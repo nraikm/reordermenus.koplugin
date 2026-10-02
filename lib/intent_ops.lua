@@ -83,15 +83,7 @@ function IntentOps.providerOf(reg, id)
 end
 
 local function separatorAnchorsOf(list)
-    local anchors, previous = {}, false
-    for _, id in ipairs(type(list) == "table" and list or {}) do
-        if id == SEPARATOR_ID then
-            anchors[#anchors + 1] = previous
-        else
-            previous = id
-        end
-    end
-    return anchors
+    return SemanticDiff.separator_anchors(type(list) == "table" and list or {})
 end
 
 IntentOps.separatorAnchorsOf = separatorAnchorsOf

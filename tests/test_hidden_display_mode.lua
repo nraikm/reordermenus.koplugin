@@ -8,20 +8,11 @@ hamburger and persists across restarts. Both modes must behave identically at
 the data layer; only editor presentation differs.
 --]]
 
-dofile("/Applications/KOReader.app/Contents/koreader/setupkoenv.lua")
-local test_path = debug.getinfo(1, "S").source:sub(2)
-local project_dir = assert(test_path:match("^(.*)/tests/[^/]+$"), "cannot locate plugin directory")
-package.path = project_dir .. "/?.lua;" .. package.path
-
-local LuaSettings = require("luasettings")
-local DataStorage = require("datastorage")
-
-G_reader_settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/settings.reader.lua")
-G_defaults = require("luadefaults"):open()
-
-local Device = require("device")
-local CanvasContext = require("document/canvascontext")
-CanvasContext:init(Device)
+local project_root = assert((debug.getinfo(1, "S").source:sub(2)):match("^(.*)/tests/"),
+    "cannot locate plugin directory")
+local RW = dofile(project_root .. "/tests/lib/runtime_world.lua")
+local env = RW.bootstrap()
+local DataStorage = env.DataStorage
 
 local FileManagerMenu = require("apps/filemanager/filemanagermenu")
 local UIManager = require("ui/uimanager")
@@ -34,37 +25,13 @@ local settings_dir = DataStorage:getSettingsDir()
 local ORDER_FILE = settings_dir .. "/" .. view .. "_menu_order.lua"
 local STATE_FILE = settings_dir .. "/reorderingmenus_state.lua"
 
-local passed, failed = 0, 0
-local function assert_eq(actual, expected, msg)
-    if actual == expected then
-        passed = passed + 1
-        print("  [PASS] " .. (msg or ""))
-    else
-        failed = failed + 1
-        io.stdout:flush()
-        print("  [FAIL] " .. (msg or "") ..
-            string.format(" -> expected %s, got %s", tostring(expected), tostring(actual)))
-    end
-end
-local function assert_true(cond, msg) assert_eq(not not cond, true, msg) end
+local T = RW.assert_counter()
+local assert_eq, assert_true = T.assert_eq, T.assert_true
 
 local MenuOrderManager = require("lib.menuorder_manager")
 local UIScreens = require("lib.ui_screens")
 
-local mock_ui_fm = {
-    file_chooser = {
-        show_hidden = false,
-        show_unsupported = false,
-        items_per_page_default = 14,
-        collates = { filename = { text = _("Filename"), menu_order = 1 } },
-        getCollate = function() return nil, "filename" end,
-        refreshPath = function() end,
-        toggleShowFilesMode = function() end,
-    },
-    registerTouchZones = function() end,
-    onSetSortBy = function() end,
-    registerModule = function(self, name, mod) self[name] = mod end,
-}
+local mock_ui_fm = RW.mock_fm_ui(_)
 
 local function wipe_state()
     os.remove(ORDER_FILE)
@@ -79,14 +46,6 @@ end
 local function drop_session_caches()
     package.loaded["ui/elements/" .. view .. "_menu_order"] = nil
     MenuOrderManager.orders[view] = nil
-end
-
-local function close_all_windows()
-    while #(UIManager._window_stack or {}) > 0 do
-        local entry = UIManager._window_stack[#UIManager._window_stack]
-        local w = entry and (entry.widget or entry)
-        UIManager:close(w)
-    end
 end
 
 local function launch()
@@ -147,7 +106,7 @@ do
         "dimmed row sits right after its recorded previous sibling")
     assert_true(pm_idx < #editor.item_table,
         "preserved row is NOT appended at the bottom")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     -- Anchor whose sibling never renders: in-place insert falls back to the
     -- bottom section rather than misplacing the row mid-list.
@@ -157,7 +116,7 @@ do
         "fallback hidden row present")
     assert_eq(dt_idx, #editor2.item_table,
         "unrenderable-anchor row degrades to the bottom section")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 print("\n--- D2: toggling to bottom collects hidden rows ---")
@@ -187,7 +146,7 @@ do
     end
     assert_true(pm_idx >= 1 and dt_idx >= 1,
         "hidden rows grouped at the bottom in hide order")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 end
 
 print("\n--- D3: mode persists across restart simulation ---")
@@ -220,7 +179,7 @@ do
     local hidden_again = select(2, row_for(editor, "patch_management"))
     assert_eq(hidden_again, pm_idx,
         "re-hiding returned the row to its preserved spot")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     -- Bottom mode: hiding moves the row into the trailing section instead.
     MenuOrderManager:setHiddenInPlace(false)
@@ -231,13 +190,12 @@ do
     local after_idx = select(2, row_for(editor, "advanced_settings"))
     assert_true(after_idx == #editor.item_table and after_idx > before_idx,
         "bottom mode relocates a newly hidden row to the very end")
-    close_all_windows()
+    RW.close_all_windows(UIManager)
 
     MenuOrderManager:setHiddenInPlace(true)
 end
 
 wipe_state()
-close_all_windows()
+RW.close_all_windows(UIManager)
 
-print(string.format("\n=== %d passed, %d failed ===", passed, failed))
-if failed > 0 then os.exit(1) end
+T.summary("hidden display mode")

@@ -67,7 +67,7 @@ local MenuSchema = require("lib.menu_schema")
 --                  conflicts per menu. v2 and earlier migrate losslessly;
 --                  the only discarded bytes are bookkeeping that never was
 --                  user intent.
-local SCHEMA_VERSION = 3
+local SCHEMA_VERSION = MenuSchema.SCHEMA_VERSION
 
 -- Per-version migrators: input is the raw loaded table (already table-typed).
 -- Each returns the migrated table at schema_version + 1 semantics; running a
@@ -114,27 +114,7 @@ MIGRATIONS[2] = function(data)
         end
         -- Records without any ordinal (hidden before ordering existed):
         -- assign ordinals deterministically by sorted id AFTER listed ids.
-        local unnumbered = {}
-        local max_ordinal = 0
-        for id, record in pairs(type(section.hidden) == "table"
-                and section.hidden or {}) do
-            if type(record) == "table" then
-                if type(record.ordinal) == "number" then
-                    if record.ordinal > max_ordinal then
-                        max_ordinal = record.ordinal
-                    end
-                else
-                    table.insert(unnumbered, id)
-                end
-            end
-        end
-        if #unnumbered > 0 then
-            table.sort(unnumbered)
-            for _, id in ipairs(unnumbered) do
-                max_ordinal = max_ordinal + 1
-                section.hidden[id].ordinal = max_ordinal
-            end
-        end
+        MenuSchema.normalizeHiddenOrdinals(section.hidden)
 
         -- (2) sequence_eras -> order_override entries; dedupe sequences.
         local eras = type(section.sequence_eras) == "table"
@@ -335,21 +315,7 @@ end
 
 local newViewSection = MenuSchema.newViewSection
 
-local function newState()
-    return {
-        version = SCHEMA_VERSION,
-        views = {
-            reader = newViewSection(),
-            filemanager = newViewSection(),
-        },
-        meta = {
-            mirror_changes = false,
-            hidden_in_place = true,
-            generation = 0,
-            view_generations = { reader = 0, filemanager = 0 },
-        },
-    }
-end
+local newState = MenuSchema.newCanonicalState
 
 local function validStateShape(data)
     return type(data) == "table"
@@ -684,26 +650,8 @@ local function repairProblems(state, problems)
     -- after the highest existing one (sorted id order).
     for _, view in ipairs(MenuSchema.VIEWS) do
         local section = state.views[view]
-        if type(section) == "table" and type(section.hidden) == "table" then
-            local unnumbered, max_ordinal = {}, 0
-            for id, record in pairs(section.hidden) do
-                if type(record) == "table" then
-                    if type(record.ordinal) == "number" then
-                        if record.ordinal > max_ordinal then
-                            max_ordinal = record.ordinal
-                        end
-                    else
-                        table.insert(unnumbered, id)
-                    end
-                end
-            end
-            if #unnumbered > 0 then
-                table.sort(unnumbered)
-                for _, id in ipairs(unnumbered) do
-                    max_ordinal = max_ordinal + 1
-                    section.hidden[id].ordinal = max_ordinal
-                end
-            end
+        if type(section) == "table" then
+            MenuSchema.normalizeHiddenOrdinals(section.hidden)
         end
     end
 end

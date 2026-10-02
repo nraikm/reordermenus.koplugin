@@ -41,6 +41,7 @@ local PluginPrefs = require("lib.plugin_prefs")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local MenuSchema = require("lib.menu_schema")
+local SemanticDiff = require("lib.semantic_diff")
 local util = require("util")
 local bit = require("bit")
 local Placement = require("lib.placement")
@@ -707,48 +708,11 @@ function Presets.applyUserIntentPreset(view, txn, preset_intent, reg)
                 record.ordinal = index
             end
         end
-        local max_seen = 0
-        for _, record in pairs(result.hidden) do
-            if type(record) == "table" and type(record.ordinal) == "number"
-                    and record.ordinal > max_seen then
-                max_seen = record.ordinal
-            end
-        end
-        local unnumbered = {}
-        for id, record in pairs(result.hidden) do
-            if type(record) == "table" and record.ordinal == nil then
-                table.insert(unnumbered, id)
-            end
-        end
-        table.sort(unnumbered)
-        for _, id in ipairs(unnumbered) do
-            max_seen = max_seen + 1
-            result.hidden[id].ordinal = max_seen
-        end
+        MenuSchema.normalizeHiddenOrdinals(result.hidden, true)
     end
     -- Records without ANY ordinal (fresh snapshots predating ordering):
     -- assign deterministically by sorted id.
-    do
-        local unnumbered, max_seen = {}, 0
-        for id, record in pairs(result.hidden) do
-            if type(record) == "table" then
-                if type(record.ordinal) == "number" then
-                    if record.ordinal > max_seen then
-                        max_seen = record.ordinal
-                    end
-                else
-                    table.insert(unnumbered, id)
-                end
-            end
-        end
-        if #unnumbered > 0 then
-            table.sort(unnumbered)
-            for _, id in ipairs(unnumbered) do
-                max_seen = max_seen + 1
-                result.hidden[id].ordinal = max_seen
-            end
-        end
-    end
+    MenuSchema.normalizeHiddenOrdinals(result.hidden)
     -- governed_menus computed above for per-id carry; reuse it here for
     -- order/separators/raw verbatim carry of ungoverned menus.
     -- NOTE: result aliases current (same table), so snapshot current state
@@ -908,18 +872,10 @@ function Presets.saveSubmenuPreset(view, menu_id, menu_title, preset_name,
 
     local subtree = collectSubtree(reg, intent, menu_id, include_nested == true)
     if staged_items then
-        local seq = {}
-        local sep_anchors = {}
-        local prev = false
-        for _, id in ipairs(staged_items) do
-            if id ~= SEPARATOR_ID then
-                table.insert(seq, id)
-                prev = id
-            else
-                table.insert(sep_anchors, prev)
-            end
-        end
-        subtree[menu_id] = { sequence = seq, sep_anchors = sep_anchors }
+        subtree[menu_id] = {
+            sequence = SemanticDiff.items_projection(staged_items),
+            sep_anchors = SemanticDiff.separator_anchors(staged_items),
+        }
     end
     -- Divider records travel with their menus so a capture reproduces the
     -- exact visual grouping on apply. Full records are preserved verbatim

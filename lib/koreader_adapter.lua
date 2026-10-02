@@ -1088,6 +1088,50 @@ function KoreaderAdapter.canRestart()
         and UIManager.event_handlers.Restart ~= nil
 end
 
+-- KOReader's MenuSorter titles a submenu marker with the content's static
+-- text only (sub_menu_position.text = sub_menu_content.text), dropping
+-- text_func. A submenu registered with a dynamic-only title therefore
+-- renders as the literal string "nil" once relocated by a layout. Walk the
+-- rebuilt tree and give every renderable row a usable title.
+--
+-- Third-party menu tables may self-reference, share subtrees, or contain
+-- cycles. Traversal is iterative with a visited set keyed by table identity,
+-- so cycles cannot recurse forever and shared subtrees are processed once.
+function KoreaderAdapter.sanitizeLiveMenuTree(tree)
+    if type(tree) ~= "table" then return end
+    local MenuTitles = require("lib.menu_titles")
+    local stack = { tree }
+    local visited = { [tree] = true }
+    while #stack > 0 do
+        local node = table.remove(stack)
+        for _, entry in ipairs(node) do
+            if type(entry) == "table" then
+                if type(entry[1]) == "table" then
+                    -- A menu level array (e.g. a top-level tab's content):
+                    -- sanitize its rows.
+                    if not visited[entry] then
+                        visited[entry] = true
+                        stack[#stack + 1] = entry
+                    end
+                else
+                    -- A rendered row: make sure it can produce a title.
+                    local has_title = type(entry.text) == "string"
+                        or type(entry.text_func) == "function"
+                    if not has_title and entry.separator ~= true then
+                        local ok, title = pcall(MenuTitles.getTitle, MenuTitles, entry.id)
+                        entry.text = ok and title or tostring(entry.id)
+                    end
+                    if type(entry.sub_item_table) == "table"
+                            and not visited[entry.sub_item_table] then
+                        visited[entry.sub_item_table] = true
+                        stack[#stack + 1] = entry.sub_item_table
+                    end
+                end
+            end
+        end
+    end
+end
+
 -- Live reload (Prompt 4 §6): architecturally one production path.
 --
 -- Production path — in-place rebuild, controller identity preserved:

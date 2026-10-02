@@ -615,12 +615,18 @@ end
 -- observation look dirty and demanding a pointless durable write.
 -- (Declared AFTER stripEmptyReservedMaps: Lua locals are lexically scoped,
 -- so an earlier placement resolves it as a nil global at call time.)
-function NativeWriter.previewEmission(view, reg, intent, graph)
+local function buildEmission(view, reg, intent, graph)
     local Resolver = require("lib.resolver")
     local empty_graph = Resolver.resolve(reg, nil)
     local native = NativeWriter.graphToNative(reg, intent, graph, empty_graph)
-    if stripEmptyReservedMaps(view, native) then return nil end
-    return native
+    local has_content = next(native) ~= nil
+    if stripEmptyReservedMaps(view, native) then has_content = false end
+    return native, has_content
+end
+
+function NativeWriter.previewEmission(view, reg, intent, graph)
+    local native, has_content = buildEmission(view, reg, intent, graph)
+    return has_content and native or nil
 end
 
 --- True when a (projected or parsed) emission carries NO real layout
@@ -632,8 +638,6 @@ end
 --- a native file at all (materializeView's empty branch) must treat
 --- reserved-only shapes as EMPTY.
 function NativeWriter.emissionIsReservedOnly(native)
-    -- Inline twin of containsOnlyEmptyReservedMaps (declared further down;
-    -- Lua locals are lexically scoped so it is not callable up here).
     if type(native) ~= "table" or next(native) == nil then return false end
     for key, value in pairs(native) do
         if not RESERVED[key] or type(value) ~= "table" or next(value) ~= nil then
@@ -673,29 +677,13 @@ function NativeWriter.emissionMatchesRecord(view, reg)
 end
 
 function NativeWriter.writeView(view, reg, intent, graph)
-    local Resolver = require("lib.resolver")
-    local empty_graph = Resolver.resolve(reg, nil)
-    local native = NativeWriter.graphToNative(reg, intent, graph, empty_graph)
-
-    local has_content = false
-    for key in pairs(native) do
-        has_content = true
-    end
-    -- Cleaner generation policy: graphToNative always fills the reserved
-    -- maps so a mid-session mergeAndSort cannot keep overlaying a PREVIOUS
-    -- generation's disabled set / titles. But those keys carry information
-    -- only when they CHANGE what stock merged earlier - which happens exactly
-    -- when the previous on-disk emission held a NON-EMPTY disabled set or
-    -- titles map. Otherwise (pristine world, or the cleaner already ran) the
-    -- reserved surface is stripped here so an all-empty result removes the
-    -- file and stock rules flow untouched.
-    if stripEmptyReservedMaps(view, native) then has_content = false end
+    local native, has_content = buildEmission(view, reg, intent, graph)
 
     -- Record what is ACTUALLY on disk: when the cleaner generation removed
     -- the file, an empty structure would make the next save believe the
     -- previous emission still carried the reserved keys and re-emit them
     -- forever (write/remove/write/...). nil = "no file" for syncView.
-    local record = loadSidecar().views[view]
+    loadSidecar()
     local on_disk_native = has_content and native or nil
     if not has_content then
         local ok_remove, remove_err = KoreaderAdapter.removeNativeOrder(view)
@@ -783,27 +771,14 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
                     and declared_title ~= "" and declared_title or menu_id
                 local located_parent = findIdLocation(native, menu_id)
                 IntentOps.defineCustomContainer(view, txn, menu_id, title, located_parent)
-                local unknown_seq, unknown_seps = {}, {}
-                for _, x in ipairs(list) do
-                    if x == SEPARATOR_ID then
-                        table.insert(unknown_seps, { index = #unknown_seq })
-                    else
-                        table.insert(unknown_seq, x)
-                    end
-                end
+                local unknown_seq = SemanticDiff.items_projection(list)
                 local eras = {}
                 for _, x in ipairs(unknown_seq) do
                     eras[x] = IntentOps.providerOf(reg, x)
                 end
                 txn:setOrderOverride(view, menu_id, unknown_seq, eras)
-                do
-                    local observed = {}
-                    for _, sep in ipairs(unknown_seps) do
-                        observed[#observed+1] = sep.index >= 1
-                            and unknown_seq[sep.index] or false
-                    end
-                    IntentOps.setDividerArrangement(view, txn, reg, menu_id, observed)
-                end
+                IntentOps.setDividerArrangement(view, txn, reg, menu_id,
+                    IntentOps.separatorAnchorsOf(list))
                 -- Shared membership: moved stock children + nested customs.
                 for _, child_id in ipairs(unknown_seq) do
                     if not disabled[child_id] then
@@ -830,24 +805,8 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
                 -- contains dividers is not a user arrangement, and freezing
                 -- it as an order_override would block upstream reorders for
                 -- every menu with a stock separator.
-                local same_layout = #list == #default_list
-                if same_layout then
-                    for i, id in ipairs(list) do
-                        if default_list[i] ~= id then
-                            same_layout = false
-                            break
-                        end
-                    end
-                end
-                local seq = {}
-                local separators_pending = {}
-                for _, id in ipairs(list) do
-                    if id == "----------------------------" then
-                        table.insert(separators_pending, { index = #seq })
-                    else
-                        table.insert(seq, id)
-                    end
-                end
+                local same_layout = SemanticDiff.sequence_equal(list, default_list)
+                local seq = SemanticDiff.items_projection(list)
                 if same_layout then
                     -- Mirrors the current stock layout: carries no user
                     -- information, so nothing is persisted for this key.
@@ -856,12 +815,7 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
                     -- Items-only comparison: a divider-only difference must
                     -- not freeze a redundant ordering (which would block
                     -- upstream reorders); only divider intent is recorded.
-                    local default_items_only = {}
-                    for _, id in ipairs(default_list) do
-                        if id ~= SEPARATOR_ID then
-                            default_items_only[#default_items_only + 1] = id
-                        end
-                    end
+                    local default_items_only = SemanticDiff.items_projection(default_list)
                     local items_same = Materializer.listEquals(seq, default_items_only)
                     if not items_same then
                         local eras = {}
@@ -873,11 +827,7 @@ function NativeWriter.importAgainstDefaults(view, reg, txn, native)
                     end
                     -- Shared divider semantics (replacement, unified keys).
                     do
-                        local observed_anchors = {}
-                        for _, sep in ipairs(separators_pending) do
-                            observed_anchors[#observed_anchors + 1] =
-                                sep.index >= 1 and seq[sep.index] or false
-                        end
+                        local observed_anchors = IntentOps.separatorAnchorsOf(list)
                         local before = 0
                         for _ in pairs(txn:view(view).separators or {}) do before = before + 1 end
                         local how = IntentOps.setDividerArrangement(
@@ -961,16 +911,6 @@ local function regenerateForStartup(view, reg, txn, success_mode)
     local ok = regenerateView(view, reg, txn)
     if not ok then return false, STATUS.REGENERATION_FAILED end
     return true, success_mode
-end
-
-local function containsOnlyEmptyReservedMaps(native)
-    if next(native) == nil then return false end
-    for key, value in pairs(native) do
-        if not RESERVED[key] or type(value) ~= "table" or next(value) ~= nil then
-            return false
-        end
-    end
-    return true
 end
 
 local function classifyParsedNative(entry, was_clean, native_fingerprint)
@@ -1171,7 +1111,7 @@ function NativeWriter.syncView(view, reg, txn)
         -- module was freshly required (no mergeAndSort overlay pollution in
         -- THIS process), so those keys override nothing - remove the file so
         -- stock rules flow untouched until real customization returns.
-        if containsOnlyEmptyReservedMaps(native) then
+        if NativeWriter.emissionIsReservedOnly(native) then
             logger.info("ReorderingMenus:", view,
                 "removing empty reserved-key-only native file at startup")
             local ok_remove = KoreaderAdapter.removeNativeOrder(view)
@@ -1433,23 +1373,12 @@ importExternalChanges = function(view, reg, txn, native, entry)
                 -- never layers an anchor beside it.
                 local has_frozen_override = txn:view(view).order_override[menu_id] ~= nil
                 local IntentOps = require("lib.intent_ops")
-                local classification, cls_err = (function()
-                    -- Ordering is an ITEM-projection question; dividers travel
-                    -- separately below. Strip separators first so stock
-                    -- duplicate divider tokens never trip duplicate-identity
-                    -- errors (separator_aware=false treats them as ordinary
-                    -- ids). Disabled ids live in KOMenu:disabled, not in menu
-                    -- lists, so no extra filtering needed here.
-                    local oi, ni = {}, {}
-                    for _, id in ipairs(type(old_list) == "table" and old_list or {}) do
-                        if id ~= SEPARATOR_ID then oi[#oi+1] = id end
-                    end
-                    for _, id in ipairs(new_list) do
-                        if id ~= SEPARATOR_ID then ni[#ni+1] = id end
-                    end
-                    return SemanticDiff.classify_permutation(oi, ni,
-                        { separator_aware = false })
-                end)()
+                -- Ordering compares items only; dividers travel separately.
+                local old_items = SemanticDiff.items_projection(
+                    type(old_list) == "table" and old_list or nil)
+                local new_items = SemanticDiff.items_projection(new_list)
+                local classification, cls_err = SemanticDiff.classify_permutation(
+                    old_items, new_items, { separator_aware = false })
                 if cls_err then
                     -- Structural invalidity in hand-edited file: fall through
                     -- to bulk refresh below (which filters to strings) rather
@@ -1492,15 +1421,8 @@ importExternalChanges = function(view, reg, txn, native, entry)
                     -- ids from OUR frozen sequence or stale entries resurrect.
                     local section_now = txn:view(view)
                     if type(section_now.order_override[menu_id]) == "table" then
-                        local oi2, ni2 = {}, {}
-                        for _, id in ipairs(type(old_list) == "table" and old_list or {}) do
-                            if id ~= SEPARATOR_ID then oi2[#oi2+1] = id end
-                        end
-                        for _, id in ipairs(new_list) do
-                            if id ~= SEPARATOR_ID then ni2[#ni2+1] = id end
-                        end
                         local changes = SemanticDiff.multiset_diff(
-                            oi2, ni2, { separator_aware = false })
+                            old_items, new_items, { separator_aware = false })
                         local gone = {}
                         if changes then
                             for _, id in ipairs(changes.removed or {}) do gone[id] = true end
@@ -1560,13 +1482,8 @@ importExternalChanges = function(view, reg, txn, native, entry)
                             table.insert(seq, id)
                         end
                     end
-                    local default_items = {}
-                    for _, id in ipairs(reg.menus[menu_id]
-                            and reg.menus[menu_id].list or {}) do
-                        if id ~= SEPARATOR_ID then
-                            default_items[#default_items + 1] = id
-                        end
-                    end
+                    local default_items = SemanticDiff.items_projection(
+                        reg.menus[menu_id] and reg.menus[menu_id].list or nil)
                     if Materializer.listEquals(seq, default_items) then
                         txn:setOrderOverride(view, menu_id, nil)
                     elseif #seq > 0 then
@@ -1585,21 +1502,9 @@ importExternalChanges = function(view, reg, txn, native, entry)
                 -- leave untouched (no litter for full-file hand edits that
                 -- did not move dividers).
                 do
-                    local function sep_anchors(list)
-                        return IntentOps.separatorAnchorsOf(list)
-                    end
-                    local old_anchors = sep_anchors(old_list)
-                    local new_anchors = sep_anchors(new_list)
-                    local same_anchors = #old_anchors == #new_anchors
-                    if same_anchors then
-                        for i = 1, #old_anchors do
-                            if old_anchors[i] ~= new_anchors[i] then
-                                same_anchors = false
-                                break
-                            end
-                        end
-                    end
-                    if not same_anchors then
+                    local old_anchors = IntentOps.separatorAnchorsOf(old_list)
+                    local new_anchors = IntentOps.separatorAnchorsOf(new_list)
+                    if not SemanticDiff.sequence_equal(old_anchors, new_anchors) then
                         IntentOps.setDividerArrangement(view, txn, reg, menu_id, new_anchors)
                     end
                 end

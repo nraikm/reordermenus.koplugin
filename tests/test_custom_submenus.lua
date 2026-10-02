@@ -3,20 +3,11 @@ User-created submenus: creation UI, persistence, KOReader rendering,
 destination-chooser prioritization, deletion, and reset behaviour.
 --]]
 
-dofile("/Applications/KOReader.app/Contents/koreader/setupkoenv.lua")
-local test_path = debug.getinfo(1, "S").source:sub(2)
-local project_dir = assert(test_path:match("^(.*)/tests/[^/]+$"), "cannot locate plugin directory")
-package.path = project_dir .. "/?.lua;" .. package.path
-
-local LuaSettings = require("luasettings")
-local DataStorage = require("datastorage")
-
-G_reader_settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/settings.reader.lua")
-G_defaults = require("luadefaults"):open()
-
-local Device = require("device")
-local CanvasContext = require("document/canvascontext")
-CanvasContext:init(Device)
+local project_root = assert((debug.getinfo(1, "S").source:sub(2)):match("^(.*)/tests/"),
+    "cannot locate plugin directory")
+local RW = dofile(project_root .. "/tests/lib/runtime_world.lua")
+local env = RW.bootstrap()
+local DataStorage = env.DataStorage
 
 -- Deterministic baseline: wipe persisted menu state before this suite runs
 -- (fresh process = no in-memory sessions; removing the files is enough).
@@ -59,24 +50,8 @@ local UIManager = require("ui/uimanager")
 local MenuSchema = require("lib.menu_schema")
 local IntentStore = require("lib.intent_store")
 
-local passed = 0
-local failed = 0
-
-local function assert_eq(actual, expected, msg)
-    if actual == expected then
-        passed = passed + 1
-        print("  [PASS] " .. (msg or "assertion"))
-    else
-        failed = failed + 1
-        io.stdout:flush()
-        print("  [FAIL] " .. (msg or "assertion") ..
-            " -> Expected: " .. tostring(expected) .. ", Got: " .. tostring(actual))
-    end
-end
-
-local function assert_true(cond, msg)
-    assert_eq(not not cond, true, msg)
-end
+local T = RW.assert_counter()
+local assert_eq, assert_true = T.assert_eq, T.assert_true
 
 print("===============================================================")
 print("=== User-Created Submenus Test                              ===")
@@ -739,13 +714,7 @@ do
         "preset-carried registry restores the given name")
 end
 
-print(string.format("\n==============================================================="))
-print(string.format("=== CUSTOM SUBMENU TESTS COMPLETED: %d PASSED, %d FAILED  ===", passed, failed))
-print("===============================================================")
-
 -- The suite drives real UIManager widgets; without an explicit quit the
 -- event loop keeps the process alive after a fully passing run.
 pcall(function() require("ui/uimanager"):quit() end)
-if failed > 0 then
-    os.exit(1)
-end
+T.summary("custom submenus")
